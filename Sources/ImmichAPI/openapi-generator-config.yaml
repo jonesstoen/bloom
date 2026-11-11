@@ -1,0 +1,39 @@
+generate:
+  - types
+  - client
+accessModifier: public
+namingStrategy: idiomatic
+filter:
+  # Keep this list to the operations ImmichKit actually uses.
+  # Look up operationIds in openapi.json (Immich changes them between versions).
+  operations:
+    # Server
+    - pingServer
+    - getServerVersion
+    # Timeline
+    - getTimeBuckets
+    - getTimeBucket
+    # Assets
+    - getAssetInfo
+    - viewAsset
+    - downloadAsset
+    - playAssetVideo
+    # Albums
+    - getAllAlbums
+    - getAlbumInfo
+    # People
+    - getAllPeople
+    - getPerson
+    - getPersonThumbnail
+    - getPersonStatistics
+    # Search
+    - searchSmart
+    - searchAssets
+    - searchPerson
+    - searchPlaces
+    - getSearchSuggestions
+    # Map
+    - getMapMarkers
+    # Memories
+    - searchMemories
+    - getMemory
