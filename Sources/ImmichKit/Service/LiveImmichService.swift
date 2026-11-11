@@ -53,6 +53,52 @@ public struct LiveImmichService: ImmichService {
         }
     }
 
+    public func timeBuckets(options: TimelineOptions) async throws -> [TimeBucket] {
+        let o = options
+        let query = Operations.GetTimeBuckets.Input.Query(
+            albumId: o.albumId, isFavorite: o.isFavorite, isTrashed: o.isTrashed,
+            order: o.newestFirst ? .desc : .asc, personId: o.personId,
+            visibility: o.visibility.map(Self.visibility), withPartners: o.withPartners, withStacked: o.withStacked
+        )
+        let output = try await Self.mapErrors { try await client.getTimeBuckets(query: query) }
+        switch output {
+        case .ok(let ok):
+            guard case .json(let dtos) = ok.body else { throw ImmichServiceError.invalidResponse }
+            return try dtos.map { dto in
+                guard let bucket = TimeBucket(key: dto.timeBucket, count: dto.count) else {
+                    throw ImmichServiceError.invalidResponse
+                }
+                return bucket
+            }
+        case .undocumented(let status, _):
+            throw Self.error(forStatus: status)
+        }
+    }
+
+    public func timeBucketAssets(bucketID: String, options: TimelineOptions) async throws -> [Asset] {
+        let o = options
+        let query = Operations.GetTimeBucket.Input.Query(
+            albumId: o.albumId, isFavorite: o.isFavorite, isTrashed: o.isTrashed,
+            order: o.newestFirst ? .desc : .asc, personId: o.personId, timeBucket: bucketID,
+            visibility: o.visibility.map(Self.visibility), withPartners: o.withPartners, withStacked: o.withStacked
+        )
+        let output = try await Self.mapErrors { try await client.getTimeBucket(query: query) }
+        switch output {
+        case .ok(let ok):
+            guard case .json(let dto) = ok.body else { throw ImmichServiceError.invalidResponse }
+            return try Asset.assets(from: dto)
+        case .undocumented(let status, _):
+            throw Self.error(forStatus: status)
+        }
+    }
+
+    private static func visibility(_ value: TimelineOptions.Visibility) -> Components.Schemas.AssetVisibility {
+        switch value {
+        case .timeline: return .timeline
+        case .archive: return .archive
+        }
+    }
+
     /// `GET /server/version` decoded into `ServerVersion`, where `featureLevel` is optional.
     private func lenientServerVersion() async throws -> ServerVersion {
         var request = HTTPRequest(method: .get, scheme: nil, authority: nil, path: "/server/version")

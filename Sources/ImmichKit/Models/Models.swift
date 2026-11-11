@@ -48,6 +48,8 @@ public struct Asset: Sendable, Hashable, Identifiable, Codable {
     public var thumbhash: String?
     /// Only present when fetched through asset info / search responses that include it.
     public var exif: ExifInfo?
+    /// Width / height reported by the timeline when the pixel size is unknown.
+    public var ratio: Double?
 
     public init(
         id: String,
@@ -55,6 +57,7 @@ public struct Asset: Sendable, Hashable, Identifiable, Codable {
         takenAt: Date,
         localDateTime: Date? = nil,
         size: PixelSize? = nil,
+        ratio: Double? = nil,
         isFavorite: Bool = false,
         isArchived: Bool = false,
         isTrashed: Bool = false,
@@ -79,6 +82,14 @@ public struct Asset: Sendable, Hashable, Identifiable, Codable {
         self.mimeType = mimeType
         self.thumbhash = thumbhash
         self.exif = exif
+        self.ratio = ratio
+    }
+
+    /// Width divided by height: from `size` if known, else the timeline `ratio`, else 1.
+    public var aspectRatio: Double {
+        if let size { return size.aspectRatio }
+        if let ratio, ratio.isFinite, ratio > 0 { return ratio }
+        return 1
     }
 
     public var isVideo: Bool { kind == .video }

@@ -10,6 +10,13 @@ public protocol ImmichService: Sendable {
 
     /// `GET /server/version`.
     func serverVersion() async throws -> ServerVersion
+
+    /// `GET /timeline/buckets`: month buckets with asset counts, in `options` order.
+    func timeBuckets(options: TimelineOptions) async throws -> [TimeBucket]
+
+    /// `GET /timeline/bucket`: the assets in one month bucket, in `options` order.
+    /// - Parameter bucketID: `TimeBucket.id` as returned by `timeBuckets(options:)`.
+    func timeBucketAssets(bucketID: String, options: TimelineOptions) async throws -> [Asset]
 }
 
 /// Server release version, independent of the generated API types.
