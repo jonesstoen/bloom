@@ -131,9 +131,17 @@
 "Try Again" = "Prøv igjen";
 
 /* Search */
+"A dog on the beach" = "En hund på stranden";
 "Couldn't load more results. Please try again." = "Kunne ikke laste inn flere treff. Prøv igjen.";
 "Couldn't search your library. Please try again." = "Kunne ikke søke i biblioteket. Prøv igjen.";
+"Clear" = "Tøm";
 "Describe a photo, such as ‘a dog on the beach’." = "Beskriv et bilde, for eksempel «en hund på stranden».";
 "Load More" = "Last inn flere";
 "Photos, people, places…" = "Bilder, personer, steder …";
+"Recent Searches" = "Nylige søk";
+"Results" = "Resultater";
+"Search your photos by describing what you remember." = "Søk i bildene dine ved å beskrive det du husker.";
+"Snowy mountains" = "Snødekte fjell";
 "Some suggestions couldn't be loaded." = "Noen forslag kunne ikke lastes inn.";
+"Suggestions" = "Forslag";
+"Sunsets" = "Solnedganger";

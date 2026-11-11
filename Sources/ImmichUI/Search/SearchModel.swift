@@ -5,6 +5,20 @@ import Observation
 @MainActor @Observable
 public final class SearchModel {
     enum Query: Hashable { case smart(String), city(String), person(String) }
+
+    struct RecentSearch: Identifiable, Hashable {
+        let id: Query
+        let text: String
+
+        var systemImage: String {
+            switch id {
+            case .smart: "magnifyingglass"
+            case .city: "mappin.and.ellipse"
+            case .person: "person.crop.circle"
+            }
+        }
+    }
+
     public var text = "" {
         didSet {
             guard oldValue != text else { return }
@@ -21,6 +35,7 @@ public final class SearchModel {
     public private(set) var places: [String] = []
     public private(set) var suggestionsError: String?
     public private(set) var loadingSuggestions = false
+    private(set) var recentSearches: [RecentSearch] = []
     private var selectedFilter: Query?
     @ObservationIgnored public let service: any ImmichService
     @ObservationIgnored public let loader: ImageLoader
@@ -40,15 +55,52 @@ public final class SearchModel {
     }
 
     public func selectCity(_ city: String) {
+        let city = city.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !city.isEmpty else { return }
         text = city
         selectedFilter = .city(city)
         invalidate()
+        rememberCurrentSearch()
     }
 
     public func selectPerson(_ person: Person) {
         text = person.name
         selectedFilter = .person(person.id)
         invalidate()
+        rememberCurrentSearch()
+    }
+
+    func selectSuggestion(_ suggestion: String) {
+        let suggestion = suggestion.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !suggestion.isEmpty else { return }
+        text = suggestion
+        selectedFilter = nil
+        invalidate()
+        rememberCurrentSearch()
+    }
+
+    /// History belongs to this search session. Debounced requests never record partial text.
+    func rememberCurrentSearch() {
+        guard let query else { return }
+        let title = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return }
+        recentSearches.removeAll { $0.id == query }
+        recentSearches.insert(RecentSearch(id: query, text: title), at: 0)
+        if recentSearches.count > 8 { recentSearches.removeLast(recentSearches.count - 8) }
+    }
+
+    func selectRecent(_ recent: RecentSearch) {
+        text = recent.text
+        switch recent.id {
+        case .smart: selectedFilter = nil
+        case .city, .person: selectedFilter = recent.id
+        }
+        invalidate()
+        rememberCurrentSearch()
+    }
+
+    func clearRecentSearches() {
+        recentSearches = []
     }
 
     public func search() async {
@@ -107,7 +159,11 @@ public final class SearchModel {
         do {
             let result = try await service.searchSuggestions(.city)
             try Task.checkCancellation()
-            places = result
+            var seen: Set<String> = []
+            places = result.compactMap {
+                let city = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                return !city.isEmpty && seen.insert(city).inserted ? city : nil
+            }
         } catch is CancellationError { return }
         catch { suggestionsError = tr("Some suggestions couldn't be loaded.") }
     }
