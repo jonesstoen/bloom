@@ -12,9 +12,10 @@ public struct LibraryGridView: View {
     @State private var scrollSync: Task<Void, Never>?
     @State private var transitionSourceID: String?
     @State private var viewerScrollTarget: String?
-    /// Live scale while pinching, relative to the last density switch.
-    @State private var pinchScale: CGFloat = 1
-    @State private var pinchAnchor: UnitPoint = .center
+    /// Follows the fingers while pinching (never animated), relative to the last density switch.
+    @State private var liveScale: CGFloat = 1
+    /// Bridges a density switch: the new layout starts at the old cell size and springs to 1.
+    @State private var settleScale: CGFloat = 1
     /// Magnification at which the current density was reached during this pinch.
     @State private var pinchBaseline: CGFloat = 1
     @Namespace private var photoTransition
@@ -203,10 +204,13 @@ public struct LibraryGridView: View {
         }
         .contentMargins(.top, usesLargeTitle ? 96 : 0, for: .scrollContent)
         .ignoresSafeArea(edges: usesLargeTitle ? .top : [])
-        .defaultScrollAnchor(model.newestFirst ? .top : .bottom)
+        // Only for the first position: anchoring on later size changes (e.g. a new column count)
+        // fights the scroll to the pinch anchor and can leave the screen on unrendered rows.
+        .defaultScrollAnchor(model.newestFirst ? .top : .bottom, for: .initialOffset)
         .refreshable { await model.load() }
         #if os(iOS)
-        .scaleEffect(pinchScale, anchor: pinchAnchor)
+        .scaleEffect(liveScale * settleScale, anchor: .center)
+        .clipped()
         .simultaneousGesture(
             MagnifyGesture()
                 .onChanged { value in pinchChanged(value, proxy: proxy) }
@@ -223,42 +227,50 @@ public struct LibraryGridView: View {
     @State private var densityProxy: ScrollViewProxy?
 
     /// Follows the fingers like Photos: the grid scales live, and as soon as the pinch passes a
-    /// step it switches columns in one animation around the asset in the middle of the screen.
-    /// One pinch can step through several densities.
+    /// step it switches columns around the asset in the middle of the screen. One pinch can step
+    /// through several densities.
     private func pinchChanged(_ value: MagnifyGesture.Value, proxy: ScrollViewProxy) {
-        if pinchScale == 1 && pinchBaseline == 1 { pinchAnchor = value.startAnchor }
         let relative = value.magnification / pinchBaseline
         let next = model.density.pinched(by: relative)
         if next != model.density {
             pinchBaseline = value.magnification
-            switchDensity(to: next, proxy: proxy)
+            switchDensity(to: next, proxy: proxy, fromVisualScale: liveScale)
         } else {
             // Rubber-band at the ends (3 or 7 columns): the grid only gives a little.
             let atLimit = (relative > 1 && model.density == .three) || (relative < 1 && model.density == .seven)
             let resistance: CGFloat = atLimit ? 0.15 : 0.6
-            pinchScale = 1 + (relative - 1) * resistance
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { liveScale = 1 + (relative - 1) * resistance }
         }
     }
 
     private func pinchEnded() {
         pinchBaseline = 1
-        withAnimation(reduceMotion ? nil : .spring(duration: 0.3)) { pinchScale = 1 }
+        withAnimation(reduceMotion ? nil : .spring(duration: 0.3)) { liveScale = 1 }
     }
 
     private func changeDensity(_ density: GridDensity) {
         guard let proxy = densityProxy else { model.density = density; return }
-        switchDensity(to: density, proxy: proxy)
+        switchDensity(to: density, proxy: proxy, fromVisualScale: 1)
     }
 
-    private func switchDensity(to density: GridDensity, proxy: ScrollViewProxy) {
+    /// Switches columns without animating the grid's layout (relayouting thousands of cells in an
+    /// animation is what made everything reload). Instead the new layout is shown scaled to the
+    /// size the old cells had on screen and springs to its real size: one continuous motion.
+    private func switchDensity(to density: GridDensity, proxy: ScrollViewProxy, fromVisualScale visual: CGFloat) {
         guard density != model.density else { return }
         let anchor = model.visibleCenterID
-        // Relayout and re-anchor in the same transaction, so there is no second jump afterwards.
-        withAnimation(reduceMotion ? nil : .spring(duration: 0.35)) {
-            pinchScale = 1
+        let ratio = CGFloat(density.rawValue) / CGFloat(model.density.rawValue)
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
             model.density = density
             if let anchor { proxy.scrollTo(anchor, anchor: .center) }
+            liveScale = 1
+            settleScale = reduceMotion ? 1 : visual * ratio * settleScale
         }
+        withAnimation(reduceMotion ? nil : .spring(duration: 0.35, bounce: 0)) { settleScale = 1 }
     }
 
     private var footer: some View {
