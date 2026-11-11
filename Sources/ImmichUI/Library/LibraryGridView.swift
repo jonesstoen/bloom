@@ -11,6 +11,7 @@ public struct LibraryGridView: View {
     @State private var selectedAsset: Asset?
     @State private var transitionSourceID: String?
     @State private var viewerScrollTarget: String?
+    @State private var densityAnchorID: String?
     @Namespace private var photoTransition
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let title: String
@@ -40,6 +41,17 @@ public struct LibraryGridView: View {
             .navigationTitle(title)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                Menu {
+                    ForEach(GridDensity.allCases, id: \.rawValue) { density in
+                        Button { changeDensity(density) } label: {
+                            if density == model.density {
+                                Label("\(density.rawValue) Columns", systemImage: "checkmark")
+                            } else { Text("\(density.rawValue) Columns") }
+                        }
+                    }
+                } label: { Label("Grid density", systemImage: "square.grid.3x3") }
+            }
             #endif
             .task {
                 if model.phase == .idle { await model.load() }
@@ -113,10 +125,24 @@ public struct LibraryGridView: View {
         }
         .defaultScrollAnchor(model.newestFirst ? .top : .bottom)
         .refreshable { await model.load() }
+        #if os(iOS)
+        .simultaneousGesture(MagnifyGesture().onEnded { value in
+            changeDensity(model.density.pinched(by: value.magnification))
+        })
+        #endif
+        .onChange(of: model.density) { _, _ in
+            if let id = densityAnchorID { proxy.scrollTo(id, anchor: .top) }
+        }
         .onChange(of: viewerScrollTarget) { _, id in
             if let id { proxy.scrollTo(id, anchor: .center) }
         }
         }
+    }
+
+    private func changeDensity(_ density: GridDensity) {
+        guard density != model.density else { return }
+        densityAnchorID = model.visibleAnchorID
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.3)) { model.density = density }
     }
 
     @ViewBuilder

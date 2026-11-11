@@ -21,8 +21,11 @@ public final class LibraryGridModel {
     /// Months in display order. Unloaded months have `days == nil`.
     public private(set) var months: [TimelineMonth] = []
     public private(set) var phase: Phase = .idle
-    /// Columns in the grid (3 like Photos on iPhone; task 17 makes this pinchable).
-    public var columnCount: Int = 3
+    public var density: GridDensity = .three
+    public var columnCount: Int { density.rawValue }
+    public var visibleAnchorID: String? {
+        visibleIDs.min { (assetIndexByID[$0] ?? .max) < (assetIndexByID[$1] ?? .max) }
+    }
 
     @ObservationIgnored public let timeline: Timeline
     @ObservationIgnored public let service: any ImmichService
