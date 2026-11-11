@@ -94,7 +94,8 @@ final class ImageLoaderTests: XCTestCase {
 
     private func makeLoader(
         latency: Duration = .zero,
-        diskLimit: Int = 10_000
+        // Room for many placeholder JPEGs (a preview is tens of KB).
+        diskLimit: Int = 10_000_000
     ) -> (ImageLoader, MockImmichService, DiskImageCache) {
         let mock = MockImmichService(latency: latency)
         let disk = DiskImageCache(directory: directory, byteLimit: diskLimit)

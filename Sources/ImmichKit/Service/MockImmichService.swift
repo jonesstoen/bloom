@@ -2,8 +2,9 @@ import Foundation
 
 /// In-memory `ImmichService` for unit tests and SwiftUI previews. No network.
 ///
-/// Serves whatever `assets` it was given; filters and orders them the way the server does.
-/// Records requests and can simulate latency and failures.
+/// Serves either a `MockLibrary` (assets, albums, people, memories; see `MockImmichService.preview`)
+/// or a plain list of `assets`, filtered and ordered the way the server does.
+/// Thumbnails are placeholder JPEGs drawn in code. Records requests and can simulate latency and failures.
 public actor MockImmichService: ImmichService {
     public enum Request: Sendable, Hashable {
         case ping
@@ -13,7 +14,12 @@ public actor MockImmichService: ImmichService {
         case thumbnail(String, ImageSize)
     }
 
-    public var assets: [Asset]
+    public private(set) var assets: [Asset] {
+        didSet { assetsByID = Dictionary(assets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }) }
+    }
+    /// The fake library backing album and person filters; `nil` when created from plain `assets`.
+    public let library: MockLibrary?
+    private var assetsByID: [String: Asset]
     public var version: ServerVersion
     /// Delay applied to every request.
     public var latency: Duration
@@ -29,9 +35,27 @@ public actor MockImmichService: ImmichService {
         latency: Duration = .zero
     ) {
         self.assets = assets
+        self.assetsByID = Dictionary(assets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        self.library = nil
         self.version = version
         self.latency = latency
     }
+
+    /// A mock serving `library`: its assets, plus album and person timelines.
+    public init(
+        library: MockLibrary,
+        version: ServerVersion = ServerVersion(major: 3, minor: 4, patch: 0, featureLevel: 1),
+        latency: Duration = .zero
+    ) {
+        self.assets = library.assets
+        self.assetsByID = Dictionary(library.assets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        self.library = library
+        self.version = version
+        self.latency = latency
+    }
+
+    /// A mock over `MockLibrary.standard`, for SwiftUI previews.
+    public static var preview: MockImmichService { MockImmichService(library: .standard) }
 
     public func setAssets(_ assets: [Asset]) { self.assets = assets }
     public func setLatency(_ latency: Duration) { self.latency = latency }
@@ -78,14 +102,15 @@ public actor MockImmichService: ImmichService {
             .sorted { options.newestFirst ? $0.takenAt > $1.takenAt : $0.takenAt < $1.takenAt }
     }
 
-    /// Deterministic placeholder bytes per asset and size (not a decodable image yet; see task 9).
+    /// A placeholder JPEG drawn in code, shaped like the asset (square for unknown ids).
     public func thumbnail(assetID: String, size: ImageSize) async throws -> Data {
         try await begin(.thumbnail(assetID, size))
-        return Self.placeholderData(assetID: assetID, size: size)
+        return Self.placeholderData(assetID: assetID, size: size, aspectRatio: assetsByID[assetID]?.aspectRatio ?? 1)
     }
 
-    public static func placeholderData(assetID: String, size: ImageSize) -> Data {
-        Data("\(size.rawValue):\(assetID)".utf8)
+    /// The bytes `thumbnail(assetID:size:)` returns. Deterministic per asset id, size and aspect ratio.
+    public static func placeholderData(assetID: String, size: ImageSize, aspectRatio: Double = 1) -> Data {
+        PlaceholderImage.jpegData(assetID: assetID, size: size, aspectRatio: aspectRatio)
     }
 
     // MARK: Helpers
@@ -103,10 +128,13 @@ public actor MockImmichService: ImmichService {
         if let failure { throw failure }
     }
 
-    /// Mirrors the server filters. Album/person filters need data the mock does not model yet, so they match nothing.
+    /// Mirrors the server filters. Album/person filters use `library` and match nothing without one.
     private func filtered(_ options: TimelineOptions) -> [Asset] {
-        assets.filter { asset in
-            if options.albumId != nil || options.personId != nil { return false }
+        let albumIDs = options.albumId.map { Set(library?.albumAssetIDs[$0] ?? []) }
+        let personIDs = options.personId.map { Set(library?.personAssetIDs[$0] ?? []) }
+        return assets.filter { asset in
+            if let albumIDs, !albumIDs.contains(asset.id) { return false }
+            if let personIDs, !personIDs.contains(asset.id) { return false }
             if let isFavorite = options.isFavorite, asset.isFavorite != isFavorite { return false }
             if asset.isTrashed != (options.isTrashed ?? false) { return false }
             switch options.visibility {
