@@ -45,6 +45,9 @@ public final class LibraryGridModel {
 
     /// Title of the month in the middle of the screen ("November 2026"), for the header subtitle.
     public private(set) var visibleMonthTitle: String?
+    /// The dates of the photos on screen ("23–29 Oct 2026"), like the Library header in Photos.
+    public private(set) var visibleDateRangeTitle: String?
+    @ObservationIgnored private var screenRange: ClosedRange<Int>?
 
     @ObservationIgnored private var monthIndexByID: [String: Int] = [:]
     @ObservationIgnored private var monthIDByAssetID: [String: String] = [:]
@@ -174,9 +177,67 @@ public final class LibraryGridModel {
         }
     }
 
+
+    // MARK: Grid cells
+
+    /// Per month, cached when months change: its assets (empty until loaded), its first cell and
+    /// its number of cells. Cell lookups run on every scroll frame, so they must not rebuild
+    /// the asset lists (`TimelineMonth.assets` flattens the days on every call).
+    @ObservationIgnored private var monthAssets: [[Asset]] = []
+    @ObservationIgnored private var monthStarts: [Int] = []
+    @ObservationIgnored private var monthCellCounts: [Int] = []
+    @ObservationIgnored private var assetIndexInMonth: [String: Int] = [:]
+
     /// Number of cells in the grid: loaded assets, plus placeholders for months not loaded yet.
-    public var gridItemCount: Int {
-        months.reduce(0) { $0 + ($1.isLoaded ? $1.assets.count : $1.bucket.count) }
+    public private(set) var gridItemCount = 0
+
+    /// The month containing grid cell `index` and the position within it.
+    private func cell(at index: Int) -> (month: Int, offset: Int)? {
+        guard index >= 0, index < gridItemCount else { return nil }
+        var low = 0, high = monthStarts.count - 1
+        while low < high {
+            let mid = (low + high + 1) / 2
+            if monthStarts[mid] <= index { low = mid } else { high = mid - 1 }
+        }
+        // Skip empty months that start at the same cell.
+        var month = low
+        while month < monthCellCounts.count - 1 && monthCellCounts[month] == 0 { month += 1 }
+        return (month, index - monthStarts[month])
+    }
+
+    /// The scroll ID of grid cell `index`: the asset's id, or the placeholder slot of an unloaded
+    /// month, so the grid can scroll to any cell.
+    public func gridItemID(atGridIndex index: Int) -> AnyHashable? {
+        guard let (month, offset) = cell(at: index) else { return nil }
+        if months[month].isLoaded { return AnyHashable(monthAssets[month][offset].id) }
+        return AnyHashable(PlaceholderSlots.Slot(monthID: months[month].id, index: offset))
+    }
+
+    /// The asset in grid cell `index`, or `nil` when that cell is a placeholder.
+    public func assetID(atGridIndex index: Int) -> String? { gridAsset(atGridIndex: index)?.id }
+
+    /// The loaded asset in grid cell `index` (`nil` for placeholders).
+    public func gridAsset(atGridIndex index: Int) -> Asset? {
+        guard let (month, offset) = cell(at: index), months[month].isLoaded else { return nil }
+        return monthAssets[month][offset]
+    }
+
+    /// The grid cell of a loaded asset.
+    public func gridIndex(ofAsset assetID: String) -> Int? {
+        guard let monthID = monthIDByAssetID[assetID], let month = monthIndexByID[monthID],
+              let offset = assetIndexInMonth[assetID] else { return nil }
+        return monthStarts[month] + offset
+    }
+
+    private func rebuildCellIndex() {
+        monthAssets = months.map { $0.isLoaded ? $0.assets : [] }
+        monthCellCounts = months.indices.map { months[$0].isLoaded ? monthAssets[$0].count : months[$0].bucket.count }
+        var start = 0
+        monthStarts = monthCellCounts.map { count in defer { start += count }; return start }
+        gridItemCount = start
+        var positions: [String: Int] = [:]
+        for assets in monthAssets { for (i, asset) in assets.enumerated() { positions[asset.id] = i } }
+        assetIndexInMonth = positions
     }
 
     // MARK: Years and months
@@ -256,34 +317,7 @@ public final class LibraryGridModel {
         return month.bucket.count > 0 ? AnyHashable(PlaceholderSlots.Slot(monthID: id, index: 0)) : nil
     }
 
-    /// The scroll ID of grid cell `index`: the asset's id, or the placeholder slot of an unloaded
-    /// month, so the grid can scroll to any cell.
-    public func gridItemID(atGridIndex index: Int) -> AnyHashable? {
-        guard index >= 0 else { return nil }
-        var start = 0
-        for month in months {
-            let count = month.isLoaded ? month.assets.count : month.bucket.count
-            if index < start + count {
-                return month.isLoaded
-                    ? AnyHashable(month.assets[index - start].id)
-                    : AnyHashable(PlaceholderSlots.Slot(monthID: month.id, index: index - start))
-            }
-            start += count
-        }
-        return nil
-    }
 
-    /// The asset in grid cell `index`, or `nil` when that cell is a placeholder.
-    public func assetID(atGridIndex index: Int) -> String? {
-        guard index >= 0 else { return nil }
-        var start = 0
-        for month in months {
-            let count = month.isLoaded ? month.assets.count : month.bucket.count
-            if index < start + count { return month.isLoaded ? month.assets[index - start].id : nil }
-            start += count
-        }
-        return nil
-    }
 
     /// Whether every month's assets are loaded (the Months view needs their final heights).
     public var allMonthsLoaded: Bool { !months.isEmpty && months.allSatisfy(\.isLoaded) }
@@ -325,18 +359,6 @@ public final class LibraryGridModel {
     public private(set) var gridShift: GridShift?
     @ObservationIgnored private var shiftCounter = 0
 
-    /// The grid cell of a loaded asset.
-    public func gridIndex(ofAsset assetID: String) -> Int? {
-        guard let monthID = monthIDByAssetID[assetID] else { return nil }
-        var start = 0
-        for month in months {
-            if month.id == monthID {
-                return month.assets.firstIndex { $0.id == assetID }.map { start + $0 }
-            }
-            start += month.isLoaded ? month.assets.count : month.bucket.count
-        }
-        return nil
-    }
 
     /// The month (bucket id) containing a loaded asset.
     public func monthID(ofAsset assetID: String) -> String? { monthIDByAssetID[assetID] }
@@ -366,6 +388,8 @@ public final class LibraryGridModel {
         stopPrefetching()
         loadingMonths = []
         visibleMonthTitle = nil
+        visibleDateRangeTitle = nil
+        screenRange = nil
         apply([])
         phase = .idle
         await load()
@@ -409,6 +433,37 @@ public final class LibraryGridModel {
         updates.yield(.visible(range))
     }
 
+    /// The grid cells on screen changed (computed by the grid from its scroll position).
+    public func screenRangeChanged(_ range: ClosedRange<Int>) {
+        guard range != screenRange else { return }
+        screenRange = range
+        updateDateRangeTitle()
+    }
+
+    private func updateDateRangeTitle() {
+        guard let range = screenRange else { return }
+        // Grid order is chronological: the first and last loaded photos on screen bound it.
+        let first = range.lazy.compactMap { self.gridAsset(atGridIndex: $0) }.first
+        let last = range.reversed().lazy.compactMap { self.gridAsset(atGridIndex: $0) }.first
+        guard let first, let last else { return }
+        let dates = [first.localDateTime, last.localDateTime]
+        let title = Self.dateRangeTitle(from: dates.min()!, to: dates.max()!)
+        if title != visibleDateRangeTitle { visibleDateRangeTitle = title }
+    }
+
+    /// "23–29 Oct 2026", "29 Sep – 4 Oct 2026" or "4 Oct 2026", in the user's language.
+    public nonisolated static func dateRangeTitle(from start: Date, to end: Date, locale: Locale = .current) -> String {
+        let calendar = Asset.localCalendar
+        if calendar.isDate(start, inSameDayAs: end) {
+            return start.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, locale: locale,
+                                                    calendar: calendar, timeZone: .gmt))
+        }
+        let style = Date.IntervalFormatStyle(date: .abbreviated, time: .omitted, locale: locale,
+                                             calendar: calendar, timeZone: .gmt)
+        return (start..<end).formatted(style)
+    }
+
+
     private func updateVisibleMonthTitle() {
         guard let id = visibleCenterID, let monthID = monthIDByAssetID[id],
               let index = monthIndexByID[monthID] else { return }
@@ -424,6 +479,7 @@ public final class LibraryGridModel {
         let oldIndex = anchor.flatMap(gridIndex(ofAsset:))
         months = newMonths
         monthIndexByID = Dictionary(newMonths.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
+        rebuildCellIndex()
         monthIDByAssetID = Dictionary(
             newMonths.flatMap { month in month.assets.map { ($0.id, month.id) } },
             uniquingKeysWith: { first, _ in first }
@@ -433,6 +489,7 @@ public final class LibraryGridModel {
         flatAssetIDs = ids
         assetIndexByID = Dictionary(ids.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
         updates.yield(.assets(ids))
+        updateDateRangeTitle()
         if let anchor, let oldIndex, let newIndex = gridIndex(ofAsset: anchor), newIndex != oldIndex {
             shiftCounter += 1
             gridShift = GridShift(anchorID: anchor, oldIndex: oldIndex, newIndex: newIndex, id: shiftCounter)

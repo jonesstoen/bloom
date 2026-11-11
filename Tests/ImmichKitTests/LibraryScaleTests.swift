@@ -180,4 +180,64 @@ final class LibraryScaleTests: XCTestCase {
         XCTAssertNil(model.gridShift)
         model.stopPrefetching()
     }
+
+    // MARK: Header date range
+
+    private func utcDate(_ y: Int, _ m: Int, _ d: Int) -> Date {
+        Asset.localCalendar.date(from: DateComponents(year: y, month: m, day: d, hour: 12))!
+    }
+
+    func testDateRangeTitleLikePhotos() {
+        let en = Locale(identifier: "en_US"), nb = Locale(identifier: "nb_NO")
+        let sameMonth = LibraryGridModel.dateRangeTitle(from: utcDate(2026, 10, 23), to: utcDate(2026, 10, 29), locale: en)
+        XCTAssertTrue(sameMonth.contains("23") && sameMonth.contains("29") && sameMonth.contains("Oct") && sameMonth.contains("2026"), sameMonth)
+        XCTAssertEqual(sameMonth.components(separatedBy: "2026").count, 2, "year once: \(sameMonth)")
+        let norwegian = LibraryGridModel.dateRangeTitle(from: utcDate(2026, 10, 23), to: utcDate(2026, 10, 29), locale: nb)
+        XCTAssertTrue(norwegian.contains("23") && norwegian.contains("29") && norwegian.lowercased().contains("okt"), norwegian)
+        let oneDay = LibraryGridModel.dateRangeTitle(from: utcDate(2026, 10, 4), to: utcDate(2026, 10, 4).addingTimeInterval(3600), locale: en)
+        XCTAssertTrue(oneDay.contains("4") && !oneDay.contains("–") && !oneDay.contains("-"), oneDay)
+        let acrossYears = LibraryGridModel.dateRangeTitle(from: utcDate(2025, 12, 30), to: utcDate(2026, 1, 2), locale: en)
+        XCTAssertTrue(acrossYears.contains("2025") && acrossYears.contains("2026"), acrossYears)
+    }
+
+    func testHeaderRangeFollowsTheCellsOnScreen() async throws {
+        let model = await loadedModel()
+        XCTAssertNil(model.visibleDateRangeTitle)
+        let last = model.gridItemCount - 1
+        model.screenRangeChanged((last - 9)...last)
+        let first = try XCTUnwrap(model.gridAsset(atGridIndex: last - 9))
+        let newest = try XCTUnwrap(model.gridAsset(atGridIndex: last))
+        let expected = LibraryGridModel.dateRangeTitle(from: min(first.localDateTime, newest.localDateTime),
+                                                       to: max(first.localDateTime, newest.localDateTime))
+        XCTAssertEqual(model.visibleDateRangeTitle, expected)
+        // Only placeholders on screen: keep the last title rather than showing nothing.
+        model.screenRangeChanged(0...5)
+        XCTAssertEqual(model.visibleDateRangeTitle, expected)
+    }
+
+    func testCellLookupsMatchMonthsIncludingEmptyOnes() async throws {
+        let mock = MockImmichService(library: .standard)
+        let model = await loadedModel(mock)
+        await model.loadAllMonths()
+        var index = 0
+        for month in model.months {
+            for asset in month.assets {
+                XCTAssertEqual(model.gridIndex(ofAsset: asset.id), index)
+                XCTAssertEqual(model.gridAsset(atGridIndex: index)?.id, asset.id)
+                index += 1
+            }
+        }
+        XCTAssertEqual(model.gridItemCount, index)
+        XCTAssertNil(model.gridAsset(atGridIndex: index))
+        // A month with a count of 0 (here: bucket counts lowered to 0 while unloaded) takes no cells.
+        await mock.setBucketCountOffset(-1_000)
+        var options = model.options
+        options.isFavorite = true
+        await model.setOptions(options)
+        XCTAssertEqual(model.gridItemCount, model.months.filter(\.isLoaded).reduce(0) { $0 + $1.assets.count })
+        if model.gridItemCount > 0 {
+            XCTAssertNotNil(model.gridItemID(atGridIndex: 0))
+            XCTAssertNotNil(model.gridItemID(atGridIndex: model.gridItemCount - 1))
+        }
+    }
 }

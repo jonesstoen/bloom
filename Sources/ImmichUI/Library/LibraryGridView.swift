@@ -215,7 +215,7 @@ public struct LibraryGridView: View {
         case .all where model.options.isFavorite == true: "Favorites"
         // Grouped by upload date, the month on screen says when photos were added, not taken.
         case .all where model.options.sortsByDateAdded: "Recently Added"
-        case .all: model.visibleMonthTitle ?? model.footerText
+        case .all: model.visibleDateRangeTitle ?? model.visibleMonthTitle ?? model.footerText
         case .months: model.footerText
         case .years:
             if let first = model.years.first?.year, let last = model.years.last?.year, first != last {
@@ -331,6 +331,7 @@ public struct LibraryGridView: View {
             let firstLayout = scrollMetrics.geometry == nil
             scrollMetrics.geometry = geometry
             scrollMetrics.pendingOffset = nil
+            reportScreenRange(geometry)
             if firstLayout && !scrollMetrics.didOpen && model.pendingScrollAssetID == nil && model.pendingScrollMonthID == nil {
                 scrollMetrics.didOpen = true
                 openAtNewest(proxy, geometry: geometry)
@@ -365,6 +366,23 @@ public struct LibraryGridView: View {
     }
 
     @State private var densityProxy: ScrollViewProxy?
+
+    /// Tells the model which cells are on screen (between the large title and the tab bar),
+    /// for the date range in the header. Computed from the uniform grid, so it excludes the
+    /// rows SwiftUI builds just outside the screen.
+    private func reportScreenRange(_ geometry: ScrollGeometry) {
+        let columns = model.columnCount
+        let pitch = GridPinchAnchor.cellSize(width: geometry.containerSize.width, spacing: Self.spacing,
+                                             columns: columns) + Self.spacing
+        guard pitch > 0, model.gridItemCount > 0 else { return }
+        let top = geometry.contentOffset.y + geometry.contentInsets.top
+        let bottom = top + geometry.containerSize.height
+        let firstRow = max(0, Int((top / pitch).rounded(.down)))
+        let lastRow = max(firstRow, Int(((bottom - 1) / pitch).rounded(.down)))
+        let lower = min(firstRow * columns, model.gridItemCount - 1)
+        let upper = min(lastRow * columns + columns - 1, model.gridItemCount - 1)
+        model.screenRangeChanged(lower...upper)
+    }
 
     /// Opens at the newest photos. `defaultScrollAnchor` alone left a real 13 000-photo library
     /// in May 2024 on an iPhone, so the grid also scrolls to its newest cell explicitly.
