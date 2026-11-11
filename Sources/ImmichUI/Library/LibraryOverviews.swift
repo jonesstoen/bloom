@@ -58,6 +58,18 @@ struct MonthsOverview: View {
     @State private var didScroll = false
 
     var body: some View {
+        if model.allMonthsLoaded {
+            mosaic
+        } else {
+            // Every month is loaded before showing the mosaic: months loading while you look
+            // would change heights and move the month you jumped to.
+            ProgressView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .task { await model.loadAllMonths() }
+        }
+    }
+
+    private var mosaic: some View {
         GeometryReader { geometry in
             let width = max(0, geometry.size.width - 2 * MonthMosaic.margin)
             ScrollViewReader { proxy in
@@ -79,7 +91,9 @@ struct MonthsOverview: View {
                     .padding(.bottom, 90)
                 }
                 .contentMargins(.top, topMargin, for: .scrollContent)
-                .defaultScrollAnchor(model.newestFirst ? .top : .bottom, for: .initialOffset)
+                // Open at the newest months, unless jumping to a month: then nothing may
+                // re-anchor the view after the jump.
+                .defaultScrollAnchor(scrollTarget == nil ? (model.newestFirst ? .top : .bottom) : nil, for: .initialOffset)
                 // Scroll once the stack has laid out (earlier, the initial bottom anchor wins),
                 // and once more after neighbouring months have settled to their real height.
                 .onScrollGeometryChange(for: Bool.self, of: { $0.contentSize.height > 0 }) { _, laidOut in

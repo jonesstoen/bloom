@@ -133,4 +133,22 @@ final class LibraryScaleTests: XCTestCase {
         XCTAssertNil(model.monthID(ofAsset: "missing"))
         await model.loadMonths(around: "missing", radius: 2)
     }
+
+    func testLoadAllMonthsOnceForTheMonthsView() async throws {
+        let mock = MockImmichService(library: .standard)
+        let model = await loadedModel(mock)
+        XCTAssertFalse(model.allMonthsLoaded)
+        await model.loadAllMonths()
+        XCTAssertTrue(model.allMonthsLoaded)
+        XCTAssertEqual(model.gridItemCount, model.months.reduce(0) { $0 + $1.assets.count })
+        let requests = await mock.requests.count
+        await model.loadAllMonths()
+        let again = await mock.requests.count
+        XCTAssertEqual(again, requests, "already loaded: no requests")
+        // Months loaded by a replaced timeline are not applied.
+        var options = model.options
+        options.isFavorite = true
+        await model.setOptions(options)
+        XCTAssertTrue(model.months.filter(\.isLoaded).flatMap(\.assets).allSatisfy(\.isFavorite))
+    }
 }

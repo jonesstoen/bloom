@@ -284,6 +284,33 @@ public final class LibraryGridModel {
         return nil
     }
 
+    /// Whether every month's assets are loaded (the Months view needs their final heights).
+    public var allMonthsLoaded: Bool { !months.isEmpty && months.allSatisfy(\.isLoaded) }
+
+    /// Loads every month not loaded yet, a few at a time, and applies them once at the end
+    /// (applying after each month would rebuild the grid ~100 times). Cached by the timeline,
+    /// so this happens once per session.
+    public func loadAllMonths() async {
+        let timeline = self.timeline
+        let ids = months.filter { !$0.isLoaded && !loadingMonths.contains($0.id) }.map(\.id)
+        guard !ids.isEmpty else { return }
+        loadingMonths.formUnion(ids)
+        defer { loadingMonths.subtract(ids) }
+        await withTaskGroup(of: Void.self) { group in
+            var next = 0
+            func add() {
+                guard next < ids.count else { return }
+                let id = ids[next]
+                next += 1
+                group.addTask { try? await timeline.loadMonth(id) }
+            }
+            for _ in 0..<6 { add() }
+            while await group.next() != nil { add() }
+        }
+        guard timeline === self.timeline else { return }
+        apply(await timeline.months)
+    }
+
     /// The month (bucket id) containing a loaded asset.
     public func monthID(ofAsset assetID: String) -> String? { monthIDByAssetID[assetID] }
 

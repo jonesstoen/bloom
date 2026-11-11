@@ -172,13 +172,8 @@ public struct LibraryGridView: View {
                     .ignoresSafeArea(edges: .top)
                 case .years:
                     YearsOverview(model: model, topMargin: 96) { _, coverMonth in
-                        Task {
-                            // Load the month and its neighbours first: Months scrolls to it, and
-                            // months loading around it afterwards would change heights and move it.
-                            if let coverMonth { await model.loadMonths(around: coverMonth, radius: 2) }
-                            monthsScrollTarget = coverMonth
-                            withAnimation(.snappy(duration: 0.25)) { scale = .months }
-                        }
+                        monthsScrollTarget = coverMonth
+                        withAnimation(.snappy(duration: 0.25)) { scale = .months }
                     }
                     .ignoresSafeArea(edges: .top)
                 }
