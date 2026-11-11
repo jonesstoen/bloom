@@ -163,6 +163,23 @@ public final class LibraryGridModel {
         }
     }
 
+    /// Number of cells in the grid: loaded assets, plus placeholders for months not loaded yet.
+    public var gridItemCount: Int {
+        months.reduce(0) { $0 + ($1.isLoaded ? $1.assets.count : $1.bucket.count) }
+    }
+
+    /// The asset in grid cell `index`, or `nil` when that cell is a placeholder.
+    public func assetID(atGridIndex index: Int) -> String? {
+        guard index >= 0 else { return nil }
+        var start = 0
+        for month in months {
+            let count = month.isLoaded ? month.assets.count : month.bucket.count
+            if index < start + count { return month.isLoaded ? month.assets[index - start].id : nil }
+            start += count
+        }
+        return nil
+    }
+
     /// The viewer moved to `assetID`: make sure its month (and neighbours) are loaded.
     public func assetShownInViewer(_ assetID: String) {
         if let monthID = monthIDByAssetID[assetID] { monthAppeared(monthID) }

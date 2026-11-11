@@ -1,4 +1,5 @@
 import XCTest
+import ImmichKit
 @testable import ImmichUI
 
 final class GridDensityTests: XCTestCase {
@@ -69,5 +70,40 @@ final class GridPinchAnchorTests: XCTestCase {
                                             from: 3, to: 5, itemCount: 10))
         XCTAssertNil(GridPinchAnchor.anchor(offset: 0, focalX: 0, focalY: 0, width: 0, spacing: spacing,
                                             from: 3, to: 5, itemCount: 10))
+    }
+}
+
+final class GridScrollAnchorTests: XCTestCase {
+    /// Values measured from SwiftUI's `scrollTo(_:anchor:)` with a 96 pt top and 40 pt bottom
+    /// margin in a 600 pt tall scroll view (visible height 464) and a 50 pt item.
+    func testUnitAnchorMatchesHowScrollToPlacesItems() {
+        for (top, expected) in [(96.0, 0.0), (199.5, 0.25), (303.0, 0.5), (510.0, 1.0)] {
+            XCTAssertEqual(GridPinchAnchor.unitAnchorY(itemTop: top, itemHeight: 50, insetTop: 96, visibleHeight: 464),
+                           expected, accuracy: 0.000_1)
+        }
+        // Outside the visible area it clamps; degenerate sizes fall back to the centre.
+        XCTAssertEqual(GridPinchAnchor.unitAnchorY(itemTop: 0, itemHeight: 50, insetTop: 96, visibleHeight: 464), 0)
+        XCTAssertEqual(GridPinchAnchor.unitAnchorY(itemTop: 900, itemHeight: 50, insetTop: 96, visibleHeight: 464), 1)
+        XCTAssertEqual(GridPinchAnchor.unitAnchorY(itemTop: 10, itemHeight: 500, insetTop: 0, visibleHeight: 400), 0.5)
+    }
+}
+
+@MainActor
+final class GridIndexTests: XCTestCase {
+    func testGridIndexMapsToAssetsAndPlaceholders() async throws {
+        let mock = MockImmichService.preview
+        let model = LibraryGridModel(service: mock, loader: ImageLoader(service: mock, disk: nil))
+        await model.load()
+        let total = model.gridItemCount
+        XCTAssertEqual(total, model.months.reduce(0) { $0 + ($1.isLoaded ? $1.assets.count : $1.bucket.count) })
+        // The newest months are loaded: the last cells are their assets, in order.
+        let last = try XCTUnwrap(model.months.last)
+        XCTAssertEqual(model.assetID(atGridIndex: total - 1), last.assets.last?.id)
+        XCTAssertEqual(model.assetID(atGridIndex: total - last.assets.count), last.assets.first?.id)
+        // The oldest month is not loaded yet: its cells are placeholders.
+        XCTAssertFalse(model.months[0].isLoaded)
+        XCTAssertNil(model.assetID(atGridIndex: 0))
+        XCTAssertNil(model.assetID(atGridIndex: total))
+        XCTAssertNil(model.assetID(atGridIndex: -1))
     }
 }
