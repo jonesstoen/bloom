@@ -1,3 +1,11 @@
 .build/
 logs/
 .swiftpm/
+
+# Local agent notes (not part of the package)
+CLAUDE.local.md
+AGENTS.md
+HANDOFF.md
+
+# macOS
+.DS_Store
