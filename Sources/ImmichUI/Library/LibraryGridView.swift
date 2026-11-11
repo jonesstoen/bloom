@@ -314,6 +314,22 @@ public struct LibraryGridView: View {
     }
 }
 
+/// Placeholder cells of one unloaded month, identified by month and position without
+/// allocating an array per month.
+struct PlaceholderSlots: RandomAccessCollection {
+    struct Slot: Identifiable, Hashable {
+        let monthID: String
+        let index: Int
+        var id: Slot { self }
+    }
+
+    let monthID: String
+    let count: Int
+    var startIndex: Int { 0 }
+    var endIndex: Int { count }
+    subscript(position: Int) -> Slot { Slot(monthID: monthID, index: position) }
+}
+
 private final class ScrollMetrics {
     var geometry: ScrollGeometry?
 }
@@ -368,7 +384,9 @@ private struct GridCells: View, Equatable {
                 .onDisappear { model.assetDisappeared(asset.id) }
             }
         } else {
-            ForEach(0..<month.bucket.count, id: \.self) { _ in
+            // IDs must be unique across the whole grid: plain 0..<count would repeat in every
+            // unloaded month, which LazyVGrid can't lay out (it rendered black).
+            ForEach(PlaceholderSlots(monthID: month.id, count: month.bucket.count)) { _ in
                 PlaceholderCell()
                     .onAppear { model.monthAppeared(month.id) }
             }

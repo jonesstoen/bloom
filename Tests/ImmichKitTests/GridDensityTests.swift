@@ -107,3 +107,20 @@ final class GridIndexTests: XCTestCase {
         XCTAssertNil(model.assetID(atGridIndex: -1))
     }
 }
+
+final class PlaceholderSlotsTests: XCTestCase {
+    /// Every cell in the one continuous grid needs a unique ID, also placeholders of different
+    /// months (repeated IDs made LazyVGrid render the library black).
+    func testPlaceholderIDsAreUniqueAcrossMonths() {
+        let months = MockLibrary.standard.assets.reduce(into: [String: Int]()) { counts, asset in
+            let components = Asset.localCalendar.dateComponents([.year, .month], from: asset.localDateTime)
+            counts["\(components.year!)-\(components.month!)", default: 0] += 1
+        }
+        let ids = months.flatMap { PlaceholderSlots(monthID: $0.key, count: $0.value).map(\.id) }
+        XCTAssertEqual(ids.count, MockLibrary.standard.assets.count)
+        XCTAssertEqual(Set(ids).count, ids.count)
+        let slots = PlaceholderSlots(monthID: "2026-01", count: 3)
+        XCTAssertEqual(slots.map(\.index), [0, 1, 2])
+        XCTAssertTrue(PlaceholderSlots(monthID: "x", count: 0).isEmpty)
+    }
+}
