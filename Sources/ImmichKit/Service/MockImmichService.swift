@@ -20,7 +20,15 @@ public actor MockImmichService: ImmichService {
         case smartSearch(String)
         case metadataSearch
         case searchSuggestions(SearchSuggestionKind)
+        case asset(String)
+        case original(String)
+        case mediaRequest(MediaRequest.Kind, String)
+        case mapMarkers
+        case memories
     }
+
+    /// Base URL of the media requests the mock hands out. Nothing answers there.
+    public static let mediaBaseURL = URL(string: "https://mock.immich.invalid/api")!
 
     public private(set) var assets: [Asset] {
         didSet { assetsByID = Dictionary(assets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }) }
@@ -244,6 +252,65 @@ public actor MockImmichService: ImmichService {
             return value?.nilIfBlank
         }
         return Set(values).sorted()
+    }
+
+    // MARK: Asset detail
+
+    /// The asset with its EXIF; HTTP 400 for an unknown id, as the server answers.
+    public func asset(id: String) async throws -> Asset {
+        try await begin(.asset(id))
+        guard let asset = assetsByID[id] else { throw ImmichServiceError.unexpectedStatus(400) }
+        return asset
+    }
+
+    /// A large placeholder JPEG (the same bytes as the preview) for known assets.
+    public func original(assetID: String) async throws -> Data {
+        try await begin(.original(assetID))
+        guard let asset = assetsByID[assetID] else { throw ImmichServiceError.unexpectedStatus(400) }
+        return Self.placeholderData(assetID: assetID, size: .preview, aspectRatio: asset.aspectRatio)
+    }
+
+    /// A request under `mediaBaseURL` without headers. HTTP 400 for unknown ids; video playback
+    /// works for videos and for the motion part of Live Photos.
+    public func mediaRequest(_ kind: MediaRequest.Kind, assetID: String) async throws -> MediaRequest {
+        try await begin(.mediaRequest(kind, assetID))
+        let isMotionPart = assets.contains { $0.livePhotoVideoId == assetID }
+        guard assetsByID[assetID] != nil || isMotionPart else { throw ImmichServiceError.unexpectedStatus(400) }
+        let base = Self.mediaBaseURL.appendingPathComponent("assets").appendingPathComponent(assetID)
+        switch kind {
+        case .original:
+            return MediaRequest(kind: kind, assetID: assetID, url: base.appendingPathComponent("original"))
+        case .videoPlayback:
+            guard assetsByID[assetID]?.isVideo == true || isMotionPart else {
+                throw ImmichServiceError.unexpectedStatus(400)
+            }
+            return MediaRequest(
+                kind: kind, assetID: assetID,
+                url: base.appendingPathComponent("video").appendingPathComponent("playback")
+            )
+        }
+    }
+
+    // MARK: Map and memories
+
+    /// Markers for the geotagged assets passing `options`, in asset order.
+    public func mapMarkers(_ options: MapMarkerOptions) async throws -> [MapMarker] {
+        try await begin(.mapMarkers)
+        return assets.compactMap { asset in
+            guard options.matches(asset), let exif = asset.exif,
+                  let latitude = exif.latitude, let longitude = exif.longitude
+            else { return nil }
+            return MapMarker(id: asset.id, latitude: latitude, longitude: longitude,
+                             city: exif.city, state: exif.state, country: exif.country)
+        }
+    }
+
+    /// The library's memories matching `query` (shown on its day), newest first. Empty without a library.
+    public func memories(_ query: MemoryQuery) async throws -> [Memory] {
+        try await begin(.memories)
+        return (library?.memories ?? [])
+            .filter(query.matches)
+            .sorted { $0.memoryAt > $1.memoryAt }
     }
 
     private func searchable(_ filters: SearchFilters) -> [Asset] {

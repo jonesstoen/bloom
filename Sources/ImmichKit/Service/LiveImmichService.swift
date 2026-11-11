@@ -18,7 +18,7 @@ public struct LiveImmichService: ImmichService {
             serverURL: credentials.apiBaseURL,
             configuration: Configuration(dateTranscoder: ImmichDateTranscoder()),
             transport: transport,
-            middlewares: [APIKeyMiddleware(apiKey: credentials.apiKey)]
+            middlewares: [APIKeyMiddleware(apiKey: credentials.apiKey), BinaryContentTypeMiddleware()]
         )
     }
 

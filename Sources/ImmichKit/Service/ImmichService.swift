@@ -55,6 +55,49 @@ public protocol ImmichService: Sendable {
 
     /// `GET /search/suggestions`: known values for a filter field (server order, without empty or duplicate values).
     func searchSuggestions(_ kind: SearchSuggestionKind, context: SearchSuggestionContext) async throws -> [String]
+
+    // MARK: Asset detail
+
+    /// `GET /assets/{id}`: the full asset, including `exif`.
+    func asset(id: String) async throws -> Asset
+
+    /// `GET /assets/{id}/original`: the original file's bytes. Loads the whole file into memory,
+    /// so for videos and large files prefer `mediaRequest(.original, assetID:)`.
+    func original(assetID: String) async throws -> Data
+
+    /// An authenticated request for the original file or the video stream, e.g. for `AVPlayer`.
+    /// Does not contact the server.
+    func mediaRequest(_ kind: MediaRequest.Kind, assetID: String) async throws -> MediaRequest
+
+    // MARK: Map and memories
+
+    /// `GET /map/markers`: one marker per geotagged asset.
+    func mapMarkers(_ options: MapMarkerOptions) async throws -> [MapMarker]
+
+    /// `GET /memories`: memories matching `query`, newest first.
+    func memories(_ query: MemoryQuery) async throws -> [Memory]
+}
+
+extension ImmichService {
+    /// Markers for the main timeline (not archived).
+    public func mapMarkers() async throws -> [MapMarker] {
+        try await mapMarkers(MapMarkerOptions())
+    }
+
+    /// The memories to show on `date`'s local day ("On this day" and birthdays), newest year first.
+    public func memories(on date: Date = Date(), calendar: Calendar = .current) async throws -> [Memory] {
+        try await memories(.shown(on: date, calendar: calendar))
+            .filter { !$0.assets.isEmpty }
+            .sorted { $0.year > $1.year }
+    }
+
+    /// The video request for `asset`: its own stream for a video, the motion part for a Live Photo,
+    /// `nil` for a still image.
+    public func playbackRequest(for asset: Asset) async throws -> MediaRequest? {
+        if asset.isVideo { return try await mediaRequest(.videoPlayback, assetID: asset.id) }
+        if let motionID = asset.livePhotoVideoId { return try await mediaRequest(.videoPlayback, assetID: motionID) }
+        return nil
+    }
 }
 
 extension ImmichService {
