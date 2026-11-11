@@ -17,6 +17,9 @@ public actor MockImmichService: ImmichService {
         case people
         case person(String)
         case personThumbnail(String)
+        case smartSearch(String)
+        case metadataSearch
+        case searchSuggestions(SearchSuggestionKind)
     }
 
     public private(set) var assets: [Asset] {
@@ -163,6 +166,130 @@ public actor MockImmichService: ImmichService {
     /// The bytes `personThumbnail(personID:)` returns.
     public static func personPlaceholderData(personID: String) -> Data {
         PlaceholderImage.jpegData(assetID: "person-" + personID, size: .thumbnail, aspectRatio: 1)
+    }
+
+    // MARK: Search
+
+    /// Stand-in for CLIP: an asset matches when a query word occurs in its place, camera, kind
+    /// (`photo`/`video`/`live`/`favorite`), file name, album names or people's names. Ranked by the
+    /// number of matching words, then newest first. Pages by number, like the server's smart search.
+    public func smartSearch(_ query: SmartSearchQuery, page: SearchPageToken?, size: Int) async throws -> SearchResults {
+        try await begin(.smartSearch(query.text))
+        let words = Self.words(query.text)
+        guard !words.isEmpty else { throw ImmichServiceError.unexpectedStatus(400) }
+        let index = searchIndex()
+        let scored = searchable(query.filters).compactMap { asset -> (Asset, Int)? in
+            let haystack = index[asset.id] ?? ""
+            let score = words.filter { haystack.contains($0) }.count
+            return score > 0 ? (asset, score) : nil
+        }
+        let ranked = scored.sorted { lhs, rhs in
+            if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
+            if lhs.0.takenAt != rhs.0.takenAt { return lhs.0.takenAt > rhs.0.takenAt }
+            return lhs.0.id < rhs.0.id
+        }.map(\.0)
+        let number: Int
+        switch page {
+        case .page(let value)?: number = max(1, value)
+        case .cursor?: throw ImmichServiceError.unexpectedStatus(400)
+        case nil: number = 1
+        }
+        let (slice, hasMore) = Self.slice(ranked, offset: (number - 1) * Self.clampedSize(size), size: size)
+        return SearchResults(assets: slice, total: ranked.count, next: hasMore ? .page(number + 1) : nil)
+    }
+
+    /// Filters plus case-insensitive substring matches on file name and description, ordered by date.
+    /// Pages by cursor (the offset as a string), like servers from v3.2.0; page numbers work too.
+    public func metadataSearch(_ query: MetadataSearchQuery, page: SearchPageToken?, size: Int) async throws -> SearchResults {
+        try await begin(.metadataSearch)
+        let matches = searchable(query.filters)
+            .filter { asset in
+                if let name = query.originalFileName?.nilIfBlank,
+                   asset.originalFileName?.localizedCaseInsensitiveContains(name) != true { return false }
+                if let text = query.description?.nilIfBlank,
+                   asset.exif?.description?.localizedCaseInsensitiveContains(text) != true { return false }
+                return true
+            }
+            .sorted { query.newestFirst ? $0.takenAt > $1.takenAt : $0.takenAt < $1.takenAt }
+        let size = Self.clampedSize(size)
+        let offset: Int
+        switch page {
+        case .cursor(let cursor)?:
+            guard let value = Int(cursor), value >= 0 else { throw ImmichServiceError.unexpectedStatus(400) }
+            offset = value
+        case .page(let number)?: offset = (max(1, number) - 1) * size
+        case nil: offset = 0
+        }
+        let (slice, hasMore) = Self.slice(matches, offset: offset, size: size)
+        return SearchResults(assets: slice, total: matches.count, next: hasMore ? .cursor(String(offset + size)) : nil)
+    }
+
+    /// Distinct EXIF values from the assets, sorted, narrowed by `context`.
+    public func searchSuggestions(_ kind: SearchSuggestionKind, context: SearchSuggestionContext) async throws -> [String] {
+        try await begin(.searchSuggestions(kind))
+        let values = assets.compactMap { asset -> String? in
+            guard !asset.isTrashed, let exif = asset.exif else { return nil }
+            if let country = context.country, exif.country != country { return nil }
+            if let state = context.state, exif.state != state { return nil }
+            if let make = context.make, exif.make != make { return nil }
+            if let model = context.model, exif.model != model { return nil }
+            let value: String? = switch kind {
+            case .country: exif.country
+            case .state: exif.state
+            case .city: exif.city
+            case .cameraMake: exif.make
+            case .cameraModel: exif.model
+            case .lensModel: exif.lensModel
+            }
+            return value?.nilIfBlank
+        }
+        return Set(values).sorted()
+    }
+
+    private func searchable(_ filters: SearchFilters) -> [Asset] {
+        let albums = (library?.albumAssetIDs ?? [:]).mapValues(Set.init)
+        let people = (library?.personAssetIDs ?? [:]).mapValues(Set.init)
+        return assets.filter { filters.matches($0, albumAssetIDs: albums, personAssetIDs: people) }
+    }
+
+    /// Lower-cased searchable text per asset id.
+    private func searchIndex() -> [String: String] {
+        var extra: [String: [String]] = [:]
+        if let library {
+            for album in library.albums {
+                for id in library.albumAssetIDs[album.id] ?? [] { extra[id, default: []].append(album.name) }
+            }
+            for person in library.people where person.isNamed {
+                for id in library.personAssetIDs[person.id] ?? [] { extra[id, default: []].append(person.name) }
+            }
+        }
+        var index: [String: String] = [:]
+        for asset in assets {
+            let exif = asset.exif
+            var parts: [String?] = [exif?.city, exif?.state, exif?.country, exif?.make, exif?.model,
+                                    exif?.lensModel, exif?.description, asset.originalFileName]
+            parts.append(asset.isVideo ? "video movie" : "photo picture image")
+            if asset.isLivePhoto { parts.append("live") }
+            if asset.isFavorite { parts.append("favorite") }
+            parts += (extra[asset.id] ?? []).map(Optional.some)
+            index[asset.id] = parts.compactMap { $0?.lowercased() }.joined(separator: " ")
+        }
+        return index
+    }
+
+    static func words(_ text: String) -> [String] {
+        text.lowercased()
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+    }
+
+    private static func clampedSize(_ size: Int) -> Int { max(1, min(size, 1000)) }
+
+    private static func slice(_ items: [Asset], offset: Int, size: Int) -> ([Asset], Bool) {
+        let size = clampedSize(size)
+        guard offset < items.count else { return ([], false) }
+        let end = min(items.count, offset + size)
+        return (Array(items[offset..<end]), end < items.count)
     }
 
     // MARK: Helpers

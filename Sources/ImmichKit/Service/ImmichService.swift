@@ -41,6 +41,40 @@ public protocol ImmichService: Sendable {
 
     /// `GET /people/{id}/thumbnail`: encoded image bytes of the person's face crop.
     func personThumbnail(personID: String) async throws -> Data
+
+    // MARK: Search
+
+    /// `POST /search/smart`: assets ranked by CLIP similarity to `query.text`, best match first.
+    /// - Parameters:
+    ///   - page: `nil` for the first page, then the previous result's `next`.
+    ///   - size: results per page (server maximum 1000).
+    func smartSearch(_ query: SmartSearchQuery, page: SearchPageToken?, size: Int) async throws -> SearchResults
+
+    /// `POST /search/metadata`: assets matching the filters (date range, place, camera, ...), by date.
+    func metadataSearch(_ query: MetadataSearchQuery, page: SearchPageToken?, size: Int) async throws -> SearchResults
+
+    /// `GET /search/suggestions`: known values for a filter field (server order, without empty or duplicate values).
+    func searchSuggestions(_ kind: SearchSuggestionKind, context: SearchSuggestionContext) async throws -> [String]
+}
+
+extension ImmichService {
+    /// Default page size for searches.
+    public static var searchPageSize: Int { 100 }
+
+    /// The first page of a smart search for `text`.
+    public func smartSearch(_ text: String, filters: SearchFilters = SearchFilters()) async throws -> SearchResults {
+        try await smartSearch(SmartSearchQuery(text: text, filters: filters), page: nil, size: Self.searchPageSize)
+    }
+
+    /// The first page of a metadata search.
+    public func metadataSearch(_ query: MetadataSearchQuery) async throws -> SearchResults {
+        try await metadataSearch(query, page: nil, size: Self.searchPageSize)
+    }
+
+    /// Suggestions without narrowing context.
+    public func searchSuggestions(_ kind: SearchSuggestionKind) async throws -> [String] {
+        try await searchSuggestions(kind, context: SearchSuggestionContext())
+    }
 }
 
 extension ImmichService {

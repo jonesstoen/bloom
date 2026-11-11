@@ -202,11 +202,11 @@ public struct LiveImmichService: ImmichService {
         }
     }
 
-    private static func pathComponent(_ value: String) -> String {
+    static func pathComponent(_ value: String) -> String {
         value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#"))) ?? value
     }
 
-    private static func visibility(_ value: TimelineOptions.Visibility) -> Components.Schemas.AssetVisibility {
+    static func visibility(_ value: TimelineOptions.Visibility) -> Components.Schemas.AssetVisibility {
         switch value {
         case .timeline: return .timeline
         case .archive: return .archive
@@ -226,12 +226,26 @@ public struct LiveImmichService: ImmichService {
     /// A JSON `GET` through the same transport, bypassing the generated decoder.
     /// Used for lenient decoding of responses from servers older than the spec.
     /// - Parameter path: relative to the API base URL, may include a query string.
-    private func rawGET(path: String, operationID: String, maxBytes: Int = 16 * 1024 * 1024) async throws -> Data {
-        var request = HTTPRequest(method: .get, scheme: nil, authority: nil, path: path)
+    func rawGET(path: String, operationID: String, maxBytes: Int = 16 * 1024 * 1024) async throws -> Data {
+        try await rawRequest(method: .get, path: path, json: nil, operationID: operationID, maxBytes: maxBytes)
+    }
+
+    /// A JSON `POST` through the same transport, bypassing the generated decoder.
+    func rawPOST(path: String, json: Data, operationID: String, maxBytes: Int = 16 * 1024 * 1024) async throws -> Data {
+        try await rawRequest(method: .post, path: path, json: json, operationID: operationID, maxBytes: maxBytes)
+    }
+
+    private func rawRequest(
+        method: HTTPRequest.Method, path: String, json: Data?, operationID: String, maxBytes: Int
+    ) async throws -> Data {
+        var request = HTTPRequest(method: method, scheme: nil, authority: nil, path: path)
         request.headerFields[.accept] = "application/json"
+        if json != nil { request.headerFields[.contentType] = "application/json; charset=utf-8" }
         request.headerFields[APIKeyMiddleware.headerName] = credentials.apiKey
         let (response, body) = try await Self.mapErrors {
-            try await transport.send(request, body: nil, baseURL: credentials.apiBaseURL, operationID: operationID)
+            try await transport.send(
+                request, body: json.map { HTTPBody($0) }, baseURL: credentials.apiBaseURL, operationID: operationID
+            )
         }
         guard response.status.code == 200 else { throw Self.error(forStatus: response.status.code) }
         guard let body else { throw ImmichServiceError.invalidResponse }

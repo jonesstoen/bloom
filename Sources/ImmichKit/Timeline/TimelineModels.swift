@@ -37,7 +37,7 @@ public struct TimeBucket: Sendable, Hashable, Identifiable, Codable {
 
 /// Which assets a timeline shows and in which order. Maps to the `/timeline/*` query parameters.
 public struct TimelineOptions: Sendable, Hashable {
-    public enum Visibility: String, Sendable, Hashable, CaseIterable {
+    public enum Visibility: String, Sendable, Hashable, CaseIterable, Codable {
         /// The main library (not archived, hidden or locked).
         case timeline
         case archive
