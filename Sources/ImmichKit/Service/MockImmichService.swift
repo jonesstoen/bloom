@@ -20,6 +20,8 @@ public actor MockImmichService: ImmichService {
     /// If set, every request throws this error.
     public var failure: ImmichServiceError?
     public private(set) var requests: [Request] = []
+    /// Requests that were cancelled while waiting for `latency`.
+    public private(set) var cancelledRequests: [Request] = []
 
     public init(
         assets: [Asset] = [],
@@ -90,7 +92,14 @@ public actor MockImmichService: ImmichService {
 
     private func begin(_ request: Request) async throws {
         requests.append(request)
-        if latency > .zero { try await Task.sleep(for: latency) }
+        if latency > .zero {
+            do {
+                try await Task.sleep(for: latency)
+            } catch {
+                cancelledRequests.append(request)
+                throw error
+            }
+        }
         if let failure { throw failure }
     }
 

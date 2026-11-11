@@ -23,9 +23,15 @@ public actor ImageLoader {
     private let service: any ImmichService
     private let disk: DiskImageCache?
     private let memory = NSCache<NSString, NSData>()
-    private var inFlight: [ImageKey: Task<Data, any Error>] = [:]
-    /// Bumped by `removeAll()` so loads started before it do not repopulate the caches.
-    private var generation = 0
+    private struct InFlight {
+        let id: UUID
+        let task: Task<Data, any Error>
+        /// Callers still interested in the result (not cancelled).
+        var waiters: Set<UUID>
+    }
+
+    /// Running fetches. `removeAll()` empties this, so loads started before it do not repopulate the caches.
+    private var inFlight: [ImageKey: InFlight] = [:]
 
     /// - Parameters:
     ///   - disk: `nil` disables the disk cache (memory only).
@@ -41,29 +47,60 @@ public actor ImageLoader {
     }
 
     /// Returns the image data from memory, disk or the server, in that order.
+    ///
+    /// Concurrent callers for the same key share one fetch. Cancelling a caller only cancels the
+    /// shared fetch once every caller waiting for it has been cancelled (used by `Prefetcher`).
     public func data(for key: ImageKey) async throws -> Data {
         if let data = memoryData(for: key) { return data }
-        if let task = inFlight[key] { return try await task.value }
 
-        let service = self.service
-        let disk = self.disk
-        let task = Task<Data, any Error> {
-            if let disk, let data = await disk.data(for: key.description) {
+        let waiter = UUID()
+        let entry: InFlight
+        if var existing = inFlight[key] {
+            existing.waiters.insert(waiter)
+            inFlight[key] = existing
+            entry = existing
+        } else {
+            let service = self.service
+            let disk = self.disk
+            let task = Task<Data, any Error> {
+                if let disk, let data = await disk.data(for: key.description) {
+                    return data
+                }
+                try Task.checkCancellation()
+                let data = try await service.thumbnail(assetID: key.assetID, size: key.size)
+                await disk?.store(data, for: key.description)
                 return data
             }
-            let data = try await service.thumbnail(assetID: key.assetID, size: key.size)
-            await disk?.store(data, for: key.description)
-            return data
+            entry = InFlight(id: UUID(), task: task, waiters: [waiter])
+            inFlight[key] = entry
         }
-        inFlight[key] = task
-        let started = generation
-        defer { if started == generation { inFlight[key] = nil } }
 
-        let data = try await task.value
-        if started == generation {
+        // A cancelled caller still waits for the shared result if other callers keep it alive.
+        let result = await withTaskCancellationHandler {
+            await entry.task.result
+        } onCancel: {
+            Task { await self.waiterCancelled(key: key, entryID: entry.id, waiter: waiter) }
+        }
+
+        let isCurrent = inFlight[key]?.id == entry.id
+        if isCurrent { inFlight[key] = nil }
+        let data = try result.get()
+        if isCurrent {
             memory.setObject(data as NSData, forKey: key.description as NSString, cost: data.count)
         }
         return data
+    }
+
+    /// Removes a cancelled caller; cancels the shared fetch when nobody is waiting for it anymore.
+    private func waiterCancelled(key: ImageKey, entryID: UUID, waiter: UUID) {
+        guard var entry = inFlight[key], entry.id == entryID else { return }
+        entry.waiters.remove(waiter)
+        if entry.waiters.isEmpty {
+            entry.task.cancel()
+            inFlight[key] = nil
+        } else {
+            inFlight[key] = entry
+        }
     }
 
     public func data(assetID: String, size: ImageSize) async throws -> Data {
@@ -87,7 +124,6 @@ public actor ImageLoader {
 
     /// Drops memory and disk caches. Running loads still return to their callers but are not cached.
     public func removeAll() async {
-        generation += 1
         inFlight = [:]
         memory.removeAllObjects()
         await disk?.removeAll()
