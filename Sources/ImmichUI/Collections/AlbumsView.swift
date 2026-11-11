@@ -2,6 +2,7 @@ import ImmichKit
 import SwiftUI
 
 public struct AlbumsView: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var model: CollectionsModel
 
     public init(service: any ImmichService, loader: ImageLoader? = nil) {
@@ -10,36 +11,103 @@ public struct AlbumsView: View {
 
     public var body: some View {
         ScrollView {
-            if let error = model.albumsError {
-                ContentUnavailableView {
-                    Label(tr("Can't Load Albums"), systemImage: "exclamationmark.triangle")
-                } description: { Text(error) } actions: {
-                    Button(tr("Try Again")) { Task { await model.loadAlbums() } }
-                }
-            }
-            if model.loadingAlbums && model.albums.isEmpty { ProgressView().padding() }
-            if model.loadedAlbums && model.albums.isEmpty {
-                ContentUnavailableView(tr("No Albums"), systemImage: "rectangle.stack", description: Text(tr("Albums you create in Immich appear here.")))
-            }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 16)], alignment: .leading, spacing: 24) {
-                ForEach(model.albums) { album in
-                    NavigationLink {
-                        AlbumDetailView(album: album, service: model.service, loader: model.loader)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 6) {
-                            CollectionThumbnail(key: album.thumbnailAssetId.map { ImageKey(assetID: $0, size: .thumbnail) }, loader: model.loader)
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                            Text(album.name).font(.headline).foregroundStyle(.primary).lineLimit(2)
-                            Text(tr("%@ items", album.assetCount.formatted(.number.locale(Localization.locale)))).font(.subheadline).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 24) {
+                if model.albums.isEmpty {
+                    if model.loadingAlbums {
+                        ProgressView().frame(maxWidth: .infinity).padding(.vertical, 40)
+                    } else if let error = model.albumsError {
+                        ContentUnavailableView {
+                            Label(tr("Can't Load Albums"), systemImage: "exclamationmark.triangle")
+                        } description: { Text(error) } actions: {
+                            retryButton
                         }
-                        .accessibilityElement(children: .combine)
-                    }.buttonStyle(.plain)
+                    } else if model.loadedAlbums {
+                        ContentUnavailableView(tr("No Albums"), systemImage: "rectangle.stack",
+                                               description: Text(tr("Albums you create in Immich appear here.")))
+                    }
+                } else {
+                    if let error = model.albumsError {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(error).font(.subheadline).foregroundStyle(.secondary)
+                            retryButton
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 24) {
+                        ForEach(model.albums) { album in
+                            NavigationLink {
+                                AlbumDetailView(album: album, service: model.service, loader: model.loader)
+                            } label: {
+                                albumCard(album)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                 }
-            }.padding()
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 8)
+            .padding(.bottom, 30)
         }
         .navigationTitle(tr("Albums"))
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.large)
+        #endif
         .task { if !model.loadedAlbums { await model.loadAlbums() } }
         .refreshable { await model.loadAlbums() }
+    }
+
+    private var columns: [GridItem] {
+        [GridItem(.adaptive(minimum: dynamicTypeSize.isAccessibilitySize ? 280 : 150),
+                  spacing: 16, alignment: .top)]
+    }
+
+    private var retryButton: some View {
+        Button {
+            Task { await model.loadAlbums() }
+        } label: {
+            Text(tr("Try Again"))
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+        }
+    }
+
+    private func albumCard(_ album: Album) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            CollectionThumbnail(key: album.thumbnailAssetId.map { ImageKey(assetID: $0, size: .thumbnail) },
+                                loader: model.loader, symbol: "rectangle.stack")
+                .overlay {
+                    LinearGradient(colors: [.clear, .black.opacity(0.65)],
+                                   startPoint: .center, endPoint: .bottom)
+                        .accessibilityHidden(true)
+                }
+                .overlay(alignment: .bottomLeading) {
+                    if !dynamicTypeSize.isAccessibilitySize {
+                        Text(album.name)
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                            .lineLimit(2)
+                            .shadow(color: .black.opacity(0.6), radius: 3)
+                            .padding(12)
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            if dynamicTypeSize.isAccessibilitySize {
+                Text(album.name)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text(tr("%@ items", album.assetCount.formatted(.number.locale(Localization.locale))))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(album.name)
+        .accessibilityValue(tr("%@ items", album.assetCount.formatted(.number.locale(Localization.locale))))
     }
 }
 
@@ -58,6 +126,13 @@ public struct AlbumDetailView: View {
 }
 
 #Preview("Albums") { NavigationStack { AlbumsView(service: MockImmichService.preview) } }
+#Preview("Albums — large text") {
+    NavigationStack { AlbumsView(service: MockImmichService.preview) }
+        .environment(\.dynamicTypeSize, .accessibility3)
+}
+#Preview("Albums — empty") {
+    NavigationStack { AlbumsView(service: MockImmichService()) }
+}
 #Preview("Album detail") {
     NavigationStack { AlbumDetailView(album: MockLibrary.standard.albums[0], service: MockImmichService.preview) }
 }
