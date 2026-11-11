@@ -100,6 +100,12 @@ public struct LibraryGridView: View {
             #endif
             .task {
                 if model.phase == .idle { await model.load() }
+                // The Library tab: load every month in the background once the newest ones are
+                // on screen, so Years and Months open instantly later.
+                if usesLargeTitle && model.phase == .loaded {
+                    try? await Task.sleep(for: .seconds(1.5))
+                    if !Task.isCancelled { await model.loadAllMonths() }
+                }
             }
             .onDisappear { model.stopPrefetching() }
             #if os(iOS)
