@@ -210,21 +210,6 @@ public struct LibraryGridView: View {
                 }
     }
 
-    private var headerSubtitle: String {
-        switch scale {
-        case .all where model.options.isFavorite == true: "Favorites"
-        // Grouped by upload date, the month on screen says when photos were added, not taken.
-        case .all where model.options.sortsByDateAdded: "Recently Added"
-        case .all: model.visibleDateRangeTitle ?? model.visibleMonthTitle ?? model.footerText
-        case .months: model.footerText
-        case .years:
-            if let first = model.years.first?.year, let last = model.years.last?.year, first != last {
-                "\(min(first, last))–\(max(first, last))"
-            } else {
-                model.footerText
-            }
-        }
-    }
 
     // MARK: Header
 
@@ -281,10 +266,9 @@ public struct LibraryGridView: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text(title)
                     .font(.largeTitle.weight(.bold))
-                Text(headerSubtitle)
-                    .font(.subheadline.weight(.semibold))
-                    .contentTransition(.numericText())
-                    .animation(.default, value: headerSubtitle)
+                // Its own view: the date range changes while scrolling, and reading it here
+                // would re-render this whole view (header, menus, scroll view) each time.
+                LibraryHeaderSubtitle(model: model, scale: scale)
             }
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isHeader)
@@ -555,6 +539,35 @@ struct PlaceholderSlots: RandomAccessCollection {
     var startIndex: Int { 0 }
     var endIndex: Int { count }
     subscript(position: Int) -> Slot { Slot(monthID: monthID, index: position) }
+}
+
+/// The Library header's subtitle: the dates on screen in All, the year range in Years.
+private struct LibraryHeaderSubtitle: View {
+    let model: LibraryGridModel
+    let scale: LibraryScale
+
+    var body: some View {
+        Text(text)
+            .font(.subheadline.weight(.semibold))
+            .contentTransition(.numericText())
+            .animation(.default, value: text)
+    }
+
+    private var text: String {
+        switch scale {
+        case .all where model.options.isFavorite == true: "Favorites"
+        // Grouped by upload date, the month on screen says when photos were added, not taken.
+        case .all where model.options.sortsByDateAdded: "Recently Added"
+        case .all: model.visibleDateRangeTitle ?? model.visibleMonthTitle ?? model.footerText
+        case .months: model.footerText
+        case .years:
+            if let first = model.years.first?.year, let last = model.years.last?.year, first != last {
+                "\(min(first, last))–\(max(first, last))"
+            } else {
+                model.footerText
+            }
+        }
+    }
 }
 
 private final class ScrollMetrics {
