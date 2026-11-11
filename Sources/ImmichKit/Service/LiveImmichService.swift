@@ -58,7 +58,7 @@ public struct LiveImmichService: ImmichService {
         let o = options
         let query = Operations.GetTimeBuckets.Input.Query(
             albumId: o.albumId, isFavorite: o.isFavorite, isTrashed: o.isTrashed,
-            order: o.newestFirst ? .desc : .asc, personId: o.personId,
+            order: o.newestFirst ? .desc : .asc, orderBy: o.sortsByDateAdded ? .createdAt : nil, personId: o.personId,
             visibility: o.visibility.map(Self.visibility), withPartners: o.withPartners, withStacked: o.withStacked
         )
         let output = try await Self.mapErrors { try await client.getTimeBuckets(query: query) }
@@ -80,7 +80,7 @@ public struct LiveImmichService: ImmichService {
         let o = options
         let query = Operations.GetTimeBucket.Input.Query(
             albumId: o.albumId, isFavorite: o.isFavorite, isTrashed: o.isTrashed,
-            order: o.newestFirst ? .desc : .asc, personId: o.personId, timeBucket: bucketID,
+            order: o.newestFirst ? .desc : .asc, orderBy: o.sortsByDateAdded ? .createdAt : nil, personId: o.personId, timeBucket: bucketID,
             visibility: o.visibility.map(Self.visibility), withPartners: o.withPartners, withStacked: o.withStacked
         )
         let output = try await Self.mapErrors { try await client.getTimeBucket(query: query) }

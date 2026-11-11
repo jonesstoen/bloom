@@ -33,7 +33,10 @@ public final class LibraryGridModel {
         return sorted.isEmpty ? nil : sorted[sorted.count / 2].0
     }
 
-    @ObservationIgnored public let timeline: Timeline
+    /// Replaced when the sort or filter changes (`setOptions`).
+    @ObservationIgnored public private(set) var timeline: Timeline
+    /// The current sort and filter options.
+    public private(set) var options: TimelineOptions
     @ObservationIgnored public let service: any ImmichService
     @ObservationIgnored public let loader: ImageLoader
     @ObservationIgnored public let prefetcher: Prefetcher
@@ -73,6 +76,8 @@ public final class LibraryGridModel {
         let loader = loader ?? ImageLoader(service: service)
         let prefetcher = Prefetcher(loader: loader, size: .thumbnail, configuration: prefetch)
         self.timeline = Timeline(service: service, options: options)
+        self.options = options
+        self.newestFirst = options.newestFirst
         self.service = service
         self.loader = loader
         self.prefetcher = prefetcher
@@ -97,7 +102,7 @@ public final class LibraryGridModel {
     }
 
     /// `false` (default): oldest first, so the grid starts scrolled to the bottom.
-    public nonisolated var newestFirst: Bool { timeline.options.newestFirst }
+    public nonisolated let newestFirst: Bool
 
     /// Total number of assets according to the server's bucket counts.
     public var totalCount: Int { months.reduce(0) { $0 + $1.bucket.count } }
@@ -120,8 +125,10 @@ public final class LibraryGridModel {
     /// (the newest ones). Calling it again refreshes the buckets.
     public func load() async {
         if months.isEmpty { phase = .loading }
+        let timeline = self.timeline
         do {
             let loaded = try await timeline.loadBuckets()
+            guard timeline === self.timeline else { return }
             apply(loaded)
             phase = .loaded
         } catch is CancellationError {
@@ -144,8 +151,11 @@ public final class LibraryGridModel {
         guard let index = monthIndexByID[id], !months[index].isLoaded, !loadingMonths.contains(id) else { return }
         loadingMonths.insert(id)
         defer { loadingMonths.remove(id) }
+        let timeline = self.timeline
         do {
             try await timeline.loadMonth(id)
+            // Ignore months of a timeline replaced by a new sort or filter meanwhile.
+            guard timeline === self.timeline else { return }
             apply(await timeline.months)
         } catch {
             // Keep placeholders; the next appear retries.
@@ -166,6 +176,55 @@ public final class LibraryGridModel {
     /// Number of cells in the grid: loaded assets, plus placeholders for months not loaded yet.
     public var gridItemCount: Int {
         months.reduce(0) { $0 + ($1.isLoaded ? $1.assets.count : $1.bucket.count) }
+    }
+
+    // MARK: Years and months
+
+    /// A year in the Years view: its months in grid order and its number of items.
+    public struct YearGroup: Identifiable, Sendable, Hashable {
+        public let year: Int
+        public let monthIDs: [String]
+        public let count: Int
+        public var id: Int { year }
+    }
+
+    /// Months grouped by year, in the grid's order.
+    public nonisolated static func years(of months: [TimelineMonth]) -> [YearGroup] {
+        var groups: [YearGroup] = []
+        for month in months {
+            if let last = groups.last, last.year == month.bucket.year {
+                groups[groups.count - 1] = YearGroup(year: last.year, monthIDs: last.monthIDs + [month.id],
+                                                     count: last.count + month.bucket.count)
+            } else {
+                groups.append(YearGroup(year: month.bucket.year, monthIDs: [month.id], count: month.bucket.count))
+            }
+        }
+        return groups
+    }
+
+    public var years: [YearGroup] { Self.years(of: months) }
+
+    public func month(id: String) -> TimelineMonth? {
+        monthIndexByID[id].map { months[$0] }
+    }
+
+    /// A representative photo for a month card: one from the middle of the month (the first
+    /// and last are often screenshots or one-offs). `nil` until the month is loaded.
+    public func coverAsset(ofMonth id: String) -> Asset? {
+        guard let month = month(id: id), month.isLoaded, !month.assets.isEmpty else { return nil }
+        let stills = month.assets.filter { !$0.isVideo }
+        let pool = stills.isEmpty ? month.assets : stills
+        return pool[pool.count / 2]
+    }
+
+    /// Set by the Months and Years views; the grid scrolls to this month's first cell and clears it.
+    public var pendingScrollMonthID: String?
+
+    /// The scroll ID of the first cell of month `id` (an asset, or a placeholder slot).
+    public func firstGridID(ofMonth id: String) -> AnyHashable? {
+        guard let month = month(id: id) else { return nil }
+        if month.isLoaded, let first = month.assets.first { return AnyHashable(first.id) }
+        return month.bucket.count > 0 ? AnyHashable(PlaceholderSlots.Slot(monthID: id, index: 0)) : nil
     }
 
     /// The scroll ID of grid cell `index`: the asset's id, or the placeholder slot of an unloaded
@@ -200,6 +259,22 @@ public final class LibraryGridModel {
     /// The viewer moved to `assetID`: make sure its month (and neighbours) are loaded.
     public func assetShownInViewer(_ assetID: String) {
         if let monthID = monthIDByAssetID[assetID] { monthAppeared(monthID) }
+    }
+
+    /// Switches sort or filter (e.g. Recently Added, Favorites) and reloads. The grid's order
+    /// (`newestFirst`) stays as it was created.
+    public func setOptions(_ newOptions: TimelineOptions) async {
+        var newOptions = newOptions
+        newOptions.newestFirst = newestFirst
+        guard newOptions != options else { return }
+        options = newOptions
+        timeline = Timeline(service: service, options: newOptions)
+        stopPrefetching()
+        loadingMonths = []
+        visibleMonthTitle = nil
+        apply([])
+        phase = .idle
+        await load()
     }
 
     // MARK: Visibility and prefetching

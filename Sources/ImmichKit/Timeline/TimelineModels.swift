@@ -56,6 +56,9 @@ public struct TimelineOptions: Sendable, Hashable {
     /// Return only the primary asset of each stack.
     public var withStacked: Bool?
     public var withPartners: Bool?
+    /// Group and order by the date assets were added to Immich instead of the date taken
+    /// ("Sort by Recently Added" in Photos). The mock ignores it (it has no upload dates).
+    public var sortsByDateAdded: Bool
 
     public init(
         albumId: String? = nil,
@@ -65,7 +68,8 @@ public struct TimelineOptions: Sendable, Hashable {
         visibility: Visibility? = .timeline,
         newestFirst: Bool = true,
         withStacked: Bool? = true,
-        withPartners: Bool? = nil
+        withPartners: Bool? = nil,
+        sortsByDateAdded: Bool = false
     ) {
         self.albumId = albumId
         self.personId = personId
@@ -75,6 +79,7 @@ public struct TimelineOptions: Sendable, Hashable {
         self.newestFirst = newestFirst
         self.withStacked = withStacked
         self.withPartners = withPartners
+        self.sortsByDateAdded = sortsByDateAdded
     }
 
     /// The main Library tab.

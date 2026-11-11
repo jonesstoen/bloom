@@ -8,19 +8,21 @@ struct ThumbnailCell: View {
     let loader: ImageLoader
     let images: ThumbnailImageCache
     var size: ImageSize = .thumbnail
+    /// `true`: crop to fill the square (default). `false`: show the whole photo ("Aspect Ratio Grid").
+    var fillsCell = true
 
     @State private var image: CGImage?
 
     private var key: ImageKey { ImageKey(assetID: asset.id, size: size) }
 
     var body: some View {
-        Color(white: 0.5, opacity: 0.15)
+        (fillsCell ? Color(white: 0.5, opacity: 0.15) : Color.clear)
             .aspectRatio(1, contentMode: .fit)
             .overlay {
                 if let image = image ?? images.image(for: key) {
                     Image(decorative: image, scale: 1)
                         .resizable()
-                        .scaledToFill()
+                        .aspectRatio(contentMode: fillsCell ? .fill : .fit)
                         .transition(.opacity)
                 }
             }

@@ -177,6 +177,24 @@ final class LiveTimelineRequestTests: XCTestCase {
         XCTAssertNil(q["visibility"])
     }
 
+    func testSortByDateAddedSendsOrderByCreatedAt() async throws {
+        let (service, transport) = try service { request in
+            request.path?.hasPrefix("/timeline/buckets") == true
+                ? (200, "application/json", #"[{"timeBucket":"2024-03-01","count":3}]"#)
+                : (200, "application/json", TimeBucketMappingTests.bucketJSON)
+        }
+        var options = TimelineOptions.library
+        options.sortsByDateAdded = true
+        _ = try await service.timeBuckets(options: options)
+        _ = try await service.timeBucketAssets(bucketID: "2024-03-01", options: options)
+        for request in transport.requests.map(\.0) {
+            XCTAssertEqual(query(request)["orderBy"], "createdAt", request.path ?? "")
+        }
+        // By default the server's order (date taken) is used: no orderBy parameter.
+        _ = try await service.timeBuckets(options: .library)
+        XCTAssertNil(query(try XCTUnwrap(transport.requests.last?.0))["orderBy"])
+    }
+
     func testTimeBucketsUnauthorized() async throws {
         let (service, _) = try service { _ in (401, "application/json", "{}") }
         do {

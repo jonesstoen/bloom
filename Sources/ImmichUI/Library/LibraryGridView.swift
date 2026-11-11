@@ -20,6 +20,13 @@ public struct LibraryGridView: View {
     @State private var pinchBaseline: CGFloat = 1
     /// Latest scroll geometry, kept outside observation so scrolling doesn't re-render the view.
     @State private var scrollMetrics = ScrollMetrics()
+    /// Years / Months / All (the Library tab only).
+    @State private var scale: LibraryScale = .all
+    @State private var monthsScrollTarget: String?
+    /// Sort, filter and view options, remembered between launches (the Library tab only).
+    @AppStorage("library.sortsByDateAdded") private var sortsByDateAdded = false
+    @AppStorage("library.favoritesOnly") private var favoritesOnly = false
+    @AppStorage("library.aspectRatioGrid") private var aspectRatioGrid = false
     @Namespace private var photoTransition
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let title: String
@@ -75,6 +82,14 @@ public struct LibraryGridView: View {
             }
             .overlay(alignment: .top) {
                 if usesLargeTitle { largeHeader }
+            }
+            .overlay(alignment: .bottom) {
+                if usesLargeTitle && model.phase == .loaded && !model.isEmpty {
+                    LibraryScaleSwitcher(scale: $scale).padding(.bottom, 10)
+                }
+            }
+            .task(id: usesLargeTitle ? menuOptions : model.options) {
+                if usesLargeTitle && menuOptions != model.options { await model.setOptions(menuOptions) }
             }
             #endif
             .task {
@@ -140,22 +155,89 @@ public struct LibraryGridView: View {
                 description: Text("Photos and videos you upload to Immich appear here.")
             )
         case .loaded:
-            grid
+            if usesLargeTitle {
+                switch scale {
+                case .all: grid
+                case .months:
+                    MonthsOverview(model: model, scrollTarget: monthsScrollTarget, topMargin: 96) { monthID in
+                        model.pendingScrollMonthID = monthID
+                        withAnimation(.snappy(duration: 0.25)) { scale = .all }
+                    }
+                    .ignoresSafeArea(edges: .top)
+                case .years:
+                    YearsOverview(model: model, topMargin: 96) { year in
+                        monthsScrollTarget = model.newestFirst ? year.monthIDs.first : year.monthIDs.last
+                        withAnimation(.snappy(duration: 0.25)) { scale = .months }
+                    }
+                    .ignoresSafeArea(edges: .top)
+                }
+            } else {
+                grid
+            }
+        }
+    }
+
+    private var headerSubtitle: String {
+        switch scale {
+        case .all where model.options.isFavorite == true: "Favorites"
+        case .all: model.visibleMonthTitle ?? model.footerText
+        case .months: model.footerText
+        case .years:
+            if let first = model.years.first?.year, let last = model.years.last?.year, first != last {
+                "\(min(first, last))–\(max(first, last))"
+            } else {
+                model.footerText
+            }
         }
     }
 
     // MARK: Header
 
+    /// The grid options menu. In the Library tab it has Photos' sort, filter and view options.
     private var densityMenu: some View {
         Menu {
-            Picker("Grid", selection: Binding(get: { model.density }, set: { changeDensity($0) })) {
-                ForEach(GridDensity.allCases, id: \.rawValue) { density in
-                    Text("\(density.rawValue) Columns").tag(density)
+            if usesLargeTitle {
+                Picker("Sort", selection: $sortsByDateAdded) {
+                    Text("Sort by Recently Added").tag(true)
+                    Text("Sort by Date Captured").tag(false)
+                }
+                .pickerStyle(.inline)
+                Menu {
+                    Picker("Filter", selection: $favoritesOnly) {
+                        Label("All Items", systemImage: "photo.on.rectangle").tag(false)
+                        Label("Favorites", systemImage: "heart").tag(true)
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    Label("Filter", systemImage: "line.3.horizontal.decrease.circle")
                 }
             }
+            Menu {
+                Toggle(isOn: $aspectRatioGrid) {
+                    Label("Aspect Ratio Grid", systemImage: "rectangle.grid.3x2")
+                }
+                Picker("Columns", selection: Binding(get: { model.density }, set: { changeDensity($0) })) {
+                    ForEach(GridDensity.allCases, id: \.rawValue) { density in
+                        Text("\(density.rawValue) Columns").tag(density)
+                    }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                Label("View Options", systemImage: "eye")
+            }
         } label: {
-            Label("Grid options", systemImage: "line.3.horizontal.decrease")
+            Label("Grid options", systemImage: isFiltered ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease")
         }
+    }
+
+    private var isFiltered: Bool { usesLargeTitle && favoritesOnly }
+
+    /// The timeline options for the current menu choices (the Library tab only).
+    private var menuOptions: TimelineOptions {
+        var options = model.options
+        options.sortsByDateAdded = sortsByDateAdded
+        options.isFavorite = favoritesOnly ? true : nil
+        return options
     }
 
     /// Large title and subtitle over a soft blur, with glass buttons on the right, like Photos.
@@ -164,10 +246,10 @@ public struct LibraryGridView: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text(title)
                     .font(.largeTitle.weight(.bold))
-                Text(model.visibleMonthTitle ?? model.footerText)
+                Text(headerSubtitle)
                     .font(.subheadline.weight(.semibold))
                     .contentTransition(.numericText())
-                    .animation(.default, value: model.visibleMonthTitle)
+                    .animation(.default, value: headerSubtitle)
             }
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isHeader)
@@ -200,6 +282,7 @@ public struct LibraryGridView: View {
         ScrollViewReader { proxy in
         ScrollView {
             GridCells(model: model, columnCount: model.columnCount, spacing: Self.spacing,
+                      fillsCells: !(usesLargeTitle && aspectRatioGrid),
                       transition: photoTransition, onTap: open)
                 .equatable()
             footer
@@ -226,11 +309,27 @@ public struct LibraryGridView: View {
         .onChange(of: viewerScrollTarget) { _, id in
             if let id { proxy.scrollTo(id, anchor: .center) }
         }
-        .onAppear { densityProxy = proxy }
+        .onAppear {
+            densityProxy = proxy
+            scrollToPendingMonth(proxy)
+        }
+        .onChange(of: model.pendingScrollMonthID) { _, _ in scrollToPendingMonth(proxy) }
         }
     }
 
     @State private var densityProxy: ScrollViewProxy?
+
+    /// Opened from a month card: show that month at the top of the grid.
+    private func scrollToPendingMonth(_ proxy: ScrollViewProxy) {
+        guard let monthID = model.pendingScrollMonthID, let target = model.firstGridID(ofMonth: monthID) else { return }
+        model.pendingScrollMonthID = nil
+        // After this layout pass, so the freshly shown grid has its content size.
+        Task { @MainActor in
+            await Task.yield()
+            proxy.scrollTo(target, anchor: .top)
+            model.monthAppeared(monthID)
+        }
+    }
 
     /// Follows the fingers like Photos: the grid scales live, and as soon as the pinch passes a
     /// step it switches columns around the asset in the middle of the screen. One pinch can step
@@ -354,12 +453,13 @@ private struct GridCells: View, Equatable {
     let model: LibraryGridModel
     let columnCount: Int
     let spacing: CGFloat
+    let fillsCells: Bool
     let transition: Namespace.ID
     let onTap: (Asset) -> Void
 
     static func == (lhs: GridCells, rhs: GridCells) -> Bool {
         lhs.model === rhs.model && lhs.columnCount == rhs.columnCount
-            && lhs.spacing == rhs.spacing && lhs.transition == rhs.transition
+            && lhs.spacing == rhs.spacing && lhs.fillsCells == rhs.fillsCells && lhs.transition == rhs.transition
     }
 
     var body: some View {
@@ -377,7 +477,7 @@ private struct GridCells: View, Equatable {
         if month.isLoaded {
             ForEach(month.assets) { asset in
                 Button { onTap(asset) } label: {
-                    ThumbnailCell(asset: asset, loader: model.loader, images: model.images)
+                    ThumbnailCell(asset: asset, loader: model.loader, images: model.images, fillsCell: fillsCells)
                 }
                 .buttonStyle(.plain)
                 .id(asset.id)
