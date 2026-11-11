@@ -10,6 +10,7 @@ public actor MockImmichService: ImmichService {
         case serverVersion
         case timeBuckets
         case timeBucket(String)
+        case thumbnail(String, ImageSize)
     }
 
     public var assets: [Asset]
@@ -73,6 +74,16 @@ public actor MockImmichService: ImmichService {
                 return parts.year == bucket.year && parts.month == bucket.month
             }
             .sorted { options.newestFirst ? $0.takenAt > $1.takenAt : $0.takenAt < $1.takenAt }
+    }
+
+    /// Deterministic placeholder bytes per asset and size (not a decodable image yet; see task 9).
+    public func thumbnail(assetID: String, size: ImageSize) async throws -> Data {
+        try await begin(.thumbnail(assetID, size))
+        return Self.placeholderData(assetID: assetID, size: size)
+    }
+
+    public static func placeholderData(assetID: String, size: ImageSize) -> Data {
+        Data("\(size.rawValue):\(assetID)".utf8)
     }
 
     // MARK: Helpers

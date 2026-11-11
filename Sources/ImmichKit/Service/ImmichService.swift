@@ -17,6 +17,17 @@ public protocol ImmichService: Sendable {
     /// `GET /timeline/bucket`: the assets in one month bucket, in `options` order.
     /// - Parameter bucketID: `TimeBucket.id` as returned by `timeBuckets(options:)`.
     func timeBucketAssets(bucketID: String, options: TimelineOptions) async throws -> [Asset]
+
+    /// `GET /assets/{id}/thumbnail?size=…`: encoded image bytes (JPEG/WebP) for a grid thumbnail or a preview.
+    func thumbnail(assetID: String, size: ImageSize) async throws -> Data
+}
+
+/// Server-rendered image sizes used by the UI. The original file has its own endpoint.
+public enum ImageSize: String, Sendable, Hashable, CaseIterable, Codable {
+    /// Small square-ish image for grids (`thumbnail`, ~250 px).
+    case thumbnail
+    /// Large image for the viewer (`preview`, ~1440 px).
+    case preview
 }
 
 /// Server release version, independent of the generated API types.

@@ -92,6 +92,26 @@ public struct LiveImmichService: ImmichService {
         }
     }
 
+    /// Largest image body accepted from the thumbnail endpoint.
+    static let maxImageBytes = 64 * 1024 * 1024
+
+    public func thumbnail(assetID: String, size: ImageSize) async throws -> Data {
+        let mediaSize: Components.Schemas.AssetMediaSize = switch size {
+        case .thumbnail: .thumbnail
+        case .preview: .preview
+        }
+        let output = try await Self.mapErrors {
+            try await client.viewAsset(path: .init(id: assetID), query: .init(size: mediaSize))
+        }
+        switch output {
+        case .ok(let ok):
+            guard case .binary(let body) = ok.body else { throw ImmichServiceError.invalidResponse }
+            return try await Self.mapErrors { try await Data(collecting: body, upTo: Self.maxImageBytes) }
+        case .undocumented(let status, _):
+            throw Self.error(forStatus: status)
+        }
+    }
+
     private static func visibility(_ value: TimelineOptions.Visibility) -> Components.Schemas.AssetVisibility {
         switch value {
         case .timeline: return .timeline
