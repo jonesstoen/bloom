@@ -25,6 +25,7 @@ public final class LibraryGridModel {
     public var columnCount: Int = 3
 
     @ObservationIgnored public let timeline: Timeline
+    @ObservationIgnored public let service: any ImmichService
     @ObservationIgnored public let loader: ImageLoader
     @ObservationIgnored public let prefetcher: Prefetcher
     @ObservationIgnored public let images: ThumbnailImageCache
@@ -59,6 +60,7 @@ public final class LibraryGridModel {
         let loader = loader ?? ImageLoader(service: service)
         let prefetcher = Prefetcher(loader: loader, size: .thumbnail, configuration: prefetch)
         self.timeline = Timeline(service: service, options: options)
+        self.service = service
         self.loader = loader
         self.prefetcher = prefetcher
         self.images = images ?? ThumbnailImageCache()

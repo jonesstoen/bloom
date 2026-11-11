@@ -8,6 +8,7 @@ import SwiftUI
 /// they scroll into view. Visible cells drive the prefetcher, which loads thumbnails ahead.
 public struct LibraryGridView: View {
     @State private var model: LibraryGridModel
+    @State private var selectedAsset: Asset?
     private let title: String
     private let onSelect: (Asset) -> Void
 
@@ -40,6 +41,20 @@ public struct LibraryGridView: View {
                 if model.phase == .idle { await model.load() }
             }
             .onDisappear { model.stopPrefetching() }
+            #if os(iOS)
+            .fullScreenCover(item: $selectedAsset) { asset in viewer(asset) }
+            #else
+            .sheet(item: $selectedAsset) { asset in viewer(asset).frame(minWidth: 700, minHeight: 500) }
+            #endif
+    }
+
+    private func viewer(_ asset: Asset) -> some View {
+        AssetViewer(assets: model.months.flatMap(\.assets), selectedID: asset.id,
+                    service: model.service, loader: model.loader) { id in
+            if let month = model.months.first(where: { $0.assets.contains(where: { $0.id == id }) }) {
+                model.monthAppeared(month.id)
+            }
+        }
     }
 
     @ViewBuilder
@@ -88,7 +103,7 @@ public struct LibraryGridView: View {
     private func cells(for month: TimelineMonth) -> some View {
         if month.isLoaded {
             ForEach(month.assets) { asset in
-                Button { onSelect(asset) } label: {
+                Button { selectedAsset = asset; onSelect(asset) } label: {
                     ThumbnailCell(asset: asset, loader: model.loader, images: model.images)
                 }
                 .buttonStyle(.plain)
