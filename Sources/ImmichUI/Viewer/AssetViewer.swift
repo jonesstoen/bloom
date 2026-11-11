@@ -20,8 +20,11 @@ public struct AssetViewer: View {
     @State private var selectedID: String?
     @State private var chromeVisible = true
     @State private var showsInfo = false
+    @State private var showsAccessibleMenu = false
     @State private var store: ViewerStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(assets: [Asset], selectedID: String, service: any ImmichService,
                 loader: ImageLoader? = nil, onSelection: @escaping (String) -> Void = { _ in }) {
@@ -61,7 +64,18 @@ public struct AssetViewer: View {
         #endif
         .onChange(of: selectedID, initial: true) { _, id in
             showsInfo = false
+            store.stopLivePhotos()
             if let id { onSelection(id) }
+        }
+        .onChange(of: showsInfo) { _, shown in
+            if shown { currentModel?.stopLivePhotoPlayback() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { store.stopLivePhotos() }
+        }
+        .onDisappear { store.stopLivePhotos() }
+        .confirmationDialog(tr("More"), isPresented: $showsAccessibleMenu, titleVisibility: .hidden) {
+            if let model = currentModel { menuActions(model) }
         }
         .sheet(isPresented: $showsInfo) {
             if let model = currentModel {
@@ -110,8 +124,9 @@ public struct AssetViewer: View {
     }
 
     private func page(_ asset: Asset) -> some View {
-        ViewerPage(model: store.model(for: asset), isActive: currentID == asset.id) {
-            withAnimation(.easeInOut(duration: 0.2)) { chromeVisible.toggle() }
+        ViewerPage(model: store.model(for: asset), isActive: currentID == asset.id,
+                   livePlaybackAllowed: scenePhase == .active && !showsInfo && !showsAccessibleMenu) {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { chromeVisible.toggle() }
         }
     }
 
@@ -123,18 +138,92 @@ public struct AssetViewer: View {
     // MARK: Top bar
 
     private var topBar: some View {
-        HStack(alignment: .center) {
-            GlassIconButton(systemImage: "chevron.left", label: tr("Close viewer")) { dismiss() }
-            Spacer(minLength: 8)
-            if let model = currentModel {
-                titleCapsule(model)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center) {
+                GlassIconButton(systemImage: "chevron.left", label: tr("Close viewer")) {
+                    store.stopLivePhotos()
+                    dismiss()
+                }
+                Spacer(minLength: 8)
+                if let model = currentModel { titleCapsule(model) }
+                Spacer(minLength: 8)
+                if let model = currentModel { moreMenu(model) }
+                else { Color.clear.frame(width: 48, height: 48) }
             }
-            Spacer(minLength: 8)
-            // Balances the back button so the title stays centred.
-            Color.clear.frame(width: 48, height: 48)
+            if let model = currentModel, model.asset.isLivePhoto && !model.asset.isVideo {
+                livePhotoBadge(model).padding(.leading, 8)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
+    }
+
+    @ViewBuilder
+    private func livePhotoBadge(_ model: ViewerAssetModel) -> some View {
+        #if os(iOS)
+        Button { toggleLivePhoto(model) } label: {
+            Label(tr("Live Photo"), systemImage: model.isLivePhotoPlaying ? "livephoto.play" : "livephoto")
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 10).padding(.vertical, 7)
+        }
+        .buttonStyle(.plain)
+        .photosGlass(in: Capsule())
+        .disabled(model.isLivePhotoZoomed || model.isLoading || scenePhase != .active || showsInfo)
+        .accessibilityLabel(model.isLivePhotoPlaying ? tr("Stop Live Photo") : tr("Play Live Photo"))
+        #else
+        Label(tr("Live Photo"), systemImage: "livephoto")
+            .font(.caption.weight(.semibold))
+            .padding(8)
+            .photosGlass(in: Capsule(), interactive: false)
+        #endif
+    }
+
+    @ViewBuilder
+    private func menuActions(_ model: ViewerAssetModel) -> some View {
+        Button(tr("Photo information"), systemImage: "info.circle") { showsInfo = true }
+        Button(model.asset.isFavorite ? tr("Remove from Favorites") : tr("Add to Favorites"),
+               systemImage: model.asset.isFavorite ? "heart.slash" : "heart") {
+            model.stopLivePhotoPlayback()
+            Task { await model.toggleFavorite() }
+        }
+        #if os(iOS)
+        if model.asset.isLivePhoto && !model.asset.isVideo {
+            Button(model.isLivePhotoPlaying ? tr("Stop Live Photo") : tr("Play Live Photo"),
+                   systemImage: model.isLivePhotoPlaying ? "stop.fill" : "livephoto.play") {
+                toggleLivePhoto(model)
+            }
+            .disabled(model.isLivePhotoZoomed || model.isLoading)
+        }
+        #endif
+    }
+
+    private func moreMenu(_ model: ViewerAssetModel) -> some View {
+        Menu { menuActions(model) } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 20, weight: .medium))
+                .frame(width: 48, height: 48)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .photosGlass(in: Circle())
+        .accessibilityLabel(tr("More"))
+        .simultaneousGesture(TapGesture().onEnded { model.stopLivePhotoPlayback() })
+        .accessibilityAction {
+            model.stopLivePhotoPlayback()
+            showsAccessibleMenu = true
+        }
+    }
+
+    private func toggleLivePhoto(_ model: ViewerAssetModel) {
+        if model.isLivePhotoPlaying {
+            model.stopLivePhotoPlayback()
+        } else {
+            Task {
+                if model.playback == nil { await model.load() }
+                guard currentID == model.asset.id, scenePhase == .active, !showsInfo else { return }
+                model.startLivePhotoPlayback()
+            }
+        }
     }
 
     private func titleCapsule(_ model: ViewerAssetModel) -> some View {
@@ -165,7 +254,7 @@ public struct AssetViewer: View {
             #endif
             HStack {
                 if let model = currentModel {
-                    ShareAssetButton(asset: model.asset, service: service)
+                    ShareAssetButton(asset: model.asset, service: service, onPrepare: model.stopLivePhotoPlayback)
                 } else {
                     Color.clear.frame(width: 48, height: 48)
                 }
@@ -220,6 +309,10 @@ final class ViewerStore {
         self.loader = loader
     }
 
+    func stopLivePhotos() {
+        for model in models.values { model.stopLivePhotoPlayback() }
+    }
+
     func model(for asset: Asset) -> ViewerAssetModel {
         if let model = models[asset.id] { return model }
         let model = ViewerAssetModel(asset: asset, service: service, loader: loader)
@@ -233,7 +326,9 @@ final class ViewerStore {
 private struct ViewerPage: View {
     let model: ViewerAssetModel
     let isActive: Bool
+    var livePlaybackAllowed = true
     let onTap: () -> Void
+    @State private var playbackAllowed = false
 
     var body: some View {
         ZStack {
@@ -241,7 +336,23 @@ private struct ViewerPage: View {
                 VideoPlaybackView(request: request, isActive: isActive)
             } else if let image = model.image {
                 #if os(iOS)
-                ZoomableImage(image: image, isActive: isActive, onSingleTap: onTap)
+                ZoomableImage(image: image, isActive: isActive, onSingleTap: onTap,
+                              livePhotoEnabled: livePlaybackAllowed && model.asset.isLivePhoto && model.playback != nil,
+                              onLivePhotoHold: { held in
+                                  if held && playbackAllowed { model.startLivePhotoPlayback() }
+                                  else { model.stopLivePhotoPlayback() }
+                              }, onZoomChanged: model.setLivePhotoZoomed)
+                    .overlay {
+                        if isActive, livePlaybackAllowed, model.isLivePhotoPlaying, let request = model.playback {
+                            let generation = model.livePhotoPlaybackGeneration
+                            LivePhotoPlaybackView(request: request) { failed in
+                                model.finishLivePhotoPlayback(generation: generation, failed: failed)
+                            }
+                            .id(generation)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                        }
+                    }
                     .accessibilityLabel(model.asset.isVideo ? tr("Video preview") : tr("Photo"))
                 #else
                 Image(decorative: image, scale: 1).resizable().scaledToFit()
@@ -257,7 +368,46 @@ private struct ViewerPage: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .bottom) {
+            if let error = model.livePhotoPlaybackError, isActive {
+                VStack(spacing: 8) {
+                    Text(error).font(.callout).multilineTextAlignment(.center)
+                    Button(tr("Try Again")) { retryLivePhoto() }
+                }
+                .padding()
+                .photosGlass(in: RoundedRectangle(cornerRadius: 16), interactive: false)
+                .padding(.horizontal, 32)
+                .padding(.bottom, 180)
+            }
+        }
+        .onAppear { playbackAllowed = isActive && livePlaybackAllowed }
+        .onChange(of: livePlaybackAllowed) { _, allowed in
+            playbackAllowed = isActive && allowed
+            if !allowed { model.stopLivePhotoPlayback() }
+        }
+        .onChange(of: isActive) { _, active in
+            playbackAllowed = active && livePlaybackAllowed
+            if !active {
+                model.stopLivePhotoPlayback()
+                model.setLivePhotoZoomed(false)
+            }
+        }
+        .onDisappear {
+            playbackAllowed = false
+            model.stopLivePhotoPlayback()
+            model.setLivePhotoZoomed(false)
+        }
         .task { if !model.isLoaded { await model.load() } }
+    }
+
+    private func retryLivePhoto() {
+        Task {
+            if model.playback == nil { await model.load() }
+            guard playbackAllowed else { return }
+            #if os(iOS)
+            model.startLivePhotoPlayback()
+            #endif
+        }
     }
 }
 

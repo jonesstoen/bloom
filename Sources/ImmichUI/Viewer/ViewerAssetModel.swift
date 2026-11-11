@@ -11,6 +11,10 @@ public final class ViewerAssetModel {
     public private(set) var error: String?
     public private(set) var isLoading = false
     public private(set) var isLoaded = false
+    public private(set) var isLivePhotoPlaying = false
+    public private(set) var livePhotoPlaybackGeneration = 0
+    public private(set) var livePhotoPlaybackError: String?
+    public private(set) var isLivePhotoZoomed = false
     @ObservationIgnored private let service: any ImmichService
     @ObservationIgnored private let loader: ImageLoader
     @ObservationIgnored private var generation = 0
@@ -41,7 +45,34 @@ public final class ViewerAssetModel {
         return exif.city?.nilIfEmpty ?? exif.state?.nilIfEmpty ?? exif.country?.nilIfEmpty
     }
 
+    public func startLivePhotoPlayback() {
+        guard asset.isLivePhoto, !asset.isVideo, playback != nil, isLoaded, !isLoading,
+              !isLivePhotoZoomed, !isLivePhotoPlaying else { return }
+        livePhotoPlaybackGeneration += 1
+        livePhotoPlaybackError = nil
+        isLivePhotoPlaying = true
+    }
+
+    public func stopLivePhotoPlayback() {
+        guard isLivePhotoPlaying else { return }
+        livePhotoPlaybackGeneration += 1
+        isLivePhotoPlaying = false
+    }
+
+    public func finishLivePhotoPlayback(generation: Int, failed: Bool = false) {
+        guard isLivePhotoPlaying, generation == livePhotoPlaybackGeneration else { return }
+        stopLivePhotoPlayback()
+        if failed { livePhotoPlaybackError = tr("Couldn't play this Live Photo. Try again.") }
+    }
+
+    public func setLivePhotoZoomed(_ zoomed: Bool) {
+        isLivePhotoZoomed = zoomed
+        if zoomed { stopLivePhotoPlayback() }
+    }
+
     public func load() async {
+        stopLivePhotoPlayback()
+        livePhotoPlaybackError = nil
         generation += 1
         let started = generation
         isLoading = true
@@ -55,11 +86,22 @@ public final class ViewerAssetModel {
             guard generation == started else { return }
             image = decoded
             let detail = try await service.asset(id: asset.id)
-            let request = detail.isVideo ? try await service.playbackRequest(for: detail) : nil
+            var request: MediaRequest?
+            var motionFailed = false
+            do {
+                request = try await service.playbackRequest(for: detail)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // A motion failure must never hide a Live Photo's still image.
+                guard detail.isLivePhoto, !detail.isVideo else { throw error }
+                motionFailed = true
+            }
             try Task.checkCancellation()
             guard generation == started else { return }
             asset = detail
             playback = request
+            if motionFailed { livePhotoPlaybackError = tr("Couldn't play this Live Photo. Try again.") }
             isLoaded = true
         } catch is CancellationError {
             return

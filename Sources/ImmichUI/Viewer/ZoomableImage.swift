@@ -11,25 +11,40 @@ struct ZoomableImage: UIViewRepresentable {
     let image: CGImage
     let isActive: Bool
     var onSingleTap: () -> Void = {}
+    var livePhotoEnabled = false
+    var onLivePhotoHold: (Bool) -> Void = { _ in }
+    var onZoomChanged: (Bool) -> Void = { _ in }
 
     func makeUIView(context: Context) -> ZoomingScrollView {
         let view = ZoomingScrollView()
         view.setImage(image)
         view.onSingleTap = onSingleTap
+        view.onLivePhotoHold = onLivePhotoHold
+        view.onZoomChanged = onZoomChanged
+        view.livePhotoEnabled = isActive && livePhotoEnabled
         return view
     }
 
     func updateUIView(_ view: ZoomingScrollView, context: Context) {
         view.setImage(image)
         view.onSingleTap = onSingleTap
+        view.onLivePhotoHold = onLivePhotoHold
+        view.onZoomChanged = onZoomChanged
+        view.livePhotoEnabled = isActive && livePhotoEnabled
         if !isActive { view.resetZoom() }
     }
 }
 
-final class ZoomingScrollView: UIScrollView, UIScrollViewDelegate {
+final class ZoomingScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     private let imageView = UIImageView()
     private var laidOutSize: CGSize = .zero
     var onSingleTap: (() -> Void)?
+    var onLivePhotoHold: ((Bool) -> Void)?
+    var onZoomChanged: ((Bool) -> Void)?
+    var livePhotoEnabled = false
+    private lazy var liveHold = UILongPressGestureRecognizer(target: self, action: #selector(handleLiveHold(_:)))
+    private var reportedZoomed = false
+    private var holdOrigin: CGPoint = .zero
 
     init() {
         super.init(frame: .zero)
@@ -54,7 +69,14 @@ final class ZoomingScrollView: UIScrollView, UIScrollViewDelegate {
         addGestureRecognizer(doubleTap)
         let singleTap = UITapGestureRecognizer(target: self, action: #selector(handleSingleTap))
         singleTap.require(toFail: doubleTap)
+        singleTap.require(toFail: liveHold)
         addGestureRecognizer(singleTap)
+
+        liveHold.minimumPressDuration = 0.3
+        liveHold.allowableMovement = 10
+        liveHold.cancelsTouchesInView = false
+        liveHold.delegate = self
+        addGestureRecognizer(liveHold)
     }
 
     @available(*, unavailable)
@@ -99,7 +121,49 @@ final class ZoomingScrollView: UIScrollView, UIScrollViewDelegate {
     func scrollViewDidZoom(_ scrollView: UIScrollView) {
         centerContent()
         // Only pan while zoomed; at 1× swipes belong to the pager.
-        isScrollEnabled = zoomScale > minimumZoomScale + 0.01
+        let zoomed = zoomScale > minimumZoomScale + 0.01
+        isScrollEnabled = zoomed
+        if zoomed != reportedZoomed {
+            reportedZoomed = zoomed
+            // resetZoom can be called from updateUIView: report after that update finishes.
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.onZoomChanged?(self.window != nil && zoomed)
+            }
+        }
+    }
+
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer === liveHold {
+            return livePhotoEnabled && zoomScale <= minimumZoomScale + 0.01
+                && (pinchGestureRecognizer?.numberOfTouches ?? 0) < 2
+        }
+        return super.gestureRecognizerShouldBegin(gestureRecognizer)
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        gestureRecognizer === liveHold || otherGestureRecognizer === liveHold
+    }
+
+    @objc private func handleLiveHold(_ gesture: UILongPressGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            guard livePhotoEnabled, zoomScale <= minimumZoomScale + 0.01 else { return }
+            holdOrigin = gesture.location(in: window)
+            onLivePhotoHold?(true)
+        case .changed:
+            let point = gesture.location(in: window)
+            let distance = hypot(point.x - holdOrigin.x, point.y - holdOrigin.y)
+            // Scroll and pinch recognizers remain free to take over from a hold.
+            if panGestureRecognizer.state == .began || panGestureRecognizer.state == .changed
+                || (pinchGestureRecognizer?.numberOfTouches ?? 0) > 1 || distance > 12 {
+                onLivePhotoHold?(false)
+            }
+        case .ended, .cancelled, .failed:
+            onLivePhotoHold?(false)
+        default: break
+        }
     }
 
     @objc private func handleSingleTap() { onSingleTap?() }

@@ -9,12 +9,16 @@ import UIKit
 struct ShareAssetButton: View {
     let asset: Asset
     let service: any ImmichService
+    var onPrepare: () -> Void = {}
     @State private var isPreparing = false
     @State private var file: SharedFile?
     @State private var failed = false
 
     var body: some View {
-        Button { Task { await prepare() } } label: {
+        Button {
+            onPrepare()
+            Task { await prepare() }
+        } label: {
             ZStack {
                 if isPreparing {
                     ProgressView()
