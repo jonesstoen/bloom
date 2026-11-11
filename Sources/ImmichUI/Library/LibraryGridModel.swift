@@ -208,17 +208,45 @@ public final class LibraryGridModel {
         monthIndexByID[id].map { months[$0] }
     }
 
-    /// A representative photo for a month card: one from the middle of the month (the first
-    /// and last are often screenshots or one-offs). `nil` until the month is loaded.
+    /// One tile in the Months view: a day of the month with a representative photo.
+    public struct DayTile: Identifiable, Sendable, Hashable {
+        public let id: String
+        /// Day of the month, shown as "8." on the tile.
+        public let day: Int
+        public let cover: Asset
+    }
+
+    /// A representative photo: a still from the middle (the first and last of a day are often
+    /// screenshots or one-offs), or the middle item if there are only videos.
+    public nonisolated static func representative(of assets: [Asset]) -> Asset? {
+        let stills = assets.filter { !$0.isVideo }
+        let pool = stills.isEmpty ? assets : stills
+        return pool.isEmpty ? nil : pool[pool.count / 2]
+    }
+
+    /// The days of a loaded month in grid order, one tile each. The first tile is the month's
+    /// featured (large) tile: the first day with a still photo, moved to the front.
+    public func dayTiles(ofMonth id: String) -> [DayTile] {
+        guard let month = month(id: id), let days = month.days else { return [] }
+        var tiles = days.compactMap { day in
+            Self.representative(of: day.assets).map { DayTile(id: day.id, day: day.day, cover: $0) }
+        }
+        if let featured = tiles.firstIndex(where: { !$0.cover.isVideo }), featured > 0 {
+            tiles.insert(tiles.remove(at: featured), at: 0)
+        }
+        return tiles
+    }
+
+    /// The month's cover (Years cards): the photo of its featured day tile, so tapping a year
+    /// opens Months at the same photo. `nil` until the month is loaded.
     public func coverAsset(ofMonth id: String) -> Asset? {
-        guard let month = month(id: id), month.isLoaded, !month.assets.isEmpty else { return nil }
-        let stills = month.assets.filter { !$0.isVideo }
-        let pool = stills.isEmpty ? month.assets : stills
-        return pool[pool.count / 2]
+        dayTiles(ofMonth: id).first?.cover
     }
 
     /// Set by the Months and Years views; the grid scrolls to this month's first cell and clears it.
     public var pendingScrollMonthID: String?
+    /// Set by a day tile in Months; the grid centres this asset and clears it.
+    public var pendingScrollAssetID: String?
 
     /// The scroll ID of the first cell of month `id` (an asset, or a placeholder slot).
     public func firstGridID(ofMonth id: String) -> AnyHashable? {

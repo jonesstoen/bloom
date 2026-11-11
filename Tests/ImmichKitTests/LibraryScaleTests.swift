@@ -32,14 +32,41 @@ final class LibraryScaleTests: XCTestCase {
         XCTAssertEqual(LibraryGridModel.years(of: months).first?.monthIDs, ["2025-02-01", "2025-01-01"])
     }
 
-    func testCoverIsAStillFromTheMiddleOfALoadedMonth() async throws {
+    func testCoverIsTheStillOfTheFeaturedDayTile() async throws {
         let model = await loadedModel()
         let loaded = try XCTUnwrap(model.months.last)
         let cover = try XCTUnwrap(model.coverAsset(ofMonth: loaded.id))
         XCTAssertTrue(loaded.assets.contains(cover))
         if loaded.assets.contains(where: { !$0.isVideo }) { XCTAssertFalse(cover.isVideo) }
+        XCTAssertEqual(cover, model.dayTiles(ofMonth: loaded.id).first?.cover, "Years opens Months at the same photo")
         XCTAssertNil(model.coverAsset(ofMonth: model.months[0].id), "not loaded yet")
         XCTAssertNil(model.coverAsset(ofMonth: "missing"))
+    }
+
+    func testDayTilesOnePerDayWithItsMiddleStill() async throws {
+        let model = await loadedModel()
+        let loaded = try XCTUnwrap(model.months.last)
+        let days = try XCTUnwrap(loaded.days)
+        let tiles = model.dayTiles(ofMonth: loaded.id)
+        XCTAssertEqual(Set(tiles.map(\.id)), Set(days.map(\.id)))
+        XCTAssertEqual(tiles.count, days.count)
+        for tile in tiles {
+            let day = try XCTUnwrap(days.first { $0.id == tile.id })
+            XCTAssertEqual(tile.day, day.day)
+            XCTAssertEqual(tile.cover, LibraryGridModel.representative(of: day.assets))
+        }
+        // Apart from the featured first tile, days keep the grid's order.
+        let rest = tiles.dropFirst().map(\.id)
+        XCTAssertEqual(rest, days.map(\.id).filter { rest.contains($0) })
+        XCTAssertTrue(model.dayTiles(ofMonth: model.months[0].id).isEmpty, "not loaded yet")
+    }
+
+    func testRepresentativePrefersAMiddleStill() {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let assets = (0..<5).map { Asset(id: "\($0)", kind: $0 == 2 ? .video : .image, takenAt: base.addingTimeInterval(Double($0))) }
+        XCTAssertEqual(LibraryGridModel.representative(of: assets)?.id, "3")
+        XCTAssertEqual(LibraryGridModel.representative(of: [assets[2]])?.id, "2")
+        XCTAssertNil(LibraryGridModel.representative(of: []))
     }
 
     func testFirstGridIDOfAMonth() async throws {
@@ -82,5 +109,12 @@ final class LibraryScaleTests: XCTestCase {
         await model.setOptions(options)
         XCTAssertEqual(model.options.newestFirst, model.newestFirst, "the grid's order stays")
         XCTAssertTrue(model.options.sortsByDateAdded)
+    }
+
+    func testMonthTitlesAreShortLikePhotos() {
+        let october = TimeBucket(id: "2026-10-01", year: 2026, month: 10, count: 1)
+        XCTAssertEqual(MonthsOverview.title(for: october, locale: Locale(identifier: "en_US")), "Oct 2026")
+        let norwegian = MonthsOverview.title(for: october, locale: Locale(identifier: "nb_NO")).lowercased()
+        XCTAssertTrue(norwegian.contains("okt") && norwegian.contains("2026"), norwegian)
     }
 }

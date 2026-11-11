@@ -159,14 +159,14 @@ public struct LibraryGridView: View {
                 switch scale {
                 case .all: grid
                 case .months:
-                    MonthsOverview(model: model, scrollTarget: monthsScrollTarget, topMargin: 96) { monthID in
-                        model.pendingScrollMonthID = monthID
+                    MonthsOverview(model: model, scrollTarget: monthsScrollTarget, topMargin: 96) { asset in
+                        model.pendingScrollAssetID = asset.id
                         withAnimation(.snappy(duration: 0.25)) { scale = .all }
                     }
                     .ignoresSafeArea(edges: .top)
                 case .years:
-                    YearsOverview(model: model, topMargin: 96) { year in
-                        monthsScrollTarget = model.newestFirst ? year.monthIDs.first : year.monthIDs.last
+                    YearsOverview(model: model, topMargin: 96) { _, coverMonth in
+                        monthsScrollTarget = coverMonth
                         withAnimation(.snappy(duration: 0.25)) { scale = .months }
                     }
                     .ignoresSafeArea(edges: .top)
@@ -314,6 +314,7 @@ public struct LibraryGridView: View {
             scrollToPendingMonth(proxy)
         }
         .onChange(of: model.pendingScrollMonthID) { _, _ in scrollToPendingMonth(proxy) }
+        .onChange(of: model.pendingScrollAssetID) { _, _ in scrollToPendingMonth(proxy) }
         }
     }
 
@@ -321,6 +322,16 @@ public struct LibraryGridView: View {
 
     /// Opened from a month card: show that month at the top of the grid.
     private func scrollToPendingMonth(_ proxy: ScrollViewProxy) {
+        if let assetID = model.pendingScrollAssetID {
+            // Opened from a day in Months: centre that photo, like Photos.
+            model.pendingScrollAssetID = nil
+            Task { @MainActor in
+                await Task.yield()
+                proxy.scrollTo(assetID, anchor: .center)
+                model.assetShownInViewer(assetID)
+            }
+            return
+        }
         guard let monthID = model.pendingScrollMonthID, let target = model.firstGridID(ofMonth: monthID) else { return }
         model.pendingScrollMonthID = nil
         // After this layout pass, so the freshly shown grid has its content size.
