@@ -22,26 +22,38 @@ public actor Timeline {
         self.options = options
     }
 
-    /// Fetches the month buckets. On refresh, months whose count did not change keep their loaded assets.
+    /// Restores a validated snapshot before the first server request, preserving loaded days.
     @discardableResult
-    public func loadBuckets() async throws -> [TimelineMonth] {
+    public func restore(_ months: [TimelineMonth]) -> Bool {
+        guard !hasLoadedBuckets, TimelineSnapshotValidation.isValid(months) else { return false }
+        generation += 1
+        self.months = sorted(months)
+        rebuildIndex()
+        hasLoadedBuckets = true
+        return true
+    }
+
+    /// Fetches the month buckets. Normally only unchanged counts retain their loaded assets.
+    /// Persistence callers can retain all old days until `refreshMonth` replaces them atomically.
+    @discardableResult
+    public func loadBuckets(preservingLoadedMonths: Bool = false) async throws -> [TimelineMonth] {
+        generation += 1
+        let startedGeneration = generation
+        inFlight = [:]
         let buckets = try await service.timeBuckets(options: options)
+        try Task.checkCancellation()
+        guard startedGeneration == generation else { throw CancellationError() }
         let previous = Dictionary(months.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let sorted = buckets.sorted { a, b in
-            let lhs = (a.year, a.month), rhs = (b.year, b.month)
-            return options.newestFirst ? lhs > rhs : lhs < rhs
-        }
-        months = sorted.map { bucket in
-            if let old = previous[bucket.id], old.bucket.count == bucket.count, old.isLoaded {
+        months = sorted(buckets.map { bucket in
+            if let old = previous[bucket.id], old.isLoaded,
+               preservingLoadedMonths || old.bucket.count == bucket.count {
                 return TimelineMonth(bucket: bucket, days: old.days)
             }
             return TimelineMonth(bucket: bucket)
-        }
-        indexByID = Dictionary(months.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
+        })
+        rebuildIndex()
         // Loads started before this refresh still return to their callers, but their results are
         // not stored, and new callers start fresh requests.
-        generation += 1
-        inFlight = [:]
         hasLoadedBuckets = true
         return months
     }
@@ -49,8 +61,18 @@ public actor Timeline {
     /// Loads (once) and returns the days of a month. Concurrent callers share a single request.
     @discardableResult
     public func loadMonth(_ bucketID: String) async throws -> [TimelineDay] {
+        try await loadMonth(bucketID, refreshing: false)
+    }
+
+    /// Fetches a fresh copy even when this month is loaded. Old days survive a failed refresh.
+    @discardableResult
+    public func refreshMonth(_ bucketID: String) async throws -> [TimelineDay] {
+        try await loadMonth(bucketID, refreshing: true)
+    }
+
+    private func loadMonth(_ bucketID: String, refreshing: Bool) async throws -> [TimelineDay] {
         guard let index = indexByID[bucketID] else { throw TimelineError.unknownBucket(bucketID) }
-        if let days = months[index].days { return days }
+        if !refreshing, let days = months[index].days { return days }
 
         if let task = inFlight[bucketID] {
             return try await task.value
@@ -65,6 +87,7 @@ public actor Timeline {
         let startedGeneration = generation
         do {
             let days = try await task.value
+            try Task.checkCancellation()
             if inFlight[bucketID] == task { inFlight[bucketID] = nil }
             if startedGeneration == generation, let index = indexByID[bucketID] {
                 months[index].days = days
@@ -113,6 +136,17 @@ public actor Timeline {
         indexByID = [:]
         generation += 1
         hasLoadedBuckets = false
+    }
+
+    private func sorted(_ months: [TimelineMonth]) -> [TimelineMonth] {
+        months.sorted { a, b in
+            let lhs = (a.bucket.year, a.bucket.month), rhs = (b.bucket.year, b.bucket.month)
+            return options.newestFirst ? lhs > rhs : lhs < rhs
+        }
+    }
+
+    private func rebuildIndex() {
+        indexByID = Dictionary(months.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
 }
 

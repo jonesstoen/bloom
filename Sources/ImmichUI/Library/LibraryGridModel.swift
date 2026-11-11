@@ -59,6 +59,10 @@ public final class LibraryGridModel {
     @ObservationIgnored private(set) var lastVisibleRange: Range<Int>?
     /// Confirmed writes override snapshots still cached inside the current timeline.
     @ObservationIgnored private var favoriteOverrides: [String: Bool] = [:]
+    @ObservationIgnored private let snapshotStore: TimelineSnapshotStore?
+    @ObservationIgnored private var didAttemptRestore = false
+    @ObservationIgnored private var loadGeneration = 0
+    @ObservationIgnored private var snapshotSave: Task<Void, Never>?
 
     private enum PrefetchUpdate: Sendable {
         case assets([String])
@@ -77,7 +81,8 @@ public final class LibraryGridModel {
         options: TimelineOptions = TimelineOptions(newestFirst: false),
         loader: ImageLoader? = nil,
         prefetch: Prefetcher.Configuration = Prefetcher.Configuration(),
-        images: ThumbnailImageCache? = nil
+        images: ThumbnailImageCache? = nil,
+        snapshotStore: TimelineSnapshotStore? = nil
     ) {
         let loader = loader ?? ImageLoader(service: service)
         let prefetcher = Prefetcher(loader: loader, size: .thumbnail, configuration: prefetch)
@@ -88,6 +93,7 @@ public final class LibraryGridModel {
         self.loader = loader
         self.prefetcher = prefetcher
         self.images = images ?? ThumbnailImageCache()
+        self.snapshotStore = snapshotStore
 
         let (stream, continuation) = AsyncStream<PrefetchUpdate>.makeStream()
         self.updates = continuation
@@ -103,6 +109,7 @@ public final class LibraryGridModel {
     }
 
     deinit {
+        snapshotSave?.cancel()
         updates.yield(.cancel)
         updates.finish()
     }
@@ -130,51 +137,126 @@ public final class LibraryGridModel {
     /// Loads the month skeleton, then the months at the end the grid starts at
     /// (the newest ones). Calling it again refreshes the buckets.
     public func load() async {
+        loadGeneration += 1
+        let generation = loadGeneration
+        snapshotSave?.cancel()
+        loadingMonths = []
         if !favoriteOverrides.isEmpty {
-            // A bucket refresh can retain cached days when counts match. A fresh timeline
-            // reconciles external changes without clearing the visible grid before buckets arrive.
+            // A fresh actor reconciles confirmed writes with later external favorite changes.
             timeline = Timeline(service: service, options: options)
             favoriteOverrides = [:]
             loadingMonths = []
+            // An explicit refresh must not resurrect the disk copy of those old flags.
+            didAttemptRestore = true
         }
         if months.isEmpty { phase = .loading }
         let timeline = self.timeline
+        if !didAttemptRestore {
+            let cached = await snapshotStore?.load(options: timeline.options)
+            guard isCurrent(timeline, generation), !Task.isCancelled else { return }
+            didAttemptRestore = true
+            if let cached {
+                let restored = await timeline.restore(cached)
+                guard isCurrent(timeline, generation) else { return }
+                if restored {
+                    let snapshot = await timeline.months
+                    guard isCurrent(timeline, generation) else { return }
+                    // Even a cancelled refresh can retain this usable local presentation.
+                    apply(snapshot)
+                    phase = .loaded
+                }
+            }
+        }
+        guard isCurrent(timeline, generation), !Task.isCancelled else { return }
         do {
-            let loaded = try await timeline.loadBuckets()
-            guard timeline === self.timeline else { return }
+            let loaded = try await timeline.loadBuckets(preservingLoadedMonths: snapshotStore != nil)
+            guard isCurrent(timeline, generation), !Task.isCancelled else { return }
             apply(loaded)
             phase = .loaded
         } catch is CancellationError {
-            guard timeline === self.timeline else { return }
-            if months.isEmpty { phase = .idle }
+            guard isCurrent(timeline, generation) else { return }
+            if months.isEmpty && phase != .loaded { phase = .idle }
             return
         } catch {
-            guard timeline === self.timeline else { return }
-            if months.isEmpty { phase = .failed(error.localizedDescription) }
+            guard isCurrent(timeline, generation) else { return }
+            if months.isEmpty && phase != .loaded { phase = .failed(error.localizedDescription) }
             return
         }
+        // Revalidate every retained month, including same-count replacements and Favorites.
+        // Six requests at a time bounds traffic. Publish the newest batch promptly, then
+        // the final snapshot once, avoiding a full grid/index rebuild for every older batch.
+        let recentFirst = newestFirst ? months : Array(months.reversed())
+        let retained = snapshotStore == nil ? [] : recentFirst.filter(\.isLoaded).map(\.id)
         let start = newestFirst ? Array(months.prefix(2)) : Array(months.suffix(2))
         await withTaskGroup(of: Void.self) { group in
-            for month in start {
+            for month in start where !month.isLoaded {
                 group.addTask { await self.loadMonth(month.id) }
             }
         }
+        for offset in stride(from: 0, to: retained.count, by: 6) {
+            guard isCurrent(timeline, generation), !Task.isCancelled else { return }
+            let batch = Array(retained[offset..<min(offset + 6, retained.count)])
+            loadingMonths.formUnion(batch)
+            await withTaskGroup(of: Void.self) { group in
+                for id in batch { group.addTask { _ = try? await timeline.refreshMonth(id) } }
+            }
+            if isCurrent(timeline, generation) { loadingMonths.subtract(batch) }
+            guard isCurrent(timeline, generation), !Task.isCancelled else { return }
+            if offset == 0 || offset + 6 >= retained.count {
+                guard await applySnapshot(from: timeline, generation: generation) else { return }
+            }
+        }
+        guard isCurrent(timeline, generation), !Task.isCancelled else { return }
+        snapshotSave?.cancel()
+        await persistSnapshot(timeline: timeline, generation: generation)
     }
 
     /// Loads the month if needed. Failures leave the placeholders and are retried on the next appear.
     public func loadMonth(_ id: String) async {
         guard let index = monthIndexByID[id], !months[index].isLoaded, !loadingMonths.contains(id) else { return }
         let timeline = self.timeline
+        let generation = loadGeneration
         loadingMonths.insert(id)
-        defer { if timeline === self.timeline { loadingMonths.remove(id) } }
+        defer { if isCurrent(timeline, generation) { loadingMonths.remove(id) } }
         do {
             try await timeline.loadMonth(id)
-            // Ignore months of a timeline replaced by a new sort or filter meanwhile.
-            guard timeline === self.timeline else { return }
-            apply(await timeline.months)
+            guard await applySnapshot(from: timeline, generation: generation) else { return }
+            scheduleSnapshotSave()
         } catch {
             // Keep placeholders; the next appear retries.
         }
+    }
+
+    private func isCurrent(_ timeline: Timeline, _ generation: Int) -> Bool {
+        timeline === self.timeline && generation == loadGeneration
+    }
+
+    private func applySnapshot(from timeline: Timeline, generation: Int) async -> Bool {
+        let snapshot = await timeline.months
+        guard isCurrent(timeline, generation), !Task.isCancelled else { return false }
+        apply(snapshot)
+        return true
+    }
+
+    /// Coalesce neighbouring month completions; scrolling/visibility changes never encode data.
+    private func scheduleSnapshotSave() {
+        guard snapshotStore != nil else { return }
+        snapshotSave?.cancel()
+        let timeline = self.timeline
+        let generation = loadGeneration
+        snapshotSave = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+            guard let self else { return }
+            await self.persistSnapshot(timeline: timeline, generation: generation)
+        }
+    }
+
+    private func persistSnapshot(timeline: Timeline, generation: Int) async {
+        guard let snapshotStore, isCurrent(timeline, generation), !Task.isCancelled else { return }
+        // Capture options and the already merged presentation together before hopping actors.
+        let snapshot = months
+        let options = timeline.options
+        await snapshotStore.save(months: snapshot, options: options)
     }
 
     /// A cell (asset or placeholder) of month `id` appeared: load it and its neighbours.
@@ -345,23 +427,25 @@ public final class LibraryGridModel {
     /// so this happens once per session.
     public func loadAllMonths() async {
         let timeline = self.timeline
+        let generation = loadGeneration
         let ids = months.filter { !$0.isLoaded && !loadingMonths.contains($0.id) }.map(\.id)
         guard !ids.isEmpty else { return }
         loadingMonths.formUnion(ids)
-        defer { if timeline === self.timeline { loadingMonths.subtract(ids) } }
+        defer { if isCurrent(timeline, generation) { loadingMonths.subtract(ids) } }
         await withTaskGroup(of: Void.self) { group in
             var next = 0
             func add() {
                 guard next < ids.count else { return }
                 let id = ids[next]
                 next += 1
-                group.addTask { try? await timeline.loadMonth(id) }
+                group.addTask { _ = try? await timeline.loadMonth(id) }
             }
             for _ in 0..<6 { add() }
             while await group.next() != nil { add() }
         }
-        guard timeline === self.timeline else { return }
-        apply(await timeline.months)
+        guard await applySnapshot(from: timeline, generation: generation) else { return }
+        snapshotSave?.cancel()
+        await persistSnapshot(timeline: timeline, generation: generation)
     }
 
     /// A loaded asset moved to another grid cell because months before it changed size.
@@ -401,6 +485,8 @@ public final class LibraryGridModel {
         var newOptions = newOptions
         newOptions.newestFirst = newestFirst
         guard newOptions != options else { return }
+        snapshotSave?.cancel()
+        didAttemptRestore = false
         options = newOptions
         timeline = Timeline(service: service, options: newOptions)
         favoriteOverrides = [:]
@@ -495,6 +581,7 @@ public final class LibraryGridModel {
         guard !assets.isEmpty else { return }
         for asset in assets { favoriteOverrides[asset.id] = asset.isFavorite }
         apply(months)
+        scheduleSnapshotSave()
     }
 
     private func mergingFavoriteUpdates(into source: [TimelineMonth]) -> [TimelineMonth] {

@@ -36,7 +36,7 @@ public struct TimeBucket: Sendable, Hashable, Identifiable, Codable {
 }
 
 /// Which assets a timeline shows and in which order. Maps to the `/timeline/*` query parameters.
-public struct TimelineOptions: Sendable, Hashable {
+public struct TimelineOptions: Sendable, Hashable, Codable {
     public enum Visibility: String, Sendable, Hashable, CaseIterable, Codable {
         /// The main library (not archived, hidden or locked).
         case timeline
@@ -95,7 +95,7 @@ public struct TimelineOptions: Sendable, Hashable {
 }
 
 /// The assets taken on one (local) day.
-public struct TimelineDay: Sendable, Hashable, Identifiable {
+public struct TimelineDay: Sendable, Hashable, Identifiable, Codable {
     public var year: Int
     public var month: Int
     public var day: Int
@@ -118,7 +118,7 @@ public struct TimelineDay: Sendable, Hashable, Identifiable {
 }
 
 /// One month section of the timeline. `days` is `nil` until its assets are loaded.
-public struct TimelineMonth: Sendable, Hashable, Identifiable {
+public struct TimelineMonth: Sendable, Hashable, Identifiable, Codable {
     public var bucket: TimeBucket
     public var days: [TimelineDay]?
 

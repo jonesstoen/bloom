@@ -119,6 +119,9 @@ public struct LibraryGridView: View {
             #endif
             .task {
                 if usesLargeTitle, let stored = GridDensity(rawValue: storedColumns) { model.density = stored }
+                // Resolve saved sort/filter choices before a fast disk restore can expose
+                // the default library partition. The separate task still handles later changes.
+                if usesLargeTitle && menuOptions != model.options { await model.setOptions(menuOptions) }
                 if model.phase == .idle { await model.load() }
                 // The Library tab: load every month in the background once the newest ones are
                 // on screen, so Years and Months open instantly later.

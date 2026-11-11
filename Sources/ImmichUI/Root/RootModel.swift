@@ -10,12 +10,14 @@ public final class ImmichSession: Identifiable {
     public let service: any ImmichService
     public let loader: ImageLoader
     public let library: LibraryGridModel
+    public let snapshotStore: TimelineSnapshotStore?
 
-    init(service: any ImmichService, disk: DiskImageCache?) {
+    init(service: any ImmichService, disk: DiskImageCache?, snapshotStore: TimelineSnapshotStore? = nil) {
         self.service = service
+        self.snapshotStore = snapshotStore
         let loader = ImageLoader(service: service, disk: disk)
         self.loader = loader
-        self.library = LibraryGridModel(service: service, loader: loader)
+        self.library = LibraryGridModel(service: service, loader: loader, snapshotStore: snapshotStore)
     }
 }
 
@@ -83,6 +85,7 @@ public final class RootModel {
             let store = self.store
             try await Task.detached { try store.clear() }.value
             session?.library.stopPrefetching()
+            await session?.snapshotStore?.invalidate()
             await session?.loader.invalidate()
             session = nil
             error = nil
@@ -97,7 +100,10 @@ public final class RootModel {
     private func connected(_ credentials: ServerCredentials) {
         let service = makeService(credentials)
         let disk = persistsImages ? DiskImageCache(directory: Self.cacheDirectory(for: credentials)) : nil
-        session = ImmichSession(service: service, disk: disk)
+        let snapshots = persistsImages ? TimelineSnapshotStore(
+            directory: Self.cacheDirectory(for: credentials).appendingPathComponent("Timeline", isDirectory: true)
+        ) : nil
+        session = ImmichSession(service: service, disk: disk, snapshotStore: snapshots)
         error = nil
         phase = .signedIn
     }
