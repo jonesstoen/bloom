@@ -180,6 +180,15 @@ final class MockSearchTests: XCTestCase {
         }
     }
 
+    func testLivePhotoFilterMatchesAssetsWithAMotionPart() {
+        let live = Asset(id: "l", kind: .image, takenAt: Date(timeIntervalSince1970: 1), livePhotoVideoId: "motion")
+        let still = Asset(id: "s", kind: .image, takenAt: Date(timeIntervalSince1970: 1))
+        XCTAssertTrue(SearchFilters(isMotion: true).matches(live))
+        XCTAssertFalse(SearchFilters(isMotion: true).matches(still))
+        XCTAssertTrue(SearchFilters(isMotion: false).matches(still))
+        XCTAssertTrue(SearchFilters().matches(live))
+    }
+
     func testFiltersMatchSemantics() {
         let asset = Asset(
             id: "a", kind: .image, takenAt: Date(timeIntervalSince1970: 1000), isFavorite: true,
@@ -333,6 +342,18 @@ final class LiveSearchTests: XCTestCase {
         XCTAssertEqual(body["withExif"] as? Bool, true)
         XCTAssertNil(body["visibility"])
         XCTAssertEqual((body["takenBefore"] as? String).flatMap(ImmichDate.parse), before)
+    }
+
+    func testLivePhotosAndVideosFiltersAreSent() async throws {
+        let (service, transport) = try service { _, _ in (200, Self.response([Self.assetJSON("a1")], nextPage: "null", nextCursor: "null")) }
+        _ = try await service.metadataSearch(MetadataSearchQuery(filters: SearchFilters(isMotion: true)), page: nil, size: 10)
+        _ = try await service.metadataSearch(MetadataSearchQuery(filters: SearchFilters(kind: .video)), page: nil, size: 10)
+        let livePhotos = try transport.jsonBody(0)
+        XCTAssertEqual(livePhotos["isMotion"] as? Bool, true)
+        XCTAssertNil(livePhotos["type"])
+        let videos = try transport.jsonBody(1)
+        XCTAssertEqual(videos["type"] as? String, "VIDEO")
+        XCTAssertNil(videos["isMotion"])
     }
 
     func testMetadataSearchFallsBackToPageNumber() async throws {

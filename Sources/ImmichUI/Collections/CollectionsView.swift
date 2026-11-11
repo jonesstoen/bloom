@@ -21,6 +21,9 @@ public struct CollectionsView: View {
                 pinnedRow
                 albumsRow
                 peopleRow
+                if !model.places.isEmpty { placesRow }
+                mediaTypesSection
+                otherSection
             }
             .padding(.vertical, 8)
         }
@@ -49,7 +52,8 @@ public struct CollectionsView: View {
         async let memories: Void = (force || !model.loadedMemories) ? model.loadMemories() : ()
         async let albums: Void = (force || !model.loadedAlbums) ? model.loadAlbums() : ()
         async let people: Void = (force || !model.loadedPeople) ? model.loadPeople() : ()
-        _ = await (memories, albums, people)
+        async let places: Void = (force || !model.loadedPlaces) ? model.loadPlaces() : ()
+        _ = await (memories, albums, people, places)
     }
 
     // MARK: Rows
@@ -127,6 +131,57 @@ public struct CollectionsView: View {
                 }
                 .buttonStyle(.plain)
             }
+        }
+    }
+
+    private var placesRow: some View {
+        CollectionRow(title: "Places") {
+            ForEach(model.places.prefix(30), id: \.self) { city in
+                NavigationLink {
+                    QueryGridView(title: city, query: Self.placeQuery(city), service: model.service, loader: model.loader)
+                } label: {
+                    PlaceCard(city: city, service: model.service, loader: model.loader)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    static func placeQuery(_ city: String) -> MetadataSearchQuery {
+        MetadataSearchQuery(filters: SearchFilters(city: city))
+    }
+
+    /// Media Types, like Photos: two columns of rows with an icon.
+    private var mediaTypesSection: some View {
+        CollectionListSection(title: "Media Types") {
+            NavigationLink {
+                QueryGridView(title: "Videos", query: MetadataSearchQuery(filters: SearchFilters(kind: .video)),
+                              service: model.service, loader: model.loader, emptyMessage: "Videos you upload appear here.")
+            } label: { CollectionListRow(title: "Videos", systemImage: "video") }
+            NavigationLink {
+                QueryGridView(title: "Live Photos", query: MetadataSearchQuery(filters: SearchFilters(isMotion: true)),
+                              service: model.service, loader: model.loader, emptyMessage: "Live Photos you upload appear here.")
+            } label: { CollectionListRow(title: "Live Photos", systemImage: "livephoto") }
+        }
+    }
+
+    /// Other collections backed by the timeline: recently added, archive and trash.
+    private var otherSection: some View {
+        CollectionListSection(title: "Other") {
+            NavigationLink {
+                TimelineCollectionView(title: "Recently Added",
+                                       options: TimelineOptions(newestFirst: false, sortsByDateAdded: true),
+                                       service: model.service, loader: model.loader)
+            } label: { CollectionListRow(title: "Recently Added", systemImage: "clock.arrow.circlepath") }
+            NavigationLink {
+                TimelineCollectionView(title: "Archive", options: TimelineOptions(visibility: .archive, newestFirst: false),
+                                       service: model.service, loader: model.loader)
+            } label: { CollectionListRow(title: "Archive", systemImage: "archivebox") }
+            NavigationLink {
+                TimelineCollectionView(title: "Recently Deleted",
+                                       options: TimelineOptions(isTrashed: true, visibility: nil, newestFirst: false),
+                                       service: model.service, loader: model.loader)
+            } label: { CollectionListRow(title: "Recently Deleted", systemImage: "trash") }
         }
     }
 
@@ -264,6 +319,74 @@ private struct MemoryCard: View {
                 if !Task.isCancelled { image = decoded }
             }
     }
+}
+
+/// "Title ›" header above two columns of rounded rows, like Media Types in Photos.
+private struct CollectionListSection<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title).font(.title2.weight(.bold))
+                .accessibilityAddTraits(.isHeader)
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                content
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 20)
+    }
+}
+
+private struct CollectionListRow: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .frame(width: 24)
+            Text(title).font(.body).lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 50)
+        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+/// A place card: the newest photo taken there, with the city name over it.
+private struct PlaceCard: View {
+    let city: String
+    let service: any ImmichService
+    let loader: ImageLoader
+    @State private var coverID: String?
+
+    var body: some View {
+        ImageCard(key: coverID.map { ImageKey(assetID: $0, size: .thumbnail) }, loader: loader, title: city, symbol: "mappin.and.ellipse")
+            .task(id: city) {
+                guard coverID == nil else { return }
+                let results = try? await service.metadataSearch(CollectionsView.placeQuery(city), page: nil, size: 1)
+                if !Task.isCancelled { coverID = results?.assets.first?.id }
+            }
+    }
+}
+
+/// A timeline-backed collection (Recently Added, Archive, Recently Deleted) in the library grid.
+public struct TimelineCollectionView: View {
+    @State private var model: LibraryGridModel
+    private let title: String
+
+    public init(title: String, options: TimelineOptions, service: any ImmichService, loader: ImageLoader? = nil) {
+        _model = State(initialValue: LibraryGridModel(service: service, options: options, loader: loader))
+        self.title = title
+    }
+
+    public var body: some View { LibraryGridView(model: model, title: title) }
 }
 
 /// All favorite photos and videos in the library grid.

@@ -112,6 +112,7 @@ struct SearchRequestBody: Encodable {
     var albumIds: [String]?
     var type: String?
     var isFavorite: Bool?
+    var isMotion: Bool?
     var visibility: String?
     var originalFileName: String?
     var description: String?
@@ -142,6 +143,7 @@ struct SearchRequestBody: Encodable {
             }
         }
         isFavorite = f.isFavorite
+        isMotion = f.isMotion
         visibility = f.visibility.map { LiveImmichService.visibility($0).rawValue }
     }
 

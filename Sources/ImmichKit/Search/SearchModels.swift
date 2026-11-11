@@ -26,6 +26,8 @@ public struct SearchFilters: Sendable, Hashable, Codable {
     public var isFavorite: Bool?
     /// `.timeline` (default) hides archived assets, like the Photos app; `nil` searches everything.
     public var visibility: TimelineOptions.Visibility?
+    /// `true`: Live Photos only (photos with a motion part).
+    public var isMotion: Bool?
 
     public init(
         takenAfter: Date? = nil, takenBefore: Date? = nil,
@@ -33,7 +35,8 @@ public struct SearchFilters: Sendable, Hashable, Codable {
         make: String? = nil, model: String? = nil, lensModel: String? = nil,
         personIds: [String] = [], albumIds: [String] = [],
         kind: Asset.Kind? = nil, isFavorite: Bool? = nil,
-        visibility: TimelineOptions.Visibility? = .timeline
+        visibility: TimelineOptions.Visibility? = .timeline,
+        isMotion: Bool? = nil
     ) {
         self.takenAfter = takenAfter
         self.takenBefore = takenBefore
@@ -48,6 +51,7 @@ public struct SearchFilters: Sendable, Hashable, Codable {
         self.kind = kind
         self.isFavorite = isFavorite
         self.visibility = visibility
+        self.isMotion = isMotion
     }
 
     /// A filter for the half-open date range `range` (start inclusive, end inclusive to the second before).
@@ -67,6 +71,7 @@ public struct SearchFilters: Sendable, Hashable, Codable {
         if let takenBefore, asset.takenAt > takenBefore { return false }
         if let kind, asset.kind != kind { return false }
         if let isFavorite, asset.isFavorite != isFavorite { return false }
+        if let isMotion, (asset.livePhotoVideoId != nil) != isMotion { return false }
         let exif = asset.exif
         for (wanted, actual) in [(city, exif?.city), (state, exif?.state), (country, exif?.country),
                                  (make, exif?.make), (model, exif?.model), (lensModel, exif?.lensModel)] {

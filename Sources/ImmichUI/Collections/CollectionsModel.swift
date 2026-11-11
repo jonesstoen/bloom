@@ -14,6 +14,9 @@ public final class CollectionsModel {
     /// Memories, newest first, without empty ones.
     public private(set) var memories: [Memory] = []
     public private(set) var loadedMemories = false
+    /// Cities with photos, for the Places row.
+    public private(set) var places: [String] = []
+    public private(set) var loadedPlaces = false
     @ObservationIgnored public let service: any ImmichService
     @ObservationIgnored public let loader: ImageLoader
 
@@ -60,6 +63,16 @@ public final class CollectionsModel {
         } catch {
             loadedMemories = true
         }
+    }
+
+    /// Places are a bonus row too: a failure leaves it out.
+    public func loadPlaces() async {
+        do {
+            let result = try await service.searchSuggestions(.city)
+            try Task.checkCancellation()
+            places = result.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        } catch {}
+        loadedPlaces = true
     }
 
     static func sortedMemories(_ memories: [Memory]) -> [Memory] {
