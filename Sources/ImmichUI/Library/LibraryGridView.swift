@@ -18,6 +18,9 @@ public struct LibraryGridView: View {
     @State private var settleScale: CGFloat = 1
     /// Magnification at which the current density was reached during this pinch.
     @State private var pinchBaseline: CGFloat = 1
+    @State private var scrollPosition = ScrollPosition()
+    /// Latest scroll geometry, kept outside observation so scrolling doesn't re-render the view.
+    @State private var scrollMetrics = ScrollMetrics()
     @Namespace private var photoTransition
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let title: String
@@ -207,6 +210,10 @@ public struct LibraryGridView: View {
         // Only for the first position: anchoring on later size changes (e.g. a new column count)
         // fights the scroll to the pinch anchor and can leave the screen on unrendered rows.
         .defaultScrollAnchor(model.newestFirst ? .top : .bottom, for: .initialOffset)
+        .scrollPosition($scrollPosition)
+        .onScrollGeometryChange(for: ScrollGeometry.self, of: { $0 }) { _, geometry in
+            scrollMetrics.geometry = geometry
+        }
         .refreshable { await model.load() }
         #if os(iOS)
         .scaleEffect(liveScale * settleScale, anchor: .center)
@@ -260,17 +267,41 @@ public struct LibraryGridView: View {
     /// size the old cells had on screen and springs to its real size: one continuous motion.
     private func switchDensity(to density: GridDensity, proxy: ScrollViewProxy, fromVisualScale visual: CGFloat) {
         guard density != model.density else { return }
-        let anchor = model.visibleCenterID
         let ratio = CGFloat(density.rawValue) / CGFloat(model.density.rawValue)
+        let target = exactOffset(for: density)
+        let fallbackAnchor = target == nil ? model.visibleCenterID : nil
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             model.density = density
-            if let anchor { proxy.scrollTo(anchor, anchor: .center) }
+            // Set in the same transaction as the new column count: SwiftUI applies it after the
+            // relayout, so the photo in the middle of the screen doesn't move at all.
+            if let target {
+                scrollPosition.scrollTo(y: target)
+            } else if let fallbackAnchor {
+                proxy.scrollTo(fallbackAnchor, anchor: .center)
+            }
             liveScale = 1
             settleScale = reduceMotion ? 1 : visual * ratio * settleScale
         }
         withAnimation(reduceMotion ? nil : .spring(duration: 0.35, bounce: 0)) { settleScale = 1 }
+    }
+
+    /// The `scrollTo(y:)` value that keeps the item at the centre of the screen in place after
+    /// switching to `density` (the same point the pinch scale is anchored on).
+    private func exactOffset(for density: GridDensity) -> CGFloat? {
+        guard let geometry = scrollMetrics.geometry else { return nil }
+        let itemCount = model.months.reduce(0) { $0 + ($1.isLoaded ? $1.assets.count : $1.bucket.count) }
+        let size = geometry.containerSize
+        guard let result = GridPinchAnchor.anchor(
+            offset: geometry.contentOffset.y, focalX: size.width / 2, focalY: size.height / 2,
+            width: size.width, spacing: Self.spacing, from: model.density.rawValue, to: density.rawValue,
+            itemCount: itemCount
+        ) else { return nil }
+        // `scrollTo(y:)` is measured from the top of the content margin, the geometry's offset
+        // from the top of the grid; they differ by the top inset.
+        let inset = geometry.contentInsets.top
+        return max(result.offset, -inset) + inset
     }
 
     private var footer: some View {
@@ -280,6 +311,10 @@ public struct LibraryGridView: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 24)
     }
+}
+
+private final class ScrollMetrics {
+    var geometry: ScrollGeometry?
 }
 
 private struct ViewerItem: Identifiable {
