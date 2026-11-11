@@ -9,6 +9,10 @@ import SwiftUI
 public struct LibraryGridView: View {
     @State private var model: LibraryGridModel
     @State private var selectedAsset: Asset?
+    @State private var transitionSourceID: String?
+    @State private var viewerScrollTarget: String?
+    @Namespace private var photoTransition
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let title: String
     private let onSelect: (Asset) -> Void
 
@@ -42,7 +46,14 @@ public struct LibraryGridView: View {
             }
             .onDisappear { model.stopPrefetching() }
             #if os(iOS)
-            .fullScreenCover(item: $selectedAsset) { asset in viewer(asset) }
+            .fullScreenCover(item: $selectedAsset) { asset in
+                if reduceMotion {
+                    viewer(asset)
+                } else {
+                    viewer(asset)
+                        .navigationTransition(.zoom(sourceID: transitionSourceID ?? asset.id, in: photoTransition))
+                }
+            }
             #else
             .sheet(item: $selectedAsset) { asset in viewer(asset).frame(minWidth: 700, minHeight: 500) }
             #endif
@@ -51,6 +62,10 @@ public struct LibraryGridView: View {
     private func viewer(_ asset: Asset) -> some View {
         AssetViewer(assets: model.months.flatMap(\.assets), selectedID: asset.id,
                     service: model.service, loader: model.loader) { id in
+            if transitionSourceID != id {
+                transitionSourceID = id
+                viewerScrollTarget = id
+            }
             if let month = model.months.first(where: { $0.assets.contains(where: { $0.id == id }) }) {
                 model.monthAppeared(month.id)
             }
@@ -83,6 +98,7 @@ public struct LibraryGridView: View {
     }
 
     private var grid: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             LazyVGrid(columns: columns, spacing: Self.spacing, pinnedViews: [.sectionHeaders]) {
                 ForEach(model.months) { month in
@@ -97,16 +113,24 @@ public struct LibraryGridView: View {
         }
         .defaultScrollAnchor(model.newestFirst ? .top : .bottom)
         .refreshable { await model.load() }
+        .onChange(of: viewerScrollTarget) { _, id in
+            if let id { proxy.scrollTo(id, anchor: .center) }
+        }
+        }
     }
 
     @ViewBuilder
     private func cells(for month: TimelineMonth) -> some View {
         if month.isLoaded {
             ForEach(month.assets) { asset in
-                Button { selectedAsset = asset; onSelect(asset) } label: {
+                Button { transitionSourceID = asset.id; selectedAsset = asset; onSelect(asset) } label: {
                     ThumbnailCell(asset: asset, loader: model.loader, images: model.images)
                 }
                 .buttonStyle(.plain)
+                .id(asset.id)
+                #if os(iOS)
+                .matchedTransitionSource(id: asset.id, in: photoTransition)
+                #endif
                 .onAppear {
                     model.assetAppeared(asset.id)
                     model.monthAppeared(month.id)
