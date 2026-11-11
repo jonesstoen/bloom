@@ -151,4 +151,33 @@ final class LibraryScaleTests: XCTestCase {
         await model.setOptions(options)
         XCTAssertTrue(model.months.filter(\.isLoaded).flatMap(\.assets).allSatisfy(\.isFavorite))
     }
+
+    func testLoadingMonthsWithOtherCountsReportsHowTheCentrePhotoMoved() async throws {
+        let mock = MockImmichService(library: .standard)
+        // The server's bucket counts are 2 lower than what the months contain.
+        await mock.setBucketCountOffset(-2)
+        let model = await loadedModel(mock)
+        let last = try XCTUnwrap(model.months.last)
+        let anchor = try XCTUnwrap(last.assets.first)
+        model.assetAppeared(anchor.id)
+        let before = try XCTUnwrap(model.gridIndex(ofAsset: anchor.id))
+        let unloadedBefore = model.months.dropLast().filter { !$0.isLoaded }.count
+        XCTAssertNil(model.gridShift)
+        await model.loadAllMonths()
+        let shift = try XCTUnwrap(model.gridShift)
+        XCTAssertEqual(shift.anchorID, anchor.id)
+        XCTAssertEqual(shift.oldIndex, before)
+        XCTAssertEqual(shift.newIndex, before + 2 * unloadedBefore, "each month before it grew by 2")
+        XCTAssertEqual(model.gridIndex(ofAsset: anchor.id), shift.newIndex)
+        model.stopPrefetching()
+    }
+
+    func testNoShiftWhenCountsMatch() async throws {
+        let model = await loadedModel(MockImmichService(library: .standard))
+        let anchor = try XCTUnwrap(model.months.last?.assets.first)
+        model.assetAppeared(anchor.id)
+        await model.loadAllMonths()
+        XCTAssertNil(model.gridShift)
+        model.stopPrefetching()
+    }
 }

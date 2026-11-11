@@ -168,8 +168,25 @@ public struct LibraryGridView: View {
             )
         case .loaded:
             if usesLargeTitle {
+                // The grid stays alive (hidden) under Years and Months: rebuilding 10 000+ cells
+                // made returning to All slow, and it keeps its scroll position.
+                ZStack {
+                    grid
+                        .opacity(scale == .all ? 1 : 0)
+                        .allowsHitTesting(scale == .all)
+                        .accessibilityHidden(scale != .all)
+                    overview
+                }
+            } else {
+                grid
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var overview: some View {
                 switch scale {
-                case .all: grid
+                case .all: EmptyView()
                 case .months:
                     MonthsOverview(model: model, scrollTarget: monthsScrollTarget, topMargin: 96) { asset in
                         model.pendingScrollAssetID = asset.id
@@ -183,10 +200,6 @@ public struct LibraryGridView: View {
                     }
                     .ignoresSafeArea(edges: .top)
                 }
-            } else {
-                grid
-            }
-        }
     }
 
     private var headerSubtitle: String {
@@ -330,10 +343,28 @@ public struct LibraryGridView: View {
         .onDisappear { scrollMetrics.geometry = nil }
         .onChange(of: model.pendingScrollMonthID) { _, _ in scrollToPendingMonth(proxy) }
         .onChange(of: model.pendingScrollAssetID) { _, _ in scrollToPendingMonth(proxy) }
+        .onChange(of: model.gridShift) { _, shift in keepInPlace(shift, proxy: proxy) }
         }
     }
 
     @State private var densityProxy: ScrollViewProxy?
+
+    /// Months loaded with a slightly different number of items than their placeholders moved
+    /// the photo in the middle of the screen to another cell: scroll so it stays where it was.
+    private func keepInPlace(_ shift: LibraryGridModel.GridShift?, proxy: ScrollViewProxy) {
+        guard let shift, let geometry = scrollMetrics.geometry, liveScale == 1, settleScale == 1 else { return }
+        let columns = model.columnCount
+        let width = geometry.containerSize.width
+        let cell = GridPinchAnchor.cellSize(width: width, spacing: Self.spacing, columns: columns)
+        // Where the photo was on screen, from the layout before the change.
+        let itemTop = Double(shift.oldIndex / columns) * (cell + Self.spacing) - geometry.contentOffset.y
+        guard itemTop > -cell, itemTop < geometry.visibleRect.height else { return }
+        let y = GridPinchAnchor.unitAnchorY(itemTop: itemTop, itemHeight: cell, insetTop: geometry.contentInsets.top,
+                                            visibleHeight: geometry.containerSize.height)
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { proxy.scrollTo(shift.anchorID, anchor: UnitPoint(x: 0.5, y: y)) }
+    }
 
     /// Opened from a month card: show that month at the top of the grid.
     private func scrollToPendingMonth(_ proxy: ScrollViewProxy) {

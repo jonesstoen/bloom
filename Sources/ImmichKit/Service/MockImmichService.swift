@@ -80,6 +80,11 @@ public actor MockImmichService: ImmichService {
     public func setAssets(_ assets: [Asset]) { self.assets = assets }
     public func setLatency(_ latency: Duration) { self.latency = latency }
     public func setFailure(_ failure: ImmichServiceError?) { self.failure = failure }
+
+    /// Added to every bucket's count, like a server whose bucket counts differ slightly from the
+    /// assets it returns for the bucket (e.g. stacks). For testing layout shifts.
+    public private(set) var bucketCountOffset = 0
+    public func setBucketCountOffset(_ offset: Int) { bucketCountOffset = offset }
     public func setRejectsAPIKey(_ rejects: Bool) { self.rejectsAPIKey = rejects }
 
     public func requestCount(_ request: Request) -> Int {
@@ -105,7 +110,9 @@ public actor MockImmichService: ImmichService {
             let key = TimeBucket.key(year: parts.year!, month: parts.month!)
             counts[key, default: (parts.year!, parts.month!, 0)].count += 1
         }
-        let buckets = counts.map { TimeBucket(id: $0.key, year: $0.value.year, month: $0.value.month, count: $0.value.count) }
+        let buckets = counts.map {
+            TimeBucket(id: $0.key, year: $0.value.year, month: $0.value.month, count: max(0, $0.value.count + bucketCountOffset))
+        }
         return buckets.sorted { options.newestFirst ? $0.id > $1.id : $0.id < $1.id }
     }
 

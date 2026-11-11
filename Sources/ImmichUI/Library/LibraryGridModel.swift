@@ -311,6 +311,32 @@ public final class LibraryGridModel {
         apply(await timeline.months)
     }
 
+    /// A loaded asset moved to another grid cell because months before it changed size.
+    public struct GridShift: Equatable, Sendable {
+        public let anchorID: String
+        public let oldIndex: Int
+        public let newIndex: Int
+        let id: Int
+    }
+
+    /// Set when the asset in the middle of the screen moved to another cell; the grid scrolls
+    /// to keep it where it was.
+    public private(set) var gridShift: GridShift?
+    @ObservationIgnored private var shiftCounter = 0
+
+    /// The grid cell of a loaded asset.
+    public func gridIndex(ofAsset assetID: String) -> Int? {
+        guard let monthID = monthIDByAssetID[assetID] else { return nil }
+        var start = 0
+        for month in months {
+            if month.id == monthID {
+                return month.assets.firstIndex { $0.id == assetID }.map { start + $0 }
+            }
+            start += month.isLoaded ? month.assets.count : month.bucket.count
+        }
+        return nil
+    }
+
     /// The month (bucket id) containing a loaded asset.
     public func monthID(ofAsset assetID: String) -> String? { monthIDByAssetID[assetID] }
 
@@ -390,6 +416,11 @@ public final class LibraryGridModel {
     }
 
     private func apply(_ newMonths: [TimelineMonth]) {
+        // A loaded month can hold a few more or fewer items than its placeholder count, which
+        // moves every cell after it. Remember where the photo in the middle of the screen was,
+        // so the grid can keep it in place (it opened in 2024 after a background load).
+        let anchor = visibleCenterID
+        let oldIndex = anchor.flatMap(gridIndex(ofAsset:))
         months = newMonths
         monthIndexByID = Dictionary(newMonths.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
         monthIDByAssetID = Dictionary(
@@ -401,6 +432,10 @@ public final class LibraryGridModel {
         flatAssetIDs = ids
         assetIndexByID = Dictionary(ids.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
         updates.yield(.assets(ids))
+        if let anchor, let oldIndex, let newIndex = gridIndex(ofAsset: anchor), newIndex != oldIndex {
+            shiftCounter += 1
+            gridShift = GridShift(anchorID: anchor, oldIndex: oldIndex, newIndex: newIndex, id: shiftCounter)
+        }
         // Indices shifted, so report the visible range again.
         lastVisibleRange = nil
         reportVisibleRange()
