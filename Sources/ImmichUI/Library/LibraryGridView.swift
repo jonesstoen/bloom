@@ -27,6 +27,7 @@ public struct LibraryGridView: View {
     @AppStorage("library.sortsByDateAdded") private var sortsByDateAdded = false
     @AppStorage("library.favoritesOnly") private var favoritesOnly = false
     @AppStorage("library.aspectRatioGrid") private var aspectRatioGrid = false
+    @AppStorage("library.columns") private var storedColumns = GridDensity.five.rawValue
     @Namespace private var photoTransition
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let title: String
@@ -88,6 +89,9 @@ public struct LibraryGridView: View {
                     LibraryScaleSwitcher(scale: $scale).padding(.bottom, 10)
                 }
             }
+            .onChange(of: model.density) { _, density in
+                if usesLargeTitle { storedColumns = density.rawValue }
+            }
             .onChange(of: scale) { old, new in
                 // From All to Months: open Months at the month you were looking at, like Photos.
                 if old == .all && new == .months {
@@ -99,6 +103,7 @@ public struct LibraryGridView: View {
             }
             #endif
             .task {
+                if usesLargeTitle, let stored = GridDensity(rawValue: storedColumns) { model.density = stored }
                 if model.phase == .idle { await model.load() }
                 // The Library tab: load every month in the background once the newest ones are
                 // on screen, so Years and Months open instantly later.
@@ -205,6 +210,8 @@ public struct LibraryGridView: View {
     private var headerSubtitle: String {
         switch scale {
         case .all where model.options.isFavorite == true: "Favorites"
+        // Grouped by upload date, the month on screen says when photos were added, not taken.
+        case .all where model.options.sortsByDateAdded: "Recently Added"
         case .all: model.visibleMonthTitle ?? model.footerText
         case .months: model.footerText
         case .years:

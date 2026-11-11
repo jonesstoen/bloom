@@ -21,7 +21,8 @@ public final class LibraryGridModel {
     /// Months in display order. Unloaded months have `days == nil`.
     public private(set) var months: [TimelineMonth] = []
     public private(set) var phase: Phase = .idle
-    public var density: GridDensity = .three
+    /// Five columns by default; the Library tab remembers the user's choice.
+    public var density: GridDensity = .five
     public var columnCount: Int { density.rawValue }
     public var visibleAnchorID: String? {
         visibleIDs.min { (assetIndexByID[$0] ?? .max) < (assetIndexByID[$1] ?? .max) }
