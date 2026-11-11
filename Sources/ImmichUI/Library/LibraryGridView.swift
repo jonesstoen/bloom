@@ -36,6 +36,7 @@ public struct LibraryGridView: View {
     private let title: String
     private let headerStyle: HeaderStyle
     private let accessory: AnyView?
+    private let scrollToNewestTrigger: Int
     private let onSelect: (Asset) -> Void
 
     public enum HeaderStyle: Sendable {
@@ -50,12 +51,14 @@ public struct LibraryGridView: View {
     ///   - headerStyle: `.largeTitle` for a top-level tab, `.navigationBar` when pushed.
     ///   - accessory: extra glass button(s) shown next to the grid options (e.g. the account menu).
     ///   - onSelect: called when an asset is tapped (opens the viewer).
+    ///   - scrollToNewestTrigger: changing it scrolls to the newest photos (the tab was tapped again).
     public init(model: LibraryGridModel, title: String = tr("Library"), headerStyle: HeaderStyle = .navigationBar,
-                accessory: AnyView? = nil, onSelect: @escaping (Asset) -> Void = { _ in }) {
+                accessory: AnyView? = nil, scrollToNewestTrigger: Int = 0, onSelect: @escaping (Asset) -> Void = { _ in }) {
         _model = State(initialValue: model)
         self.title = title
         self.headerStyle = headerStyle
         self.accessory = accessory
+        self.scrollToNewestTrigger = scrollToNewestTrigger
         self.onSelect = onSelect
     }
 
@@ -347,6 +350,7 @@ public struct LibraryGridView: View {
         .onChange(of: model.pendingScrollMonthID) { _, _ in scrollToPendingMonth(proxy) }
         .onChange(of: model.pendingScrollAssetID) { _, _ in scrollToPendingMonth(proxy) }
         .onChange(of: model.gridShift) { _, shift in keepInPlace(shift, proxy: proxy) }
+        .onChange(of: scrollToNewestTrigger) { _, _ in scrollToNewest(proxy) }
         }
     }
 
@@ -396,6 +400,18 @@ public struct LibraryGridView: View {
             }
             #endif
             if !scrollMetrics.userScrolled { proxy.scrollTo(last, anchor: model.newestFirst ? .top : .bottom) }
+        }
+    }
+
+    /// The Library tab was tapped again: back to All and the newest photos, like Photos.
+    private func scrollToNewest(_ proxy: ScrollViewProxy) {
+        if scale != .all { withAnimation(.snappy(duration: 0.25)) { scale = .all } }
+        guard let target = model.gridItemID(atGridIndex: model.newestFirst ? 0 : model.gridItemCount - 1) else { return }
+        // On the next run loop turn, after iOS has started its own scroll to the top, so this
+        // scroll replaces it.
+        Task { @MainActor in
+            await Task.yield()
+            withAnimation(.smooth(duration: 0.45)) { proxy.scrollTo(target, anchor: model.newestFirst ? .top : .bottom) }
         }
     }
 

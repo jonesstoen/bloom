@@ -54,21 +54,36 @@ private struct ImmichTabs: View {
     let session: ImmichSession
     let isSigningOut: Bool
     let signOut: () -> Void
+    @State private var selection: AppTab = .library
+    /// Bumped when the Library tab is tapped while it is already open.
+    @State private var libraryReselections = 0
+
+    enum AppTab: Hashable { case library, collections, search }
+
+    /// Tapping the open tab again calls the setter with the same value. iOS would scroll the
+    /// Library to its top, which is the oldest photo; Photos goes to the newest, so we do too.
+    private var tabSelection: Binding<AppTab> {
+        Binding(get: { selection }, set: { tab in
+            if tab == selection && tab == .library { libraryReselections += 1 }
+            selection = tab
+        })
+    }
 
     var body: some View {
-        TabView {
-            Tab(tr("Library"), systemImage: "photo.on.rectangle") {
+        TabView(selection: tabSelection) {
+            Tab(tr("Library"), systemImage: "photo.on.rectangle", value: AppTab.library) {
                 NavigationStack {
-                    LibraryGridView(model: session.library, headerStyle: .largeTitle, accessory: AnyView(accountMenu))
+                    LibraryGridView(model: session.library, headerStyle: .largeTitle, accessory: AnyView(accountMenu),
+                                    scrollToNewestTrigger: libraryReselections)
                 }
             }
-            Tab(tr("Collections"), systemImage: "rectangle.stack") {
+            Tab(tr("Collections"), systemImage: "rectangle.stack", value: AppTab.collections) {
                 NavigationStack {
                     CollectionsView(service: session.service, loader: session.loader, accessory: AnyView(accountMenu))
                 }
             }
             // Search sits apart from the other tabs at the trailing edge, like Photos.
-            Tab(tr("Search"), systemImage: "magnifyingglass", role: .search) {
+            Tab(tr("Search"), systemImage: "magnifyingglass", value: AppTab.search, role: .search) {
                 NavigationStack { SearchView(service: session.service, loader: session.loader) }
             }
         }
