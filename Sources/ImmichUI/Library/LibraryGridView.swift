@@ -211,6 +211,7 @@ public struct LibraryGridView: View {
         .defaultScrollAnchor(model.newestFirst ? .top : .bottom, for: .initialOffset)
         .onScrollGeometryChange(for: ScrollGeometry.self, of: { $0 }) { _, geometry in
             scrollMetrics.geometry = geometry
+            scrollMetrics.pendingOffset = nil
         }
         .refreshable { await model.load() }
         #if os(iOS)
@@ -287,15 +288,19 @@ public struct LibraryGridView: View {
 
     /// The cell at the centre of the scroll view (the point the pinch scale is anchored on) and
     /// the `scrollTo` anchor that keeps it exactly there after switching to `density`.
-    private func exactAnchor(for density: GridDensity) -> (id: String, anchor: UnitPoint)? {
+    private func exactAnchor(for density: GridDensity) -> (id: AnyHashable, anchor: UnitPoint)? {
         guard let geometry = scrollMetrics.geometry else { return nil }
+        // A fast pinch can switch again before the grid reports its new offset; then the offset
+        // this view scrolled to last time is the current one (a stale offset jumped to 2021).
+        let currentOffset = scrollMetrics.pendingOffset ?? geometry.contentOffset.y
         let frameHeight = geometry.visibleRect.height
         let width = geometry.containerSize.width
         guard let result = GridPinchAnchor.anchor(
-            offset: geometry.contentOffset.y, focalX: width / 2, focalY: frameHeight / 2,
+            offset: currentOffset, focalX: width / 2, focalY: frameHeight / 2,
             width: width, spacing: Self.spacing, from: model.density.rawValue, to: density.rawValue,
             itemCount: model.gridItemCount
-        ), let id = model.assetID(atGridIndex: result.index) else { return nil }
+        ), let id = model.gridItemID(atGridIndex: result.index) else { return nil }
+        scrollMetrics.pendingOffset = result.offset
         let cell = GridPinchAnchor.cellSize(width: width, spacing: Self.spacing, columns: density.rawValue)
         let row = Double(result.index / density.rawValue)
         let itemTop = row * (cell + Self.spacing) - result.offset
@@ -332,6 +337,8 @@ struct PlaceholderSlots: RandomAccessCollection {
 
 private final class ScrollMetrics {
     var geometry: ScrollGeometry?
+    /// Offset of the last density switch until the grid reports geometry for the new layout.
+    var pendingOffset: Double?
 }
 
 private struct ViewerItem: Identifiable {
@@ -386,8 +393,9 @@ private struct GridCells: View, Equatable {
         } else {
             // IDs must be unique across the whole grid: plain 0..<count would repeat in every
             // unloaded month, which LazyVGrid can't lay out (it rendered black).
-            ForEach(PlaceholderSlots(monthID: month.id, count: month.bucket.count)) { _ in
+            ForEach(PlaceholderSlots(monthID: month.id, count: month.bucket.count)) { slot in
                 PlaceholderCell()
+                    .id(slot)
                     .onAppear { model.monthAppeared(month.id) }
             }
         }

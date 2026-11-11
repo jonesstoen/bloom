@@ -168,6 +168,23 @@ public final class LibraryGridModel {
         months.reduce(0) { $0 + ($1.isLoaded ? $1.assets.count : $1.bucket.count) }
     }
 
+    /// The scroll ID of grid cell `index`: the asset's id, or the placeholder slot of an unloaded
+    /// month, so the grid can scroll to any cell.
+    public func gridItemID(atGridIndex index: Int) -> AnyHashable? {
+        guard index >= 0 else { return nil }
+        var start = 0
+        for month in months {
+            let count = month.isLoaded ? month.assets.count : month.bucket.count
+            if index < start + count {
+                return month.isLoaded
+                    ? AnyHashable(month.assets[index - start].id)
+                    : AnyHashable(PlaceholderSlots.Slot(monthID: month.id, index: index - start))
+            }
+            start += count
+        }
+        return nil
+    }
+
     /// The asset in grid cell `index`, or `nil` when that cell is a placeholder.
     public func assetID(atGridIndex index: Int) -> String? {
         guard index >= 0 else { return nil }

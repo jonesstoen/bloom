@@ -105,6 +105,10 @@ final class GridIndexTests: XCTestCase {
         XCTAssertNil(model.assetID(atGridIndex: 0))
         XCTAssertNil(model.assetID(atGridIndex: total))
         XCTAssertNil(model.assetID(atGridIndex: -1))
+        // Every cell has a scroll ID: assets by id, placeholders by month and position.
+        XCTAssertEqual(model.gridItemID(atGridIndex: total - 1), AnyHashable(last.assets.last!.id))
+        XCTAssertEqual(model.gridItemID(atGridIndex: 1), AnyHashable(PlaceholderSlots.Slot(monthID: model.months[0].id, index: 1)))
+        XCTAssertNil(model.gridItemID(atGridIndex: total))
     }
 }
 
