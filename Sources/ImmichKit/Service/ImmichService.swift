@@ -20,6 +20,74 @@ public protocol ImmichService: Sendable {
 
     /// `GET /assets/{id}/thumbnail?size=…`: encoded image bytes (JPEG/WebP) for a grid thumbnail or a preview.
     func thumbnail(assetID: String, size: ImageSize) async throws -> Data
+
+    // MARK: Albums
+
+    /// `GET /albums`: the user's albums (owned and shared with them).
+    /// - Parameter shared: `true` only shared albums, `false` only unshared ones, `nil` all.
+    func albums(shared: Bool?) async throws -> [Album]
+
+    /// `GET /albums/{id}`: one album's metadata. Its assets come from the timeline with `.album(id)`.
+    func album(id: String) async throws -> Album
+
+    // MARK: People
+
+    /// `GET /people` (all pages): recognized people, in server order (most assets first).
+    /// - Parameter withHidden: include people the user has hidden.
+    func people(withHidden: Bool) async throws -> [Person]
+
+    /// `GET /people/{id}`.
+    func person(id: String) async throws -> Person
+
+    /// `GET /people/{id}/thumbnail`: encoded image bytes of the person's face crop.
+    func personThumbnail(personID: String) async throws -> Data
+}
+
+extension ImmichService {
+    /// All albums, owned and shared.
+    public func albums() async throws -> [Album] {
+        try await albums(shared: nil)
+    }
+
+    /// Visible (not hidden) people.
+    public func people() async throws -> [Person] {
+        try await people(withHidden: false)
+    }
+
+    /// Every asset matching `options`: loads the month buckets, then all buckets concurrently.
+    /// Returned in `options` order. For large timelines prefer the lazy `Timeline` actor.
+    public func allAssets(options: TimelineOptions) async throws -> [Asset] {
+        let buckets = try await timeBuckets(options: options)
+        let ids = buckets.map(\.id)
+        let perBucket = try await withThrowingTaskGroup(of: (Int, [Asset]).self) { group in
+            // Bounded concurrency so a big album does not open dozens of requests at once.
+            let maxConcurrent = 4
+            var results = [[Asset]](repeating: [], count: ids.count)
+            for (index, id) in ids.enumerated() {
+                if index >= maxConcurrent, let (done, assets) = try await group.next() {
+                    results[done] = assets
+                }
+                group.addTask { (index, try await self.timeBucketAssets(bucketID: id, options: options)) }
+            }
+            while let (done, assets) = try await group.next() {
+                results[done] = assets
+            }
+            return results
+        }
+        return perBucket.flatMap { $0 }
+    }
+
+    /// The assets in an album (including archived ones, as the server returns them).
+    public func albumAssets(albumID: String, newestFirst: Bool = true) async throws -> [Asset] {
+        var options = TimelineOptions.album(albumID)
+        options.newestFirst = newestFirst
+        return try await allAssets(options: options)
+    }
+
+    /// The assets showing a person, newest first.
+    public func personAssets(personID: String) async throws -> [Asset] {
+        try await allAssets(options: .person(personID))
+    }
 }
 
 /// Server-rendered image sizes used by the UI. The original file has its own endpoint.

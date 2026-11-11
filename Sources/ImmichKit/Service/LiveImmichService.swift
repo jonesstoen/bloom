@@ -16,6 +16,7 @@ public struct LiveImmichService: ImmichService {
         self.transport = transport
         self.client = Client(
             serverURL: credentials.apiBaseURL,
+            configuration: Configuration(dateTranscoder: ImmichDateTranscoder()),
             transport: transport,
             middlewares: [APIKeyMiddleware(apiKey: credentials.apiKey)]
         )
@@ -112,6 +113,99 @@ public struct LiveImmichService: ImmichService {
         }
     }
 
+    // MARK: Albums
+
+    public func albums(shared: Bool?) async throws -> [Album] {
+        let output = try await Self.mapErrors { try await client.getAllAlbums(query: .init(isShared: shared)) }
+        switch output {
+        case .ok(let ok):
+            guard case .json(let dtos) = ok.body else { throw ImmichServiceError.invalidResponse }
+            return dtos.map(Album.init(dto:))
+        case .undocumented(let status, _):
+            throw Self.error(forStatus: status)
+        }
+    }
+
+    public func album(id: String) async throws -> Album {
+        let output = try await Self.mapErrors { try await client.getAlbumInfo(path: .init(id: id)) }
+        switch output {
+        case .ok(let ok):
+            guard case .json(let dto) = ok.body else { throw ImmichServiceError.invalidResponse }
+            return Album(dto: dto)
+        case .undocumented(let status, _):
+            throw Self.error(forStatus: status)
+        }
+    }
+
+    // MARK: People
+
+    /// Page size for `GET /people` (spec maximum is 1000).
+    static let peoplePageSize = 500
+    /// Safety stop in case a server keeps reporting `hasNextPage`.
+    static let maxPeoplePages = 100
+
+    public func people(withHidden: Bool) async throws -> [Person] {
+        var people: [Person] = []
+        var seen = Set<String>()
+        for page in 1...Self.maxPeoplePages {
+            let (batch, hasNextPage) = try await peoplePage(page, withHidden: withHidden)
+            for person in batch where seen.insert(person.id).inserted { people.append(person) }
+            if !hasNextPage || batch.isEmpty { break }
+        }
+        return people
+    }
+
+    private func peoplePage(_ page: Int, withHidden: Bool) async throws -> ([Person], Bool) {
+        let query = Operations.GetAllPeople.Input.Query(page: page, size: Self.peoplePageSize, withHidden: withHidden)
+        do {
+            let output = try await Self.mapErrors { try await client.getAllPeople(query: query) }
+            switch output {
+            case .ok(let ok):
+                guard case .json(let dto) = ok.body else { throw ImmichServiceError.invalidResponse }
+                return (dto.people.map(Person.init(dto:)), dto.hasNextPage ?? false)
+            case .undocumented(let status, _):
+                throw Self.error(forStatus: status)
+            }
+        } catch ImmichServiceError.invalidResponse {
+            // Older servers omit fields the v3.4.0 spec requires (`otherPeople`, `sharedBy`, ...).
+            let path = "/people?page=\(page)&size=\(Self.peoplePageSize)&withHidden=\(withHidden)"
+            let data = try await rawGET(path: path, operationID: Operations.GetAllPeople.id)
+            return try LenientPeople.page(from: data)
+        }
+    }
+
+    public func person(id: String) async throws -> Person {
+        do {
+            let output = try await Self.mapErrors { try await client.getPerson(path: .init(id: id)) }
+            switch output {
+            case .ok(let ok):
+                guard case .json(let dto) = ok.body else { throw ImmichServiceError.invalidResponse }
+                return Person(dto: dto)
+            case .undocumented(let status, _):
+                throw Self.error(forStatus: status)
+            }
+        } catch ImmichServiceError.invalidResponse {
+            let path = "/people/\(Self.pathComponent(id))"
+            let data = try await rawGET(path: path, operationID: Operations.GetPerson.id)
+            return try LenientPeople.person(from: data)
+        }
+    }
+
+    public func personThumbnail(personID: String) async throws -> Data {
+        let output = try await Self.mapErrors { try await client.getPersonThumbnail(path: .init(id: personID)) }
+        switch output {
+        case .ok(let ok):
+            guard case .binary(let body) = ok.body else { throw ImmichServiceError.invalidResponse }
+            return try await Self.mapErrors { try await Data(collecting: body, upTo: Self.maxImageBytes) }
+        case .undocumented(let status, _):
+            throw Self.error(forStatus: status)
+        }
+    }
+
+    private static func pathComponent(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#"))) ?? value
+    }
+
     private static func visibility(_ value: TimelineOptions.Visibility) -> Components.Schemas.AssetVisibility {
         switch value {
         case .timeline: return .timeline
@@ -121,22 +215,27 @@ public struct LiveImmichService: ImmichService {
 
     /// `GET /server/version` decoded into `ServerVersion`, where `featureLevel` is optional.
     private func lenientServerVersion() async throws -> ServerVersion {
-        var request = HTTPRequest(method: .get, scheme: nil, authority: nil, path: "/server/version")
-        request.headerFields[.accept] = "application/json"
-        request.headerFields[APIKeyMiddleware.headerName] = credentials.apiKey
-        let (response, body) = try await Self.mapErrors {
-            try await transport.send(
-                request, body: nil, baseURL: credentials.apiBaseURL, operationID: "getServerVersion"
-            )
-        }
-        guard response.status.code == 200 else { throw Self.error(forStatus: response.status.code) }
-        guard let body else { throw ImmichServiceError.invalidResponse }
-        let data = try await Self.mapErrors { try await Data(collecting: body, upTo: 64 * 1024) }
+        let data = try await rawGET(path: "/server/version", operationID: "getServerVersion", maxBytes: 64 * 1024)
         do {
             return try JSONDecoder().decode(ServerVersion.self, from: data)
         } catch {
             throw ImmichServiceError.invalidResponse
         }
+    }
+
+    /// A JSON `GET` through the same transport, bypassing the generated decoder.
+    /// Used for lenient decoding of responses from servers older than the spec.
+    /// - Parameter path: relative to the API base URL, may include a query string.
+    private func rawGET(path: String, operationID: String, maxBytes: Int = 16 * 1024 * 1024) async throws -> Data {
+        var request = HTTPRequest(method: .get, scheme: nil, authority: nil, path: path)
+        request.headerFields[.accept] = "application/json"
+        request.headerFields[APIKeyMiddleware.headerName] = credentials.apiKey
+        let (response, body) = try await Self.mapErrors {
+            try await transport.send(request, body: nil, baseURL: credentials.apiBaseURL, operationID: operationID)
+        }
+        guard response.status.code == 200 else { throw Self.error(forStatus: response.status.code) }
+        guard let body else { throw ImmichServiceError.invalidResponse }
+        return try await Self.mapErrors { try await Data(collecting: body, upTo: maxBytes) }
     }
 
     static func error(forStatus status: Int) -> ImmichServiceError {

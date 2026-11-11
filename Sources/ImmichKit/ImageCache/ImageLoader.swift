@@ -1,17 +1,39 @@
 import Foundation
 
-/// Identifies one server-rendered image: an asset at a size.
+/// Identifies one server-rendered image: an asset at a size, or a person's face thumbnail.
 public struct ImageKey: Sendable, Hashable, CustomStringConvertible {
+    public enum Kind: Sendable, Hashable {
+        /// `GET /assets/{id}/thumbnail?size=…`
+        case asset
+        /// `GET /people/{id}/thumbnail` (`size` is ignored).
+        case person
+    }
+
+    public var kind: Kind
+    /// Asset id, or person id for `.person`.
     public var assetID: String
     public var size: ImageSize
 
     public init(assetID: String, size: ImageSize) {
+        self.kind = .asset
         self.assetID = assetID
         self.size = size
     }
 
+    /// The face thumbnail of a person.
+    public static func person(_ personID: String) -> ImageKey {
+        var key = ImageKey(assetID: personID, size: .thumbnail)
+        key.kind = .person
+        return key
+    }
+
     /// Stable string used as cache key and file name.
-    public var description: String { "\(assetID)-\(size.rawValue)" }
+    public var description: String {
+        switch kind {
+        case .asset: "\(assetID)-\(size.rawValue)"
+        case .person: "person-\(assetID)"
+        }
+    }
 }
 
 /// Loads thumbnail and preview images with a two-level cache.
@@ -67,7 +89,10 @@ public actor ImageLoader {
                     return data
                 }
                 try Task.checkCancellation()
-                let data = try await service.thumbnail(assetID: key.assetID, size: key.size)
+                let data = switch key.kind {
+                case .asset: try await service.thumbnail(assetID: key.assetID, size: key.size)
+                case .person: try await service.personThumbnail(personID: key.assetID)
+                }
                 await disk?.store(data, for: key.description)
                 return data
             }
@@ -105,6 +130,11 @@ public actor ImageLoader {
 
     public func data(assetID: String, size: ImageSize) async throws -> Data {
         try await data(for: ImageKey(assetID: assetID, size: size))
+    }
+
+    /// A person's face thumbnail, cached like asset thumbnails.
+    public func personData(personID: String) async throws -> Data {
+        try await data(for: .person(personID))
     }
 
     /// Memory-only lookup, for showing an image synchronously without a placeholder flash.

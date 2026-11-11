@@ -12,6 +12,11 @@ public actor MockImmichService: ImmichService {
         case timeBuckets
         case timeBucket(String)
         case thumbnail(String, ImageSize)
+        case albums
+        case album(String)
+        case people
+        case person(String)
+        case personThumbnail(String)
     }
 
     public private(set) var assets: [Asset] {
@@ -111,6 +116,53 @@ public actor MockImmichService: ImmichService {
     /// The bytes `thumbnail(assetID:size:)` returns. Deterministic per asset id, size and aspect ratio.
     public static func placeholderData(assetID: String, size: ImageSize, aspectRatio: Double = 1) -> Data {
         PlaceholderImage.jpegData(assetID: assetID, size: size, aspectRatio: aspectRatio)
+    }
+
+    // MARK: Albums
+
+    /// The library's albums in library order (empty without a library).
+    public func albums(shared: Bool?) async throws -> [Album] {
+        try await begin(.albums)
+        return (library?.albums ?? [])
+            .filter { shared == nil || $0.isShared == shared }
+    }
+
+    /// Throws HTTP 400 for an unknown id, as the server does for albums the user cannot access.
+    public func album(id: String) async throws -> Album {
+        try await begin(.album(id))
+        guard let album = library?.albums.first(where: { $0.id == id }) else {
+            throw ImmichServiceError.unexpectedStatus(400)
+        }
+        return album
+    }
+
+    // MARK: People
+
+    public func people(withHidden: Bool) async throws -> [Person] {
+        try await begin(.people)
+        return (library?.people ?? []).filter { withHidden || !$0.isHidden }
+    }
+
+    public func person(id: String) async throws -> Person {
+        try await begin(.person(id))
+        guard let person = library?.people.first(where: { $0.id == id }) else {
+            throw ImmichServiceError.unexpectedStatus(400)
+        }
+        return person
+    }
+
+    /// A square placeholder JPEG for known people; HTTP 404 otherwise.
+    public func personThumbnail(personID: String) async throws -> Data {
+        try await begin(.personThumbnail(personID))
+        guard library?.people.contains(where: { $0.id == personID }) == true else {
+            throw ImmichServiceError.unexpectedStatus(404)
+        }
+        return Self.personPlaceholderData(personID: personID)
+    }
+
+    /// The bytes `personThumbnail(personID:)` returns.
+    public static func personPlaceholderData(personID: String) -> Data {
+        PlaceholderImage.jpegData(assetID: "person-" + personID, size: .thumbnail, aspectRatio: 1)
     }
 
     // MARK: Helpers
