@@ -9,3 +9,6 @@ HANDOFF.md
 
 # macOS
 .DS_Store
+
+# Isolated Codex implementation checkouts
+.worktrees/
