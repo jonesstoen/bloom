@@ -129,6 +129,41 @@ final class PhotosLookTests: XCTestCase {
         try? FileManager.default.removeItem(at: second.deletingLastPathComponent())
     }
 
+    func testThumbnailStripShowsAStableWindowAroundTheCurrentItem() {
+        let assets = MockLibrary.standard.assets
+        XCTAssertGreaterThan(assets.count, 300)
+        let window = ThumbnailStrip.window(of: assets, around: 200)
+        XCTAssertTrue(window.contains { $0.id == assets[200].id })
+        XCTAssertLessThanOrEqual(window.count, 240)
+        // Swiping within the same step keeps the window (the strip doesn't jump).
+        XCTAssertEqual(ThumbnailStrip.window(of: assets, around: 201).indices, window.indices)
+        // Edges are clamped and the current item is always inside.
+        XCTAssertEqual(ThumbnailStrip.window(of: assets, around: 0).startIndex, 0)
+        let last = ThumbnailStrip.window(of: assets, around: assets.count - 1)
+        XCTAssertEqual(last.endIndex, assets.count)
+        for index in [0, 59, 60, 119, assets.count / 2, assets.count - 1] {
+            XCTAssertTrue(ThumbnailStrip.window(of: assets, around: index).indices.contains(index), "index \(index)")
+        }
+        XCTAssertTrue(ThumbnailStrip.window(of: [], around: 5).isEmpty)
+    }
+
+    func testViewerKeepsTheGridMonthLoaded() async throws {
+        let mock = MockImmichService.preview
+        let model = LibraryGridModel(service: mock, loader: ImageLoader(service: mock, disk: nil))
+        await model.load()
+        // The two newest months load first; showing a photo of the older one loads its neighbour.
+        let shownMonth = model.months[model.months.count - 2]
+        XCTAssertTrue(shownMonth.isLoaded)
+        let asset = try XCTUnwrap(shownMonth.assets.first)
+        let previous = model.months.count - 3
+        XCTAssertFalse(model.months[previous].isLoaded)
+        model.assetShownInViewer(asset.id)
+        model.assetShownInViewer("unknown")
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !model.months[previous].isLoaded && ContinuousClock.now < deadline { await Task.yield() }
+        XCTAssertTrue(model.months[previous].isLoaded, "the neighbour month of the shown photo loads")
+    }
+
     // MARK: Library header
 
     func testHeaderSubtitleFollowsTheMonthOnScreen() async throws {

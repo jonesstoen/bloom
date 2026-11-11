@@ -15,6 +15,8 @@ public struct AssetViewer: View {
     let loader: ImageLoader
     let onSelection: (String) -> Void
     private let initialID: String
+    /// Position of each asset, built once: the bars look up the current item on every swipe.
+    private let indexByID: [String: Int]
     @State private var selectedID: String?
     @State private var chromeVisible = true
     @State private var showsInfo = false
@@ -29,14 +31,17 @@ public struct AssetViewer: View {
         self.loader = loader
         self.onSelection = onSelection
         self.initialID = selectedID
+        self.indexByID = Dictionary(assets.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
         _selectedID = State(initialValue: selectedID)
         _store = State(initialValue: ViewerStore(service: service, loader: loader))
     }
 
     private var currentID: String { selectedID ?? initialID }
 
+    private var currentIndex: Int? { indexByID[currentID] }
+
     private var currentModel: ViewerAssetModel? {
-        assets.first { $0.id == currentID }.map(store.model(for:))
+        currentIndex.map { store.model(for: assets[$0]) }
     }
 
     public var body: some View {
@@ -93,7 +98,7 @@ public struct AssetViewer: View {
         }
         #else
         VStack {
-            if let asset = assets.first(where: { $0.id == currentID }) { page(asset) }
+            if let index = currentIndex { page(assets[index]) }
             HStack {
                 Button("Previous", systemImage: "chevron.left") { step(-1) }
                     .disabled(assets.first?.id == currentID)
@@ -111,8 +116,7 @@ public struct AssetViewer: View {
     }
 
     private func step(_ delta: Int) {
-        guard let index = assets.firstIndex(where: { $0.id == currentID }),
-              assets.indices.contains(index + delta) else { return }
+        guard let index = currentIndex, assets.indices.contains(index + delta) else { return }
         selectedID = assets[index + delta].id
     }
 
@@ -154,7 +158,8 @@ public struct AssetViewer: View {
     private var bottomBar: some View {
         VStack(spacing: 14) {
             #if os(iOS)
-            ThumbnailStrip(assets: assets, selectedID: currentID, loader: loader) { id in
+            ThumbnailStrip(assets: ThumbnailStrip.window(of: assets, around: currentIndex ?? 0),
+                           selectedID: currentID, loader: loader) { id in
                 selectedID = id
             }
             #endif

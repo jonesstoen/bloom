@@ -4,10 +4,22 @@ import SwiftUI
 /// The row of small thumbnails above the viewer's toolbar, like Photos: the current item is
 /// wider and centred, tapping another item jumps to it.
 struct ThumbnailStrip: View {
-    let assets: [Asset]
+    let assets: ArraySlice<Asset>
     let selectedID: String
     let loader: ImageLoader
     let onSelect: (String) -> Void
+
+    /// The strip only shows the items around the current one: rebuilding a strip of thousands
+    /// of items on every swipe is what made paging stutter. The window moves in steps of
+    /// `step` so it stays put (and doesn't jump) while you swipe within it.
+    static func window(of assets: [Asset], around index: Int, radius: Int = 120, step: Int = 60) -> ArraySlice<Asset> {
+        guard !assets.isEmpty else { return [] }
+        let clamped = min(max(index, 0), assets.count - 1)
+        let center = (clamped / step) * step + step / 2
+        let lower = max(0, center - radius)
+        let upper = min(assets.count, center + radius)
+        return assets[lower..<upper]
+    }
 
     private static let height: CGFloat = 40
     private static let width: CGFloat = 26
@@ -68,6 +80,6 @@ private struct StripThumbnail: View {
 #Preview("Thumbnail strip") {
     let mock = MockImmichService.preview
     let assets = Array(MockLibrary.standard.assets.prefix(40))
-    ThumbnailStrip(assets: assets, selectedID: assets[10].id, loader: ImageLoader(service: mock, disk: nil)) { _ in }
+    ThumbnailStrip(assets: assets[...], selectedID: assets[10].id, loader: ImageLoader(service: mock, disk: nil)) { _ in }
         .background(.black)
 }

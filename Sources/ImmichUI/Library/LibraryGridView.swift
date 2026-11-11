@@ -8,7 +8,8 @@ import SwiftUI
 /// they scroll into view. Visible cells drive the prefetcher, which loads thumbnails ahead.
 public struct LibraryGridView: View {
     @State private var model: LibraryGridModel
-    @State private var selectedAsset: Asset?
+    @State private var viewerItem: ViewerItem?
+    @State private var scrollSync: Task<Void, Never>?
     @State private var transitionSourceID: String?
     @State private var viewerScrollTarget: String?
     /// Live scale while pinching, relative to the last density switch.
@@ -58,10 +59,6 @@ public struct LibraryGridView: View {
         #endif
     }
 
-    private var columns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: Self.spacing), count: max(1, model.columnCount))
-    }
-
     public var body: some View {
         content
             .navigationTitle(title)
@@ -82,30 +79,41 @@ public struct LibraryGridView: View {
             }
             .onDisappear { model.stopPrefetching() }
             #if os(iOS)
-            .fullScreenCover(item: $selectedAsset) { asset in
+            .fullScreenCover(item: $viewerItem) { item in
                 if reduceMotion {
-                    viewer(asset)
+                    viewer(item)
                 } else {
-                    viewer(asset)
-                        .navigationTransition(.zoom(sourceID: transitionSourceID ?? asset.id, in: photoTransition))
+                    viewer(item)
+                        .navigationTransition(.zoom(sourceID: transitionSourceID ?? item.selectedID, in: photoTransition))
                 }
             }
             #else
-            .sheet(item: $selectedAsset) { asset in viewer(asset).frame(minWidth: 700, minHeight: 500) }
+            .sheet(item: $viewerItem) { item in viewer(item).frame(minWidth: 700, minHeight: 500) }
             #endif
     }
 
-    private func viewer(_ asset: Asset) -> some View {
-        AssetViewer(assets: model.viewerAssets(around: transitionSourceID ?? asset.id), selectedID: asset.id,
+    /// The viewer gets its list of assets once, when it opens, so swiping doesn't rebuild it.
+    private func viewer(_ item: ViewerItem) -> some View {
+        AssetViewer(assets: item.assets, selectedID: item.selectedID,
                     service: model.service, loader: model.loader) { id in
-            if transitionSourceID != id {
-                transitionSourceID = id
-                viewerScrollTarget = id
-            }
-            if let month = model.months.first(where: { $0.assets.contains(where: { $0.id == id }) }) {
-                model.monthAppeared(month.id)
+            guard transitionSourceID != id else { return }
+            transitionSourceID = id
+            model.assetShownInViewer(id)
+            // Keep the photo's cell on screen behind the viewer (so closing zooms back into it),
+            // but only once swiping pauses: scrolling the grid on every swipe loads thumbnails
+            // the user can't see and makes paging stutter.
+            scrollSync?.cancel()
+            scrollSync = Task {
+                try? await Task.sleep(for: .milliseconds(350))
+                if !Task.isCancelled { viewerScrollTarget = id }
             }
         }
+    }
+
+    private func open(_ asset: Asset) {
+        transitionSourceID = asset.id
+        viewerItem = ViewerItem(assets: model.viewerAssets(around: asset.id), selectedID: asset.id)
+        onSelect(asset)
     }
 
     @ViewBuilder
@@ -188,12 +196,9 @@ public struct LibraryGridView: View {
     private var grid: some View {
         ScrollViewReader { proxy in
         ScrollView {
-            // One continuous grid across months, like Photos (no section breaks).
-            LazyVGrid(columns: columns, spacing: Self.spacing) {
-                ForEach(model.months) { month in
-                    cells(for: month)
-                }
-            }
+            GridCells(model: model, columnCount: model.columnCount, spacing: Self.spacing,
+                      transition: photoTransition, onTap: open)
+                .equatable()
             footer
         }
         .contentMargins(.top, usesLargeTitle ? 96 : 0, for: .scrollContent)
@@ -256,17 +261,57 @@ public struct LibraryGridView: View {
         }
     }
 
+    private var footer: some View {
+        Text(model.footerText)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 24)
+    }
+}
+
+private struct ViewerItem: Identifiable {
+    let id = UUID()
+    let assets: [Asset]
+    let selectedID: String
+}
+
+/// The cells of the grid, split out and `Equatable` so that state changes in the parent
+/// (pinch scale on every gesture frame, the viewer's current photo) don't rebuild 10 000+
+/// cells. It still updates by itself when the model's months load (Observation).
+private struct GridCells: View, Equatable {
+    let model: LibraryGridModel
+    let columnCount: Int
+    let spacing: CGFloat
+    let transition: Namespace.ID
+    let onTap: (Asset) -> Void
+
+    static func == (lhs: GridCells, rhs: GridCells) -> Bool {
+        lhs.model === rhs.model && lhs.columnCount == rhs.columnCount
+            && lhs.spacing == rhs.spacing && lhs.transition == rhs.transition
+    }
+
+    var body: some View {
+        // One continuous grid across months, like Photos (no section breaks).
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: spacing), count: max(1, columnCount)),
+                  spacing: spacing) {
+            ForEach(model.months) { month in
+                cells(for: month)
+            }
+        }
+    }
+
     @ViewBuilder
     private func cells(for month: TimelineMonth) -> some View {
         if month.isLoaded {
             ForEach(month.assets) { asset in
-                Button { transitionSourceID = asset.id; selectedAsset = asset; onSelect(asset) } label: {
+                Button { onTap(asset) } label: {
                     ThumbnailCell(asset: asset, loader: model.loader, images: model.images)
                 }
                 .buttonStyle(.plain)
                 .id(asset.id)
                 #if os(iOS)
-                .matchedTransitionSource(id: asset.id, in: photoTransition)
+                .matchedTransitionSource(id: asset.id, in: transition)
                 #endif
                 .onAppear {
                     model.assetAppeared(asset.id)
@@ -275,19 +320,11 @@ public struct LibraryGridView: View {
                 .onDisappear { model.assetDisappeared(asset.id) }
             }
         } else {
-            ForEach(0..<month.bucket.count, id: \.self) { index in
+            ForEach(0..<month.bucket.count, id: \.self) { _ in
                 PlaceholderCell()
                     .onAppear { model.monthAppeared(month.id) }
             }
         }
-    }
-
-    private var footer: some View {
-        Text(model.footerText)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 24)
     }
 }
 

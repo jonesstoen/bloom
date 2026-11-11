@@ -163,6 +163,11 @@ public final class LibraryGridModel {
         }
     }
 
+    /// The viewer moved to `assetID`: make sure its month (and neighbours) are loaded.
+    public func assetShownInViewer(_ assetID: String) {
+        if let monthID = monthIDByAssetID[assetID] { monthAppeared(monthID) }
+    }
+
     // MARK: Visibility and prefetching
 
     public func assetAppeared(_ id: String) {
