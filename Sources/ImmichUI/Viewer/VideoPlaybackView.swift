@@ -21,9 +21,9 @@ struct VideoPlaybackView: View {
     var body: some View {
         Group {
             if request.url.host == "mock.immich.invalid" {
-                ContentUnavailableView("Preview Video", systemImage: "video", description: Text("Mock videos have no playable media. Connect to your server to play videos."))
+                ContentUnavailableView(tr("Preview Video"), systemImage: "video", description: Text(tr("Mock videos have no playable media. Connect to your server to play videos.")))
             } else if failed {
-                ContentUnavailableView("Video Unavailable", systemImage: "video.slash", description: Text("Close this item and try again."))
+                ContentUnavailableView(tr("Video Unavailable"), systemImage: "video.slash", description: Text(tr("Close this item and try again.")))
             } else if let item = player.currentItem {
                 VideoPlayer(player: player)
                     .onReceive(item.publisher(for: \.status)) { failed = $0 == .failed }

@@ -28,7 +28,7 @@ struct ShareAssetButton: View {
         .buttonStyle(.plain)
         .photosGlass(in: Circle())
         .disabled(isPreparing)
-        .accessibilityLabel("Share")
+        .accessibilityLabel(tr("Share"))
         #if os(iOS)
         .sheet(item: $file) { file in
             ActivityView(items: [file.url])
@@ -36,10 +36,10 @@ struct ShareAssetButton: View {
                 .ignoresSafeArea()
         }
         #endif
-        .alert("Couldn't Share", isPresented: $failed) {
-            Button("OK", role: .cancel) {}
+        .alert(tr("Couldn't Share"), isPresented: $failed) {
+            Button(tr("OK"), role: .cancel) {}
         } message: {
-            Text("The original file couldn't be downloaded. Please try again.")
+            Text(tr("The original file couldn't be downloaded. Please try again."))
         }
     }
 

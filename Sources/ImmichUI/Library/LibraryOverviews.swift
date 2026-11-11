@@ -6,11 +6,11 @@ public enum LibraryScale: String, CaseIterable, Identifiable, Sendable {
     case years, months, all
     public var id: String { rawValue }
 
-    var title: LocalizedStringKey {
+    var title: String {
         switch self {
-        case .years: "Years"
-        case .months: "Months"
-        case .all: "All"
+        case .years: tr("Years")
+        case .months: tr("Months")
+        case .all: tr("All")
         }
     }
 }
@@ -110,7 +110,7 @@ struct MonthsOverview: View {
     }
 
     /// "Oct 2026", like the month titles in Photos.
-    static func title(for bucket: TimeBucket, locale: Locale = .current) -> String {
+    static func title(for bucket: TimeBucket, locale: Locale = Localization.locale) -> String {
         var style = Date.FormatStyle(date: .omitted, time: .omitted, locale: locale, calendar: Asset.localCalendar, timeZone: .gmt)
         style = style.month(.abbreviated).year()
         return bucket.startDate.formatted(style)
@@ -186,7 +186,7 @@ struct MonthMosaic: View {
                 .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Day \(tile.day)")
+        .accessibilityLabel(tr("Day %lld", Int64(tile.day)))
     }
 }
 
@@ -224,7 +224,7 @@ struct YearsOverview: View {
         .defaultScrollAnchor(model.newestFirst ? .top : .bottom, for: .initialOffset)
     }
 
-    static let monthStyle = Date.FormatStyle(calendar: Asset.localCalendar, timeZone: .gmt).month(.wide)
+    static let monthStyle = Date.FormatStyle(locale: Localization.locale, calendar: Asset.localCalendar, timeZone: .gmt).month(.wide)
 }
 
 /// A photo filling its frame, loaded through the shared image loader.

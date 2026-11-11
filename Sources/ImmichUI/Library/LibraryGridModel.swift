@@ -452,7 +452,7 @@ public final class LibraryGridModel {
     }
 
     /// "23–29 Oct 2026", "29 Sep – 4 Oct 2026" or "4 Oct 2026", in the user's language.
-    public nonisolated static func dateRangeTitle(from start: Date, to end: Date, locale: Locale = .current) -> String {
+    public nonisolated static func dateRangeTitle(from start: Date, to end: Date, locale: Locale = Localization.locale) -> String {
         let calendar = Asset.localCalendar
         if calendar.isDate(start, inSameDayAs: end) {
             return start.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, locale: locale,
@@ -502,7 +502,7 @@ public final class LibraryGridModel {
     // MARK: Formatting
 
     /// "June 2026": month titles for section headers (the bucket date is UTC-encoded wall-clock time).
-    public nonisolated static func monthTitle(for bucket: TimeBucket, locale: Locale = .current) -> String {
+    public nonisolated static func monthTitle(for bucket: TimeBucket, locale: Locale = Localization.locale) -> String {
         var style = Date.FormatStyle(locale: locale, calendar: Asset.localCalendar, timeZone: .gmt)
         style = style.month(.wide).year()
         return bucket.startDate.formatted(style)
@@ -520,13 +520,13 @@ public final class LibraryGridModel {
     /// "1,234 Photos, 56 Videos" for the footer, from the loaded assets (or "N Items" from counts).
     public var footerText: String {
         let loaded = months.allSatisfy(\.isLoaded)
-        guard loaded else { return "\(totalCount.formatted()) Items" }
+        guard loaded else { return tr("%@ Items", totalCount.formatted(.number.locale(Localization.locale))) }
         let assets = months.flatMap(\.assets)
         let videos = assets.filter(\.isVideo).count
         let photos = assets.count - videos
         var parts: [String] = []
-        if photos > 0 || videos == 0 { parts.append("\(photos.formatted()) \(photos == 1 ? "Photo" : "Photos")") }
-        if videos > 0 { parts.append("\(videos.formatted()) \(videos == 1 ? "Video" : "Videos")") }
+        if photos > 0 || videos == 0 { parts.append(tr(photos == 1 ? "%@ Photo" : "%@ Photos", photos.formatted(.number.locale(Localization.locale)))) }
+        if videos > 0 { parts.append(tr(videos == 1 ? "%@ Video" : "%@ Videos", videos.formatted(.number.locale(Localization.locale)))) }
         return parts.joined(separator: ", ")
     }
 }

@@ -46,7 +46,7 @@ final class ZoomingScrollView: UIScrollView, UIScrollViewDelegate {
 
         imageView.contentMode = .scaleAspectFit
         imageView.isAccessibilityElement = true
-        imageView.accessibilityLabel = "Photo"
+        imageView.accessibilityLabel = tr("Photo")
         addSubview(imageView)
 
         let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))

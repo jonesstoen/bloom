@@ -18,8 +18,8 @@ public struct SearchView: View {
             if model.query == nil { suggestions }
             else { results }
         }
-        .navigationTitle("Search")
-        .searchable(text: $model.text, prompt: "Photos, people, places…")
+        .navigationTitle(tr("Search"))
+        .searchable(text: $model.text, prompt: tr("Photos, people, places…"))
         .task { await model.loadSuggestions() }
         .task(id: model.query) {
             do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
@@ -38,18 +38,18 @@ public struct SearchView: View {
     private var suggestions: some View {
         List {
             Section {
-                Label("Describe a photo, such as ‘a dog on the beach’.", systemImage: "sparkle.magnifyingglass")
+                Label(tr("Describe a photo, such as ‘a dog on the beach’."), systemImage: "sparkle.magnifyingglass")
                     .foregroundStyle(.secondary)
             }
             if model.loadingSuggestions { ProgressView() }
             if let error = model.suggestionsError {
                 Section {
                     Text(error).foregroundStyle(.secondary)
-                    Button("Try Again") { Task { await model.loadSuggestions() } }
+                    Button(tr("Try Again")) { Task { await model.loadSuggestions() } }
                 }
             }
             if !model.people.isEmpty {
-                Section("People") {
+                Section(tr("People")) {
                     ForEach(model.people) { person in
                         Button { model.selectPerson(person) } label: {
                             HStack {
@@ -62,7 +62,7 @@ public struct SearchView: View {
                 }
             }
             if !model.places.isEmpty {
-                Section("Places") {
+                Section(tr("Places")) {
                     ForEach(model.places, id: \.self) { place in
                         Button { model.selectCity(place) } label: { Label(place, systemImage: "mappin.and.ellipse") }
                     }
@@ -95,14 +95,14 @@ public struct SearchView: View {
                 if let error = model.error {
                     VStack {
                         Text(error).foregroundStyle(.secondary)
-                        Button("Try Again") { Task {
+                        Button(tr("Try Again")) { Task {
                             if model.assets.isEmpty { await model.search() } else { await model.loadMore() }
                         } }
                     }.padding()
                 } else if model.hasSearched && model.assets.isEmpty && !model.isLoading {
                     ContentUnavailableView.search(text: model.text)
                 } else if model.next != nil && !model.isLoading {
-                    Button("Load More") { Task { await model.loadMore() } }.padding()
+                    Button(tr("Load More")) { Task { await model.loadMore() } }.padding()
                 }
             }
             .onChange(of: transitionID) { old, id in

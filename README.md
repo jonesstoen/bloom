@@ -40,6 +40,14 @@ The `ImmichKit` library product exposes all three modules. Deployment targets ar
 
 Browsing does not require permission to the iPhone's Photos library: images come from Immich. Uploading and saving to the device's photo library are not implemented.
 
+## Language
+
+The app is in Norwegian Bokmål when the device's preferred language is Norwegian (nb, no or nn),
+otherwise in English. Texts live in `Sources/ImmichKit/Resources/nb.lproj` and
+`Sources/ImmichUI/Resources/nb.lproj` (`Localizable.strings`, keyed by the English text). Wrap new
+user-facing text in `tr("…")`; `LocalizationTests` fails if a text has no Norwegian translation.
+Dates and month names follow the same language. No setting in the app target is needed.
+
 ## Preview without a server
 
 All UI screens have mock previews. For a complete app demo, use:

@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "ImmichKit",
+    defaultLocalization: "en",
     platforms: [
         .iOS("18.0"),
         .macOS("15.0"),
@@ -36,9 +37,10 @@ let package = Package(
                 .product(name: "OpenAPIRuntime", package: "swift-openapi-runtime"),
                 .product(name: "OpenAPIURLSession", package: "swift-openapi-urlsession"),
                 .product(name: "HTTPTypes", package: "swift-http-types"),
-            ]
+            ],
+            resources: [.process("Resources")]
         ),
-        .target(name: "ImmichUI", dependencies: ["ImmichKit"]),
+        .target(name: "ImmichUI", dependencies: ["ImmichKit"], resources: [.process("Resources")]),
         .testTarget(
             name: "ImmichKitTests",
             dependencies: [

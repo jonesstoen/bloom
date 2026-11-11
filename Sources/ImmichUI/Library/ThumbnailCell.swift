@@ -61,14 +61,14 @@ struct ThumbnailCell: View {
     }
 
     private var accessibilityText: Text {
-        var parts: [String] = [asset.isVideo ? "Video" : "Photo"]
+        var parts: [String] = [asset.isVideo ? tr("Video") : tr("Photo")]
         parts.append(asset.localDateTime.formatted(Self.dateStyle))
-        if asset.isFavorite { parts.append("Favorite") }
+        if asset.isFavorite { parts.append(tr("Favorite")) }
         return Text(parts.joined(separator: ", "))
     }
 
     private static let dateStyle: Date.FormatStyle = {
-        Date.FormatStyle(calendar: Asset.localCalendar, timeZone: .gmt).day().month(.wide).year()
+        Date.FormatStyle(locale: Localization.locale, calendar: Asset.localCalendar, timeZone: .gmt).day().month(.wide).year()
     }()
 
     private func load() async {

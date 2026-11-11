@@ -7,6 +7,10 @@ private var utcCalendar: Calendar { Asset.localCalendar }
 
 /// Map markers, memories and asset detail against the mock library.
 final class MockDetailTests: XCTestCase {
+    // These tests check the English texts; the Mac running them may be set to Norwegian.
+    override func setUp() { super.setUp(); Localization.languageOverride = "en" }
+    override func tearDown() { Localization.languageOverride = nil; super.tearDown() }
+
     private let library = MockLibrary.standard
 
     // MARK: Asset detail

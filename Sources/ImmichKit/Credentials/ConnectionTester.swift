@@ -22,34 +22,34 @@ public enum LoginError: Error, Sendable, Equatable, LocalizedError {
     /// A short headline for an alert or the error row.
     public var title: String {
         switch self {
-        case .missingServer, .invalidServerURL: return "Invalid Server URL"
-        case .missingAPIKey: return "API Key Required"
-        case .serverUnreachable: return "Cannot Connect to Server"
-        case .notImmichServer: return "Not an Immich Server"
-        case .invalidAPIKey: return "Wrong API Key"
-        case .serverError: return "Server Error"
-        case .saveFailed: return "Could Not Save Login"
+        case .missingServer, .invalidServerURL: return tr("Invalid Server URL")
+        case .missingAPIKey: return tr("API Key Required")
+        case .serverUnreachable: return tr("Cannot Connect to Server")
+        case .notImmichServer: return tr("Not an Immich Server")
+        case .invalidAPIKey: return tr("Wrong API Key")
+        case .serverError: return tr("Server Error")
+        case .saveFailed: return tr("Could Not Save Login")
         }
     }
 
     public var errorDescription: String? {
         switch self {
         case .missingServer:
-            return "Enter the address of your Immich server, for example https://photos.example.com."
+            return tr("Enter the address of your Immich server, for example https://photos.example.com.")
         case .missingAPIKey:
-            return "Enter an API key. Create one on the web under Account Settings › API Keys."
+            return tr("Enter an API key. Create one on the web under Account Settings › API Keys.")
         case .invalidServerURL:
-            return "The server address is not a valid URL. Use a form like https://photos.example.com or http://192.168.1.10:2283."
+            return tr("The server address is not a valid URL. Use a form like https://photos.example.com or http://192.168.1.10:2283.")
         case .serverUnreachable(let detail):
-            return "The server could not be reached. Check the address and your network connection. (\(detail))"
+            return tr("The server could not be reached. Check the address and your network connection. (%@)", detail)
         case .notImmichServer:
-            return "The address answered, but it is not an Immich server. Check the URL and port."
+            return tr("The address answered, but it is not an Immich server. Check the URL and port.")
         case .invalidAPIKey:
-            return "The server rejected the API key. Check that it is correct, has not been deleted, and has access to your library."
+            return tr("The server rejected the API key. Check that it is correct, has not been deleted, and has access to your library.")
         case .serverError(let status):
-            return "The server answered with HTTP status \(status). Try again later."
+            return tr("The server answered with HTTP status %lld. Try again later.", Int64(status))
         case .saveFailed:
-            return "The connection works, but the login could not be saved to the Keychain."
+            return tr("The connection works, but the login could not be saved to the Keychain.")
         }
     }
 

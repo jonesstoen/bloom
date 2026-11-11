@@ -12,14 +12,14 @@ public struct AlbumsView: View {
         ScrollView {
             if let error = model.albumsError {
                 ContentUnavailableView {
-                    Label("Can't Load Albums", systemImage: "exclamationmark.triangle")
+                    Label(tr("Can't Load Albums"), systemImage: "exclamationmark.triangle")
                 } description: { Text(error) } actions: {
-                    Button("Try Again") { Task { await model.loadAlbums() } }
+                    Button(tr("Try Again")) { Task { await model.loadAlbums() } }
                 }
             }
             if model.loadingAlbums && model.albums.isEmpty { ProgressView().padding() }
             if model.loadedAlbums && model.albums.isEmpty {
-                ContentUnavailableView("No Albums", systemImage: "rectangle.stack", description: Text("Albums you create in Immich appear here."))
+                ContentUnavailableView(tr("No Albums"), systemImage: "rectangle.stack", description: Text(tr("Albums you create in Immich appear here.")))
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 16)], alignment: .leading, spacing: 24) {
                 ForEach(model.albums) { album in
@@ -30,14 +30,14 @@ public struct AlbumsView: View {
                             CollectionThumbnail(key: album.thumbnailAssetId.map { ImageKey(assetID: $0, size: .thumbnail) }, loader: model.loader)
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
                             Text(album.name).font(.headline).foregroundStyle(.primary).lineLimit(2)
-                            Text("\(album.assetCount.formatted()) items").font(.subheadline).foregroundStyle(.secondary)
+                            Text(tr("%@ items", album.assetCount.formatted(.number.locale(Localization.locale)))).font(.subheadline).foregroundStyle(.secondary)
                         }
                         .accessibilityElement(children: .combine)
                     }.buttonStyle(.plain)
                 }
             }.padding()
         }
-        .navigationTitle("Albums")
+        .navigationTitle(tr("Albums"))
         .task { if !model.loadedAlbums { await model.loadAlbums() } }
         .refreshable { await model.loadAlbums() }
     }

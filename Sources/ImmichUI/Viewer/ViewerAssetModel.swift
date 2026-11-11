@@ -31,7 +31,7 @@ public final class ViewerAssetModel {
             asset.isFavorite = updated.isFavorite
         } catch {
             asset.isFavorite = !target
-            self.error = target ? "Couldn't add to Favorites." : "Couldn't remove from Favorites."
+            self.error = target ? tr("Couldn't add to Favorites.") : tr("Couldn't remove from Favorites.")
         }
     }
 
@@ -66,7 +66,7 @@ public final class ViewerAssetModel {
         } catch {
             guard generation == started else { return }
             // Do not surface transport diagnostics containing authenticated media URLs.
-            self.error = "Couldn't load this item. Please try again."
+            self.error = tr("Couldn't load this item. Please try again.")
         }
     }
 }

@@ -36,8 +36,8 @@ struct GlassIconButton: View {
 #Preview("Glass buttons") {
     let _ = MockImmichService.preview
     HStack {
-        GlassIconButton(systemImage: "chevron.left", label: "Back") {}
-        GlassIconButton(systemImage: "heart", label: "Favorite") {}
+        GlassIconButton(systemImage: "chevron.left", label: tr("Back")) {}
+        GlassIconButton(systemImage: "heart", label: tr("Favorite")) {}
     }
     .padding(40)
     .background(LinearGradient(colors: [.orange, .blue], startPoint: .top, endPoint: .bottom))

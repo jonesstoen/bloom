@@ -9,28 +9,28 @@ public struct AssetInfoView: View {
         NavigationStack {
             Form {
                 Section {
-                    Text(asset.originalFileName ?? "Photo information").font(.headline)
-                    Text(asset.localDateTime.formatted(Date.FormatStyle(calendar: Asset.localCalendar, timeZone: .gmt).day().month(.wide).year().hour().minute()))
-                    if let size = asset.size { LabeledContent("Dimensions", value: "\(size.width) × \(size.height)") }
-                    if let bytes = asset.exif?.fileSizeInBytes { LabeledContent("File size", value: ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)) }
+                    Text(asset.originalFileName ?? tr("Photo information")).font(.headline)
+                    Text(asset.localDateTime.formatted(Date.FormatStyle(locale: Localization.locale, calendar: Asset.localCalendar, timeZone: .gmt).day().month(.wide).year().hour().minute()))
+                    if let size = asset.size { LabeledContent(tr("Dimensions"), value: "\(size.width) × \(size.height)") }
+                    if let bytes = asset.exif?.fileSizeInBytes { LabeledContent(tr("File size"), value: ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)) }
                 }
                 if let exif = asset.exif {
-                    Section("Camera") {
+                    Section(tr("Camera")) {
                         if let camera = exif.cameraName { Text(camera) }
                         if let lens = exif.lensModel { Text(lens) }
-                        if let aperture = exif.fNumber { LabeledContent("Aperture", value: "ƒ/\(aperture.formatted())") }
-                        if let iso = exif.iso { LabeledContent("ISO", value: iso.formatted()) }
-                        if let exposure = exif.exposureTime { LabeledContent("Exposure", value: exposure) }
-                        if let focal = exif.focalLength { LabeledContent("Focal length", value: "\(focal.formatted()) mm") }
+                        if let aperture = exif.fNumber { LabeledContent(tr("Aperture"), value: "ƒ/\(aperture.formatted())") }
+                        if let iso = exif.iso { LabeledContent(tr("ISO"), value: iso.formatted()) }
+                        if let exposure = exif.exposureTime { LabeledContent(tr("Exposure"), value: exposure) }
+                        if let focal = exif.focalLength { LabeledContent(tr("Focal length"), value: "\(focal.formatted()) mm") }
                     }
-                    if let place = exif.locationName { Section("Location") { Label(place, systemImage: "mappin.and.ellipse") } }
-                    if let caption = exif.description, !caption.isEmpty { Section("Caption") { Text(caption) } }
+                    if let place = exif.locationName { Section(tr("Location")) { Label(place, systemImage: "mappin.and.ellipse") } }
+                    if let caption = exif.description, !caption.isEmpty { Section(tr("Caption")) { Text(caption) } }
                 } else {
-                    Text("No camera metadata available").foregroundStyle(.secondary)
+                    Text(tr("No camera metadata available")).foregroundStyle(.secondary)
                 }
             }
             .formStyle(.grouped)
-            .navigationTitle("Information")
+            .navigationTitle(tr("Information"))
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif

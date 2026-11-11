@@ -38,7 +38,7 @@ struct ThumbnailStrip: View {
                                 .padding(.horizontal, selected ? 6 : 0)
                                 .id(asset.id)
                                 .onTapGesture { onSelect(asset.id) }
-                                .accessibilityLabel(selected ? "Current item" : "Show item")
+                                .accessibilityLabel(selected ? tr("Current item") : tr("Show item"))
                                 .accessibilityAddTraits(.isButton)
                         }
                     }

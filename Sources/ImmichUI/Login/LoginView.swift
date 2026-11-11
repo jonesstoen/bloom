@@ -34,7 +34,7 @@ public struct LoginView: View {
             }
             .formStyle(.grouped)
             .disabled(model.isConnecting)
-            .navigationTitle("Connect to Immich")
+            .navigationTitle(tr("Connect to Immich"))
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             .scrollDismissesKeyboard(.interactively)
@@ -50,9 +50,9 @@ public struct LoginView: View {
                     .font(.system(size: 56))
                     .foregroundStyle(.tint)
                     .accessibilityHidden(true)
-                Text("Immich")
+                Text(tr("Immich"))
                     .font(.largeTitle.bold())
-                Text("Sign in to your Immich server to browse your photos and videos.")
+                Text(tr("Sign in to your Immich server to browse your photos and videos."))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -65,7 +65,7 @@ public struct LoginView: View {
 
     private var fields: some View {
         Section {
-            TextField("Server URL", text: $model.server, prompt: Text("https://photos.example.com"))
+            TextField(tr("Server URL"), text: $model.server, prompt: Text(tr("https://photos.example.com")))
                 .textContentType(.URL)
                 .autocorrectionDisabled()
                 .focused($focus, equals: .server)
@@ -75,7 +75,7 @@ public struct LoginView: View {
                 .keyboardType(.URL)
                 .textInputAutocapitalization(.never)
                 #endif
-            SecureField("API Key", text: $model.apiKey, prompt: Text("API Key"))
+            SecureField(tr("API Key"), text: $model.apiKey, prompt: Text(tr("API Key")))
                 .textContentType(.password)
                 .autocorrectionDisabled()
                 .focused($focus, equals: .apiKey)
@@ -85,9 +85,9 @@ public struct LoginView: View {
                 .textInputAutocapitalization(.never)
                 #endif
         } header: {
-            Text("Server")
+            Text(tr("Server"))
         } footer: {
-            Text("Create an API key in the Immich web app under Account Settings › API Keys. It is stored in the Keychain on this device.")
+            Text(tr("Create an API key in the Immich web app under Account Settings › API Keys. It is stored in the Keychain on this device."))
         }
     }
 
@@ -112,7 +112,7 @@ public struct LoginView: View {
     private func connectedSection(_ info: ConnectionInfo) -> some View {
         Section {
             Label {
-                Text("Connected to Immich \(info.version.description)")
+                Text(tr("Connected to Immich %@", info.version.description))
             } icon: {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
@@ -128,9 +128,9 @@ public struct LoginView: View {
                     if model.isConnecting {
                         ProgressView()
                             .padding(.trailing, 4)
-                        Text("Connecting…")
+                        Text(tr("Connecting…"))
                     } else {
-                        Text("Connect")
+                        Text(tr("Connect"))
                             .fontWeight(.semibold)
                     }
                     Spacer()

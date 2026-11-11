@@ -50,7 +50,7 @@ public struct LibraryGridView: View {
     ///   - headerStyle: `.largeTitle` for a top-level tab, `.navigationBar` when pushed.
     ///   - accessory: extra glass button(s) shown next to the grid options (e.g. the account menu).
     ///   - onSelect: called when an asset is tapped (opens the viewer).
-    public init(model: LibraryGridModel, title: String = "Library", headerStyle: HeaderStyle = .navigationBar,
+    public init(model: LibraryGridModel, title: String = tr("Library"), headerStyle: HeaderStyle = .navigationBar,
                 accessory: AnyView? = nil, onSelect: @escaping (Asset) -> Void = { _ in }) {
         _model = State(initialValue: model)
         self.title = title
@@ -59,7 +59,7 @@ public struct LibraryGridView: View {
         self.onSelect = onSelect
     }
 
-    public init(service: any ImmichService, title: String = "Library", headerStyle: HeaderStyle = .navigationBar,
+    public init(service: any ImmichService, title: String = tr("Library"), headerStyle: HeaderStyle = .navigationBar,
                 onSelect: @escaping (Asset) -> Void = { _ in }) {
         self.init(model: LibraryGridModel(service: service), title: title, headerStyle: headerStyle, onSelect: onSelect)
     }
@@ -162,17 +162,17 @@ public struct LibraryGridView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .failed(let message):
             ContentUnavailableView {
-                Label("Can't Load Library", systemImage: "exclamationmark.triangle")
+                Label(tr("Can't Load Library"), systemImage: "exclamationmark.triangle")
             } description: {
                 Text(message)
             } actions: {
-                Button("Try Again") { Task { await model.load() } }
+                Button(tr("Try Again")) { Task { await model.load() } }
             }
         case .loaded where model.isEmpty:
             ContentUnavailableView(
-                "No Photos or Videos",
+                tr("No Photos or Videos"),
                 systemImage: "photo.on.rectangle",
-                description: Text("Photos and videos you upload to Immich appear here.")
+                description: Text(tr("Photos and videos you upload to Immich appear here."))
             )
         case .loaded:
             if usesLargeTitle {
@@ -217,36 +217,36 @@ public struct LibraryGridView: View {
     private var densityMenu: some View {
         Menu {
             if usesLargeTitle {
-                Picker("Sort", selection: $sortsByDateAdded) {
-                    Text("Sort by Recently Added").tag(true)
-                    Text("Sort by Date Captured").tag(false)
+                Picker(tr("Sort"), selection: $sortsByDateAdded) {
+                    Text(tr("Sort by Recently Added")).tag(true)
+                    Text(tr("Sort by Date Captured")).tag(false)
                 }
                 .pickerStyle(.inline)
                 Menu {
-                    Picker("Filter", selection: $favoritesOnly) {
-                        Label("All Items", systemImage: "photo.on.rectangle").tag(false)
-                        Label("Favorites", systemImage: "heart").tag(true)
+                    Picker(tr("Filter"), selection: $favoritesOnly) {
+                        Label(tr("All Items"), systemImage: "photo.on.rectangle").tag(false)
+                        Label(tr("Favorites"), systemImage: "heart").tag(true)
                     }
                     .pickerStyle(.inline)
                 } label: {
-                    Label("Filter", systemImage: "line.3.horizontal.decrease.circle")
+                    Label(tr("Filter"), systemImage: "line.3.horizontal.decrease.circle")
                 }
             }
             Menu {
                 Toggle(isOn: $aspectRatioGrid) {
-                    Label("Aspect Ratio Grid", systemImage: "rectangle.grid.3x2")
+                    Label(tr("Aspect Ratio Grid"), systemImage: "rectangle.grid.3x2")
                 }
-                Picker("Columns", selection: Binding(get: { model.density }, set: { changeDensity($0) })) {
+                Picker(tr("Columns"), selection: Binding(get: { model.density }, set: { changeDensity($0) })) {
                     ForEach(GridDensity.allCases, id: \.rawValue) { density in
-                        Text("\(density.rawValue) Columns").tag(density)
+                        Text(tr("%lld Columns", Int64(density.rawValue))).tag(density)
                     }
                 }
                 .pickerStyle(.inline)
             } label: {
-                Label("View Options", systemImage: "eye")
+                Label(tr("View Options"), systemImage: "eye")
             }
         } label: {
-            Label("Grid options", systemImage: isFiltered ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease")
+            Label(tr("Grid options"), systemImage: isFiltered ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease")
         }
     }
 
@@ -556,9 +556,9 @@ private struct LibraryHeaderSubtitle: View {
 
     private var text: String {
         switch scale {
-        case .all where model.options.isFavorite == true: "Favorites"
+        case .all where model.options.isFavorite == true: tr("Favorites")
         // Grouped by upload date, the month on screen says when photos were added, not taken.
-        case .all where model.options.sortsByDateAdded: "Recently Added"
+        case .all where model.options.sortsByDateAdded: tr("Recently Added")
         case .all: model.visibleDateRangeTitle ?? model.visibleMonthTitle ?? model.footerText
         case .months: model.footerText
         case .years:

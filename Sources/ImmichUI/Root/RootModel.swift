@@ -58,7 +58,7 @@ public final class RootModel {
             else { phase = .signedOut }
         } catch is CancellationError { return }
         catch {
-            self.error = "Couldn't read your saved connection. Unlock your device and try again, or remove the saved connection."
+            self.error = tr("Couldn't read your saved connection. Unlock your device and try again, or remove the saved connection.")
             phase = .failed
         }
     }
@@ -88,7 +88,7 @@ public final class RootModel {
             error = nil
             phase = .signedOut
         } catch {
-            self.error = "Couldn't remove the saved connection. Please try again."
+            self.error = tr("Couldn't remove the saved connection. Please try again.")
         }
     }
 

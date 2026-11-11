@@ -27,7 +27,7 @@ public struct CollectionsView: View {
             }
             .padding(.vertical, 8)
         }
-        .navigationTitle("Collections")
+        .navigationTitle(tr("Collections"))
         #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
         .toolbar {
@@ -59,7 +59,7 @@ public struct CollectionsView: View {
     // MARK: Rows
 
     private var memoriesRow: some View {
-        CollectionRow(title: "Memories") {
+        CollectionRow(title: tr("Memories")) {
             ForEach(model.memories) { memory in
                 Button { openMemory = memory } label: {
                     MemoryCard(memory: memory, loader: model.loader)
@@ -70,11 +70,11 @@ public struct CollectionsView: View {
     }
 
     private var pinnedRow: some View {
-        CollectionRow(title: "Pinned") {
+        CollectionRow(title: tr("Pinned")) {
             NavigationLink {
                 FavoritesView(service: model.service, loader: model.loader)
             } label: {
-                PinnedCard(title: "Favorites", systemImage: "heart.fill") {
+                PinnedCard(title: tr("Favorites"), systemImage: "heart.fill") {
                     LinearGradient(colors: [.pink.opacity(0.8), .orange.opacity(0.7)], startPoint: .topLeading, endPoint: .bottomTrailing)
                 }
             }
@@ -82,7 +82,7 @@ public struct CollectionsView: View {
             NavigationLink {
                 PhotoMapView(service: model.service, loader: model.loader)
             } label: {
-                PinnedCard(title: "Map", systemImage: "map.fill") {
+                PinnedCard(title: tr("Map"), systemImage: "map.fill") {
                     LinearGradient(colors: [.teal.opacity(0.8), .blue.opacity(0.7)], startPoint: .topLeading, endPoint: .bottomTrailing)
                 }
             }
@@ -92,10 +92,10 @@ public struct CollectionsView: View {
 
     @ViewBuilder
     private var albumsRow: some View {
-        CollectionRow(title: "Albums", destination: AnyView(AlbumsView(service: model.service, loader: model.loader))) {
+        CollectionRow(title: tr("Albums"), destination: AnyView(AlbumsView(service: model.service, loader: model.loader))) {
             if model.albums.isEmpty {
                 placeholderCards(loading: model.loadingAlbums || !model.loadedAlbums,
-                                 failed: model.albumsError != nil, empty: "No albums yet")
+                                 failed: model.albumsError != nil, empty: tr("No albums yet"))
             }
             ForEach(model.albums.prefix(20)) { album in
                 NavigationLink {
@@ -111,10 +111,10 @@ public struct CollectionsView: View {
 
     @ViewBuilder
     private var peopleRow: some View {
-        CollectionRow(title: "People", destination: AnyView(PeopleView(service: model.service, loader: model.loader))) {
+        CollectionRow(title: tr("People"), destination: AnyView(PeopleView(service: model.service, loader: model.loader))) {
             if model.people.isEmpty {
                 placeholderCards(loading: model.loadingPeople || !model.loadedPeople,
-                                 failed: model.peopleError != nil, empty: "No people yet")
+                                 failed: model.peopleError != nil, empty: tr("No people yet"))
             }
             ForEach(model.people.filter(\.isNamed).prefix(20)) { person in
                 NavigationLink {
@@ -135,7 +135,7 @@ public struct CollectionsView: View {
     }
 
     private var placesRow: some View {
-        CollectionRow(title: "Places") {
+        CollectionRow(title: tr("Places")) {
             ForEach(model.places.prefix(30), id: \.self) { city in
                 NavigationLink {
                     QueryGridView(title: city, query: Self.placeQuery(city), service: model.service, loader: model.loader)
@@ -153,35 +153,35 @@ public struct CollectionsView: View {
 
     /// Media Types, like Photos: two columns of rows with an icon.
     private var mediaTypesSection: some View {
-        CollectionListSection(title: "Media Types") {
+        CollectionListSection(title: tr("Media Types")) {
             NavigationLink {
-                QueryGridView(title: "Videos", query: MetadataSearchQuery(filters: SearchFilters(kind: .video)),
-                              service: model.service, loader: model.loader, emptyMessage: "Videos you upload appear here.")
-            } label: { CollectionListRow(title: "Videos", systemImage: "video") }
+                QueryGridView(title: tr("Videos"), query: MetadataSearchQuery(filters: SearchFilters(kind: .video)),
+                              service: model.service, loader: model.loader, emptyMessage: tr("Videos you upload appear here."))
+            } label: { CollectionListRow(title: tr("Videos"), systemImage: "video") }
             NavigationLink {
-                QueryGridView(title: "Live Photos", query: MetadataSearchQuery(filters: SearchFilters(isMotion: true)),
-                              service: model.service, loader: model.loader, emptyMessage: "Live Photos you upload appear here.")
-            } label: { CollectionListRow(title: "Live Photos", systemImage: "livephoto") }
+                QueryGridView(title: tr("Live Photos"), query: MetadataSearchQuery(filters: SearchFilters(isMotion: true)),
+                              service: model.service, loader: model.loader, emptyMessage: tr("Live Photos you upload appear here."))
+            } label: { CollectionListRow(title: tr("Live Photos"), systemImage: "livephoto") }
         }
     }
 
     /// Other collections backed by the timeline: recently added, archive and trash.
     private var otherSection: some View {
-        CollectionListSection(title: "Other") {
+        CollectionListSection(title: tr("Other")) {
             NavigationLink {
-                TimelineCollectionView(title: "Recently Added",
+                TimelineCollectionView(title: tr("Recently Added"),
                                        options: TimelineOptions(newestFirst: false, sortsByDateAdded: true),
                                        service: model.service, loader: model.loader)
-            } label: { CollectionListRow(title: "Recently Added", systemImage: "clock.arrow.circlepath") }
+            } label: { CollectionListRow(title: tr("Recently Added"), systemImage: "clock.arrow.circlepath") }
             NavigationLink {
-                TimelineCollectionView(title: "Archive", options: TimelineOptions(visibility: .archive, newestFirst: false),
+                TimelineCollectionView(title: tr("Archive"), options: TimelineOptions(visibility: .archive, newestFirst: false),
                                        service: model.service, loader: model.loader)
-            } label: { CollectionListRow(title: "Archive", systemImage: "archivebox") }
+            } label: { CollectionListRow(title: tr("Archive"), systemImage: "archivebox") }
             NavigationLink {
-                TimelineCollectionView(title: "Recently Deleted",
+                TimelineCollectionView(title: tr("Recently Deleted"),
                                        options: TimelineOptions(isTrashed: true, visibility: nil, newestFirst: false),
                                        service: model.service, loader: model.loader)
-            } label: { CollectionListRow(title: "Recently Deleted", systemImage: "trash") }
+            } label: { CollectionListRow(title: tr("Recently Deleted"), systemImage: "trash") }
         }
     }
 
@@ -191,7 +191,7 @@ public struct CollectionsView: View {
             .frame(width: 160, height: 160)
             .overlay {
                 if loading { ProgressView() }
-                else { Text(failed ? "Couldn't load" : empty).font(.subheadline).foregroundStyle(.secondary) }
+                else { Text(failed ? tr("Couldn't load") : empty).font(.subheadline).foregroundStyle(.secondary) }
             }
     }
 }
@@ -297,7 +297,7 @@ private struct MemoryCard: View {
             .overlay(alignment: .bottomLeading) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(memory.title()).font(.title2.weight(.bold))
-                    Text(memory.memoryAt.formatted(.dateTime.month(.wide).year()).uppercased())
+                    Text(memory.memoryAt.formatted(.dateTime.month(.wide).year().locale(Localization.locale)).uppercased())
                         .font(.caption.weight(.semibold))
                 }
                 .foregroundStyle(.white)
@@ -310,7 +310,7 @@ private struct MemoryCard: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(memory.title()), \(memory.assets.count) items")
+            .accessibilityLabel(tr("%@, %lld items", memory.title(), Int64(memory.assets.count)))
             .task(id: memory.id) {
                 guard let cover = memory.assets.first,
                       let data = try? await loader.data(for: ImageKey(assetID: cover.id, size: .preview)),
@@ -398,7 +398,7 @@ public struct FavoritesView: View {
             service: service, options: TimelineOptions(isFavorite: true, newestFirst: false), loader: loader))
     }
 
-    public var body: some View { LibraryGridView(model: model, title: "Favorites") }
+    public var body: some View { LibraryGridView(model: model, title: tr("Favorites")) }
 }
 
 #Preview("Collections") {

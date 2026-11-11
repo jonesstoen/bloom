@@ -1,0 +1,32 @@
+/* ImmichKit: Norwegian Bokmål. Keys are the English texts. */
+
+/* Memories */
+"%@'s birthday" = "%@ har bursdag";
+"%lld years ago" = "For %lld år siden";
+"1 year ago" = "For 1 år siden";
+
+/* Login errors: titles */
+"API Key Required" = "API-nøkkel mangler";
+"Cannot Connect to Server" = "Kan ikke koble til serveren";
+"Could Not Save Login" = "Kunne ikke lagre påloggingen";
+"Invalid Server URL" = "Ugyldig serveradresse";
+"Not an Immich Server" = "Ikke en Immich-server";
+"Server Error" = "Serverfeil";
+"Wrong API Key" = "Feil API-nøkkel";
+
+/* Login errors: messages */
+"Enter an API key. Create one on the web under Account Settings › API Keys." = "Skriv inn en API-nøkkel. Du lager en på nettet under Kontoinnstillinger › API-nøkler.";
+"Enter the address of your Immich server, for example https://photos.example.com." = "Skriv inn adressen til Immich-serveren din, for eksempel https://photos.example.com.";
+"The address answered, but it is not an Immich server. Check the URL and port." = "Adressen svarte, men det er ikke en Immich-server. Sjekk adressen og porten.";
+"The connection works, but the login could not be saved to the Keychain." = "Tilkoblingen fungerer, men påloggingen kunne ikke lagres i nøkkelringen.";
+"The server address is not a valid URL. Use a form like https://photos.example.com or http://192.168.1.10:2283." = "Serveradressen er ikke en gyldig URL. Bruk for eksempel https://photos.example.com eller http://192.168.1.10:2283.";
+"The server answered with HTTP status %lld. Try again later." = "Serveren svarte med HTTP-status %lld. Prøv igjen senere.";
+"The server could not be reached. Check the address and your network connection. (%@)" = "Fikk ikke kontakt med serveren. Sjekk adressen og nettverkstilkoblingen. (%@)";
+"The server rejected the API key. Check that it is correct, has not been deleted, and has access to your library." = "Serveren avviste API-nøkkelen. Sjekk at den er riktig, ikke er slettet og har tilgang til biblioteket ditt.";
+
+/* Service errors */
+"Could not reach the server: %@" = "Fikk ikke kontakt med serveren: %@";
+"The server answered with HTTP status %lld." = "Serveren svarte med HTTP-status %lld.";
+"The server rejected the API key." = "Serveren avviste API-nøkkelen.";
+"The server sent a response that is not an Immich API response. Check the server URL." = "Serveren sendte et svar som ikke er fra Immich. Sjekk serveradressen.";
+"The server URL is not valid." = "Serveradressen er ikke gyldig.";

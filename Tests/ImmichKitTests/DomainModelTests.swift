@@ -6,6 +6,10 @@ import XCTest
 /// Decodes JSON fixtures (shaped like real server responses per the spec) into generated DTOs,
 /// then checks the mapping to domain models.
 final class DomainModelTests: XCTestCase {
+    // These tests check the English texts; the Mac running them may be set to Norwegian.
+    override func setUp() { super.setUp(); Localization.languageOverride = "en" }
+    override func tearDown() { Localization.languageOverride = nil; super.tearDown() }
+
     private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in

@@ -292,9 +292,9 @@ public struct Memory: Sendable, Hashable, Identifiable, Codable {
         let years = calendar.component(.year, from: now) - year
         switch kind {
         case .birthday(_, let name?, _) where !name.isEmpty:
-            return "\(name)'s birthday"
+            return tr("%@'s birthday", name)
         default:
-            return years == 1 ? "1 year ago" : "\(years) years ago"
+            return years == 1 ? tr("1 year ago") : tr("%lld years ago", Int64(years))
         }
     }
 }

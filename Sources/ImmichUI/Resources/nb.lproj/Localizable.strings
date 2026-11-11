@@ -1,0 +1,139 @@
+/* ImmichUI: Norwegian Bokmål, using the Photos app's Norwegian terms. Keys are the English texts. */
+
+/* Tabs and titles */
+"Library" = "Bibliotek";
+"Collections" = "Samlinger";
+"Search" = "Søk";
+"Years" = "År";
+"Months" = "Måneder";
+"All" = "Alle";
+"Account" = "Konto";
+"Sign Out" = "Logg ut";
+"Immich" = "Immich";
+
+/* Library */
+"%@ Items" = "%@ objekter";
+"%@ items" = "%@ objekter";
+"%@ Photo" = "%@ bilde";
+"%@ Photos" = "%@ bilder";
+"%@ Video" = "%@ video";
+"%@ Videos" = "%@ videoer";
+"%lld Columns" = "%lld kolonner";
+"All Items" = "Alle objekter";
+"Aspect Ratio Grid" = "Rutenett med bildeformat";
+"Can't Load Library" = "Kan ikke laste inn biblioteket";
+"Columns" = "Kolonner";
+"Day %lld" = "Dag %lld";
+"Filter" = "Filtrer";
+"Grid options" = "Valg for rutenett";
+"No Photos or Videos" = "Ingen bilder eller videoer";
+"Photos and videos you upload to Immich appear here." = "Bilder og videoer du laster opp til Immich, vises her.";
+"Sort" = "Sorter";
+"Sort by Date Captured" = "Sorter etter dato tatt";
+"Sort by Recently Added" = "Sorter etter nylig lagt til";
+"View Options" = "Visningsvalg";
+"Opening Library…" = "Åpner biblioteket …";
+
+/* Collections */
+"%@, %lld items" = "%1$@, %2$lld objekter";
+"%lld photos" = "%lld bilder";
+"Albums" = "Album";
+"Albums you create in Immich appear here." = "Album du lager i Immich, vises her.";
+"Archive" = "Arkiv";
+"Can't Load" = "Kan ikke laste inn";
+"Can't Load Albums" = "Kan ikke laste inn album";
+"Can't Load Map" = "Kan ikke laste inn kartet";
+"Can't Load People" = "Kan ikke laste inn personer";
+"Couldn't load" = "Kunne ikke laste inn";
+"Couldn't load albums. Please try again." = "Kunne ikke laste inn album. Prøv igjen.";
+"Couldn't load people. Please try again." = "Kunne ikke laste inn personer. Prøv igjen.";
+"Couldn't load these items. Please try again." = "Kunne ikke laste inn disse objektene. Prøv igjen.";
+"Favorites" = "Favoritter";
+"Live Photos" = "Live Photos";
+"Live Photos you upload appear here." = "Live Photos du laster opp, vises her.";
+"Map" = "Kart";
+"Media Types" = "Medietyper";
+"Memories" = "Minner";
+"No Albums" = "Ingen album";
+"No albums yet" = "Ingen album ennå";
+"No People" = "Ingen personer";
+"No people yet" = "Ingen personer ennå";
+"Nothing here yet." = "Ingenting her ennå.";
+"Other" = "Annet";
+"People" = "Personer";
+"People recognized by your Immich server appear here." = "Personer som Immich-serveren din gjenkjenner, vises her.";
+"Photo locations couldn't be loaded." = "Kunne ikke laste inn hvor bildene er tatt.";
+"Pinned" = "Festede";
+"Places" = "Steder";
+"Recently Added" = "Nylig lagt til";
+"Recently Deleted" = "Nylig slettet";
+"Unnamed Person" = "Person uten navn";
+"Videos" = "Videoer";
+"Videos you upload appear here." = "Videoer du laster opp, vises her.";
+
+/* Viewer */
+"Add to Favorites" = "Legg til i Favoritter";
+"Aperture" = "Blender";
+"Back" = "Tilbake";
+"Camera" = "Kamera";
+"Caption" = "Bildetekst";
+"Close this item and try again." = "Lukk dette objektet og prøv igjen.";
+"Close viewer" = "Lukk";
+"Couldn't add to Favorites." = "Kunne ikke legge til i Favoritter.";
+"Couldn't load this item. Please try again." = "Kunne ikke laste inn dette objektet. Prøv igjen.";
+"Couldn't remove from Favorites." = "Kunne ikke fjerne fra Favoritter.";
+"Couldn't Share" = "Kunne ikke dele";
+"Current item" = "Gjeldende objekt";
+"Dimensions" = "Dimensjoner";
+"Exposure" = "Eksponering";
+"Favorite" = "Favoritt";
+"File size" = "Filstørrelse";
+"Focal length" = "Brennvidde";
+"Information" = "Informasjon";
+"ISO" = "ISO";
+"Location" = "Sted";
+"Mock videos have no playable media. Connect to your server to play videos." = "Testvideoer kan ikke spilles av. Koble til serveren din for å spille av videoer.";
+"Next" = "Neste";
+"No camera metadata available" = "Ingen kameradata tilgjengelig";
+"Photo" = "Bilde";
+"Photo information" = "Bildeinformasjon";
+"Preview Video" = "Forhåndsvisning av video";
+"Previous" = "Forrige";
+"Remove from Favorites" = "Fjern fra Favoritter";
+"Share" = "Del";
+"Show item" = "Vis objekt";
+"The original file couldn't be downloaded. Please try again." = "Originalfilen kunne ikke lastes ned. Prøv igjen.";
+"Video" = "Video";
+"Video preview" = "Forhåndsvisning av video";
+"Video Unavailable" = "Videoen er ikke tilgjengelig";
+
+/* Login */
+"API Key" = "API-nøkkel";
+"Connect" = "Koble til";
+"Connect to Immich" = "Koble til Immich";
+"Connected to Immich %@" = "Koblet til Immich %@";
+"Connecting…" = "Kobler til …";
+"Create an API key in the Immich web app under Account Settings › API Keys. It is stored in the Keychain on this device." = "Lag en API-nøkkel i Immich på nettet under Kontoinnstillinger › API-nøkler. Den lagres i nøkkelringen på denne enheten.";
+"https://photos.example.com" = "https://photos.example.com";
+"Server" = "Server";
+"Server URL" = "Serveradresse";
+"Sign in to your Immich server to browse your photos and videos." = "Logg på Immich-serveren din for å se bildene og videoene dine.";
+
+/* Root */
+"Couldn't read your saved connection. Unlock your device and try again, or remove the saved connection." = "Kunne ikke lese den lagrede tilkoblingen. Lås opp enheten og prøv igjen, eller fjern den lagrede tilkoblingen.";
+"Couldn't remove the saved connection. Please try again." = "Kunne ikke fjerne den lagrede tilkoblingen. Prøv igjen.";
+"Couldn't Sign Out" = "Kunne ikke logge ut";
+"OK" = "OK";
+"Please try again." = "Prøv igjen.";
+"Remove Saved Connection" = "Fjern lagret tilkobling";
+"Saved Connection Unavailable" = "Lagret tilkobling er ikke tilgjengelig";
+"Try again." = "Prøv igjen.";
+"Try Again" = "Prøv igjen";
+
+/* Search */
+"Couldn't load more results. Please try again." = "Kunne ikke laste inn flere treff. Prøv igjen.";
+"Couldn't search your library. Please try again." = "Kunne ikke søke i biblioteket. Prøv igjen.";
+"Describe a photo, such as ‘a dog on the beach’." = "Beskriv et bilde, for eksempel «en hund på stranden».";
+"Load More" = "Last inn flere";
+"Photos, people, places…" = "Bilder, personer, steder …";
+"Some suggestions couldn't be loaded." = "Noen forslag kunne ikke lastes inn.";

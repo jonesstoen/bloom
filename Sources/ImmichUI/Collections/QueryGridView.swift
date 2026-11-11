@@ -48,7 +48,7 @@ public final class QueryGridModel {
         } catch is CancellationError {
             return
         } catch {
-            self.error = "Couldn't load these items. Please try again."
+            self.error = tr("Couldn't load these items. Please try again.")
         }
     }
 }
@@ -62,7 +62,7 @@ public struct QueryGridView: View {
     @State private var images = ThumbnailImageCache()
 
     public init(title: String, query: MetadataSearchQuery, service: any ImmichService,
-                loader: ImageLoader? = nil, emptyMessage: String = "Nothing here yet.") {
+                loader: ImageLoader? = nil, emptyMessage: String = tr("Nothing here yet.")) {
         _model = State(initialValue: QueryGridModel(query: query, service: service, loader: loader))
         self.title = title
         self.emptyMessage = emptyMessage
@@ -83,7 +83,7 @@ public struct QueryGridView: View {
             }
             if model.isLoading { ProgressView().padding() }
             if model.hasLoaded && !model.assets.isEmpty {
-                Text("\(model.assets.count.formatted())\(model.canLoadMore ? "+" : "") Items")
+                Text(tr("%@ Items", "\(model.assets.count.formatted(.number.locale(Localization.locale)))\(model.canLoadMore ? "+" : "")"))
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 24)
@@ -92,9 +92,9 @@ public struct QueryGridView: View {
         .overlay {
             if let error = model.error, model.assets.isEmpty {
                 ContentUnavailableView {
-                    Label("Can't Load", systemImage: "exclamationmark.triangle")
+                    Label(tr("Can't Load"), systemImage: "exclamationmark.triangle")
                 } description: { Text(error) } actions: {
-                    Button("Try Again") { Task { await model.loadMore() } }
+                    Button(tr("Try Again")) { Task { await model.loadMore() } }
                 }
             } else if model.hasLoaded && model.assets.isEmpty {
                 ContentUnavailableView(title, systemImage: "photo.on.rectangle", description: Text(emptyMessage))
@@ -118,7 +118,7 @@ public struct QueryGridView: View {
 
 #Preview("Videos") {
     NavigationStack {
-        QueryGridView(title: "Videos", query: MetadataSearchQuery(filters: SearchFilters(kind: .video)),
+        QueryGridView(title: tr("Videos"), query: MetadataSearchQuery(filters: SearchFilters(kind: .video)),
                       service: MockImmichService.preview)
     }
 }

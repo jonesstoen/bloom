@@ -75,14 +75,14 @@ public struct PhotoMapView: View {
         .overlay {
             if failed {
                 ContentUnavailableView {
-                    Label("Can't Load Map", systemImage: "map")
-                } description: { Text("Photo locations couldn't be loaded.") } actions: {
-                    Button("Try Again") { Task { await load() } }
+                    Label(tr("Can't Load Map"), systemImage: "map")
+                } description: { Text(tr("Photo locations couldn't be loaded.")) } actions: {
+                    Button(tr("Try Again")) { Task { await load() } }
                 }
                 .background(.regularMaterial)
             }
         }
-        .navigationTitle("Map")
+        .navigationTitle(tr("Map"))
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         .fullScreenCover(item: $viewerAssets) { item in
@@ -166,7 +166,7 @@ private struct MapPin: View {
                 }
             }
             .shadow(color: .black.opacity(0.3), radius: 4, y: 2)
-            .accessibilityLabel("\(cluster.assetIDs.count) photos")
+            .accessibilityLabel(tr("%lld photos", Int64(cluster.assetIDs.count)))
     }
 }
 

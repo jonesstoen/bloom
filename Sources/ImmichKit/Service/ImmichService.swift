@@ -218,15 +218,15 @@ public enum ImmichServiceError: Error, Sendable, Equatable, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .invalidServerURL:
-            return "The server URL is not valid."
+            return tr("The server URL is not valid.")
         case .unauthorized:
-            return "The server rejected the API key."
+            return tr("The server rejected the API key.")
         case .unexpectedStatus(let status):
-            return "The server answered with HTTP status \(status)."
+            return tr("The server answered with HTTP status %lld.", Int64(status))
         case .invalidResponse:
-            return "The server sent a response that is not an Immich API response. Check the server URL."
+            return tr("The server sent a response that is not an Immich API response. Check the server URL.")
         case .network(let message):
-            return "Could not reach the server: \(message)"
+            return tr("Could not reach the server: %@", message)
         }
     }
 }

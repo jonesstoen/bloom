@@ -18,7 +18,7 @@ public struct ImmichRootView: View {
         Group {
             switch model.phase {
             case .loading:
-                ProgressView("Opening Library…")
+                ProgressView(tr("Opening Library…"))
             case .signedOut:
                 LoginView(model: model.makeLoginModel())
             case .signedIn:
@@ -30,21 +30,23 @@ public struct ImmichRootView: View {
                 }
             case .failed:
                 ContentUnavailableView {
-                    Label("Saved Connection Unavailable", systemImage: "lock.trianglebadge.exclamationmark")
-                } description: { Text(model.error ?? "Try again.") } actions: {
-                    Button("Try Again") { Task { await model.retryRestore() } }
-                    Button("Remove Saved Connection", role: .destructive) { Task { await model.signOut() } }
+                    Label(tr("Saved Connection Unavailable"), systemImage: "lock.trianglebadge.exclamationmark")
+                } description: { Text(model.error ?? tr("Try again.")) } actions: {
+                    Button(tr("Try Again")) { Task { await model.retryRestore() } }
+                    Button(tr("Remove Saved Connection"), role: .destructive) { Task { await model.signOut() } }
                         .disabled(model.isSigningOut)
                 }
             }
         }
         .task { await model.restore() }
-        .alert("Couldn't Sign Out", isPresented: Binding(
+        // Dates and numbers SwiftUI formats itself follow the app's language too.
+        .environment(\.locale, Localization.locale)
+        .alert(tr("Couldn't Sign Out"), isPresented: Binding(
             get: { model.phase == .signedIn && model.error != nil },
             set: { if !$0 { model.dismissError() } }
         )) {
-            Button("OK", role: .cancel) { model.dismissError() }
-        } message: { Text(model.error ?? "Please try again.") }
+            Button(tr("OK"), role: .cancel) { model.dismissError() }
+        } message: { Text(model.error ?? tr("Please try again.")) }
     }
 }
 
@@ -55,18 +57,18 @@ private struct ImmichTabs: View {
 
     var body: some View {
         TabView {
-            Tab("Library", systemImage: "photo.on.rectangle") {
+            Tab(tr("Library"), systemImage: "photo.on.rectangle") {
                 NavigationStack {
                     LibraryGridView(model: session.library, headerStyle: .largeTitle, accessory: AnyView(accountMenu))
                 }
             }
-            Tab("Collections", systemImage: "rectangle.stack") {
+            Tab(tr("Collections"), systemImage: "rectangle.stack") {
                 NavigationStack {
                     CollectionsView(service: session.service, loader: session.loader, accessory: AnyView(accountMenu))
                 }
             }
             // Search sits apart from the other tabs at the trailing edge, like Photos.
-            Tab("Search", systemImage: "magnifyingglass", role: .search) {
+            Tab(tr("Search"), systemImage: "magnifyingglass", role: .search) {
                 NavigationStack { SearchView(service: session.service, loader: session.loader) }
             }
         }
@@ -75,10 +77,10 @@ private struct ImmichTabs: View {
 
     private var accountMenu: some View {
         Menu {
-            Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive, action: signOut)
+            Button(tr("Sign Out"), systemImage: "rectangle.portrait.and.arrow.right", role: .destructive, action: signOut)
                 .disabled(isSigningOut)
         } label: {
-            Label("Account", systemImage: "person.crop.circle")
+            Label(tr("Account"), systemImage: "person.crop.circle")
                 .labelStyle(.iconOnly)
                 .font(.system(size: 20, weight: .medium))
                 .frame(width: 44, height: 44)

@@ -100,9 +100,9 @@ public struct AssetViewer: View {
         VStack {
             if let index = currentIndex { page(assets[index]) }
             HStack {
-                Button("Previous", systemImage: "chevron.left") { step(-1) }
+                Button(tr("Previous"), systemImage: "chevron.left") { step(-1) }
                     .disabled(assets.first?.id == currentID)
-                Button("Next", systemImage: "chevron.right") { step(1) }
+                Button(tr("Next"), systemImage: "chevron.right") { step(1) }
                     .disabled(assets.last?.id == currentID)
             }.padding()
         }
@@ -124,7 +124,7 @@ public struct AssetViewer: View {
 
     private var topBar: some View {
         HStack(alignment: .center) {
-            GlassIconButton(systemImage: "chevron.left", label: "Close viewer") { dismiss() }
+            GlassIconButton(systemImage: "chevron.left", label: tr("Close viewer")) { dismiss() }
             Spacer(minLength: 8)
             if let model = currentModel {
                 titleCapsule(model)
@@ -173,11 +173,11 @@ public struct AssetViewer: View {
                 if let model = currentModel {
                     HStack(spacing: 4) {
                         capsuleButton(model.asset.isFavorite ? "heart.fill" : "heart",
-                                      label: model.asset.isFavorite ? "Remove from Favorites" : "Add to Favorites") {
+                                      label: model.asset.isFavorite ? tr("Remove from Favorites") : tr("Add to Favorites")) {
                             Task { await model.toggleFavorite() }
                         }
                         .sensoryFeedback(.impact(weight: .light), trigger: model.asset.isFavorite)
-                        capsuleButton("info.circle", label: "Photo information") { showsInfo = true }
+                        capsuleButton("info.circle", label: tr("Photo information")) { showsInfo = true }
                     }
                     .padding(.horizontal, 6)
                     .photosGlass(in: Capsule())
@@ -202,9 +202,9 @@ public struct AssetViewer: View {
         .accessibilityLabel(label)
     }
 
-    private static let dayStyle = Date.FormatStyle(calendar: Asset.localCalendar, timeZone: .gmt).day().month(.wide).year()
-    private static let weekdayStyle = Date.FormatStyle(calendar: Asset.localCalendar, timeZone: .gmt).weekday(.wide)
-    private static let timeStyle = Date.FormatStyle(calendar: Asset.localCalendar, timeZone: .gmt).hour().minute()
+    private static let dayStyle = Date.FormatStyle(locale: Localization.locale, calendar: Asset.localCalendar, timeZone: .gmt).day().month(.wide).year()
+    private static let weekdayStyle = Date.FormatStyle(locale: Localization.locale, calendar: Asset.localCalendar, timeZone: .gmt).weekday(.wide)
+    private static let timeStyle = Date.FormatStyle(locale: Localization.locale, calendar: Asset.localCalendar, timeZone: .gmt).hour().minute()
 }
 
 /// Keeps one `ViewerAssetModel` per asset while the viewer is open, so the bars can read the
@@ -242,7 +242,7 @@ private struct ViewerPage: View {
             } else if let image = model.image {
                 #if os(iOS)
                 ZoomableImage(image: image, isActive: isActive, onSingleTap: onTap)
-                    .accessibilityLabel(model.asset.isVideo ? "Video preview" : "Photo")
+                    .accessibilityLabel(model.asset.isVideo ? tr("Video preview") : tr("Photo"))
                 #else
                 Image(decorative: image, scale: 1).resizable().scaledToFit()
                     .onTapGesture(perform: onTap)
@@ -250,7 +250,7 @@ private struct ViewerPage: View {
             } else if let error = model.error {
                 VStack(spacing: 12) {
                     Text(error).font(.callout).foregroundStyle(.secondary)
-                    Button("Try Again") { Task { await model.load() } }
+                    Button(tr("Try Again")) { Task { await model.load() } }
                 }
             } else {
                 ProgressView()

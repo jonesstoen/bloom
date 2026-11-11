@@ -36,7 +36,7 @@ public final class CollectionsModel {
             albums = result
             loadedAlbums = true
         } catch is CancellationError { return }
-        catch { albumsError = "Couldn't load albums. Please try again." }
+        catch { albumsError = tr("Couldn't load albums. Please try again.") }
     }
 
     public func loadPeople() async {
@@ -50,7 +50,7 @@ public final class CollectionsModel {
             people = result.filter { !$0.isHidden }
             loadedPeople = true
         } catch is CancellationError { return }
-        catch { peopleError = "Couldn't load people. Please try again." }
+        catch { peopleError = tr("Couldn't load people. Please try again.") }
     }
 
     /// Memories are a bonus row: a failure just leaves the row out.

@@ -68,7 +68,7 @@ public final class SearchModel {
         } catch is CancellationError { return }
         catch {
             guard started == generation else { return }
-            self.error = "Couldn't search your library. Please try again."
+            self.error = tr("Couldn't search your library. Please try again.")
             hasSearched = true
         }
     }
@@ -89,7 +89,7 @@ public final class SearchModel {
         } catch is CancellationError { return }
         catch {
             guard started == generation else { return }
-            self.error = "Couldn't load more results. Please try again."
+            self.error = tr("Couldn't load more results. Please try again.")
         }
     }
 
@@ -103,13 +103,13 @@ public final class SearchModel {
             try Task.checkCancellation()
             people = result.filter { $0.isNamed && !$0.isHidden }
         } catch is CancellationError { return }
-        catch { suggestionsError = "Some suggestions couldn't be loaded." }
+        catch { suggestionsError = tr("Some suggestions couldn't be loaded.") }
         do {
             let result = try await service.searchSuggestions(.city)
             try Task.checkCancellation()
             places = result
         } catch is CancellationError { return }
-        catch { suggestionsError = "Some suggestions couldn't be loaded." }
+        catch { suggestionsError = tr("Some suggestions couldn't be loaded.") }
     }
 
     private func invalidate() {
