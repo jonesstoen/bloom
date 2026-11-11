@@ -278,31 +278,38 @@ public final class LibraryGridModel {
         public let cover: Asset
     }
 
-    /// A representative photo: a still from the middle (the first and last of a day are often
-    /// screenshots or one-offs), or the middle item if there are only videos.
-    public nonisolated static func representative(of assets: [Asset]) -> Asset? {
-        let stills = assets.filter { !$0.isVideo }
-        let pool = stills.isEmpty ? assets : stills
-        return pool.isEmpty ? nil : pool[pool.count / 2]
+    /// Today's rotation for highlights (days since 1970). Tests set it to fixed days.
+    public var highlightDay = MonthHighlights.dayNumber(Date())
+
+    /// The month's highlights for the Months view: a selection of its best days and their layout.
+    /// Empty until the month is loaded.
+    public func monthPlan(ofMonth id: String) -> MonthHighlights.Plan {
+        guard let month = month(id: id), let days = month.days else { return MonthHighlights.Plan(tiles: [], layout: .row) }
+        return MonthHighlights.plan(days: days, seed: MonthHighlights.seed(monthID: id, dayNumber: highlightDay))
     }
 
-    /// The days of a loaded month in grid order, one tile each. The first tile is the month's
-    /// featured (large) tile: the first day with a still photo, moved to the front.
-    public func dayTiles(ofMonth id: String) -> [DayTile] {
-        guard let month = month(id: id), let days = month.days else { return [] }
-        var tiles = days.compactMap { day in
-            Self.representative(of: day.assets).map { DayTile(id: day.id, day: day.day, cover: $0) }
-        }
-        if let featured = tiles.firstIndex(where: { !$0.cover.isVideo }), featured > 0 {
-            tiles.insert(tiles.remove(at: featured), at: 0)
-        }
-        return tiles
-    }
-
-    /// The month's cover (Years cards): the photo of its featured day tile, so tapping a year
-    /// opens Months at the same photo. `nil` until the month is loaded.
+    /// The month's cover: the photo of its featured tile, so a year opens Months at that photo.
+    /// `nil` until the month is loaded.
     public func coverAsset(ofMonth id: String) -> Asset? {
-        dayTiles(ofMonth: id).first?.cover
+        monthPlan(ofMonth: id).featured?.cover
+    }
+
+    /// The month whose featured photo is the year's cover: one of the year's best months,
+    /// taking turns daily. Until all its months are loaded, its most recent month.
+    public func coverMonthID(ofYear year: YearGroup) -> String? {
+        let newest = newestFirst ? year.monthIDs.first : year.monthIDs.last
+        let loaded = year.monthIDs.compactMap { month(id: $0) }.filter(\.isLoaded)
+        guard loaded.count == year.monthIDs.count, !loaded.isEmpty else { return newest }
+        let ranked = loaded.compactMap { month -> (id: String, score: Int)? in
+            guard let cover = coverAsset(ofMonth: month.id) else { return nil }
+            let good = month.assets.filter { MonthHighlights.score($0) > 0 }.count
+            return (month.id, MonthHighlights.score(cover) * 1000 + good)
+        }
+        .sorted { $0.score > $1.score }
+        let top = ranked.prefix(3)
+        guard !top.isEmpty else { return newest }
+        let pick = MonthHighlights.mix(MonthHighlights.seed(monthID: "\(year.year)", dayNumber: highlightDay), 0) % UInt64(top.count)
+        return top[top.startIndex + Int(pick)].id
     }
 
     /// Set by the Months and Years views; the grid scrolls to this month's first cell and clears it.

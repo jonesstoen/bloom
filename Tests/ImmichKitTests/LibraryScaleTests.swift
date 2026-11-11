@@ -32,41 +32,47 @@ final class LibraryScaleTests: XCTestCase {
         XCTAssertEqual(LibraryGridModel.years(of: months).first?.monthIDs, ["2025-02-01", "2025-01-01"])
     }
 
-    func testCoverIsTheStillOfTheFeaturedDayTile() async throws {
+    func testCoverIsThePhotoOfTheFeaturedTile() async throws {
         let model = await loadedModel()
         let loaded = try XCTUnwrap(model.months.last)
         let cover = try XCTUnwrap(model.coverAsset(ofMonth: loaded.id))
         XCTAssertTrue(loaded.assets.contains(cover))
         if loaded.assets.contains(where: { !$0.isVideo }) { XCTAssertFalse(cover.isVideo) }
-        XCTAssertEqual(cover, model.dayTiles(ofMonth: loaded.id).first?.cover, "Years opens Months at the same photo")
+        XCTAssertEqual(cover, model.monthPlan(ofMonth: loaded.id).featured?.cover, "Years opens Months at the same photo")
         XCTAssertNil(model.coverAsset(ofMonth: model.months[0].id), "not loaded yet")
         XCTAssertNil(model.coverAsset(ofMonth: "missing"))
     }
 
-    func testDayTilesOnePerDayWithItsMiddleStill() async throws {
+    func testMonthPlanTilesAreDaysOfTheMonth() async throws {
         let model = await loadedModel()
         let loaded = try XCTUnwrap(model.months.last)
         let days = try XCTUnwrap(loaded.days)
-        let tiles = model.dayTiles(ofMonth: loaded.id)
-        XCTAssertEqual(Set(tiles.map(\.id)), Set(days.map(\.id)))
-        XCTAssertEqual(tiles.count, days.count)
-        for tile in tiles {
+        let plan = model.monthPlan(ofMonth: loaded.id)
+        XCTAssertFalse(plan.tiles.isEmpty)
+        XCTAssertEqual(Set(plan.tiles.map(\.id)).count, plan.tiles.count, "each day once")
+        for tile in plan.tiles {
             let day = try XCTUnwrap(days.first { $0.id == tile.id })
             XCTAssertEqual(tile.day, day.day)
-            XCTAssertEqual(tile.cover, LibraryGridModel.representative(of: day.assets))
+            XCTAssertTrue(day.assets.contains(tile.cover))
         }
-        // Apart from the featured first tile, days keep the grid's order.
-        let rest = tiles.dropFirst().map(\.id)
-        XCTAssertEqual(rest, days.map(\.id).filter { rest.contains($0) })
-        XCTAssertTrue(model.dayTiles(ofMonth: model.months[0].id).isEmpty, "not loaded yet")
+        XCTAssertTrue(model.monthPlan(ofMonth: model.months[0].id).tiles.isEmpty, "not loaded yet")
     }
 
-    func testRepresentativePrefersAMiddleStill() {
-        let base = Date(timeIntervalSince1970: 1_700_000_000)
-        let assets = (0..<5).map { Asset(id: "\($0)", kind: $0 == 2 ? .video : .image, takenAt: base.addingTimeInterval(Double($0))) }
-        XCTAssertEqual(LibraryGridModel.representative(of: assets)?.id, "3")
-        XCTAssertEqual(LibraryGridModel.representative(of: [assets[2]])?.id, "2")
-        XCTAssertNil(LibraryGridModel.representative(of: []))
+    func testYearCoverIsOneOfItsMonthsAndRotates() async throws {
+        let model = await loadedModel(MockImmichService(library: .standard))
+        let year = try XCTUnwrap(model.years.first { $0.monthIDs.count >= 4 })
+        // Until all its months are loaded: its most recent month.
+        XCTAssertEqual(model.coverMonthID(ofYear: year), year.monthIDs.last)
+        await model.loadAllMonths()
+        var seen: Set<String> = []
+        for day in 20_000..<20_030 {
+            model.highlightDay = day
+            let month = try XCTUnwrap(model.coverMonthID(ofYear: year))
+            XCTAssertTrue(year.monthIDs.contains(month))
+            XCTAssertEqual(model.coverMonthID(ofYear: year), month, "stable within a day")
+            seen.insert(month)
+        }
+        XCTAssertGreaterThan(seen.count, 1, "the cover takes turns between days")
     }
 
     func testFirstGridIDOfAMonth() async throws {

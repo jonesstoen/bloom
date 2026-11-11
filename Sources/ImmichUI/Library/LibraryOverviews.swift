@@ -80,7 +80,7 @@ struct MonthsOverview: View {
                                 Text(MonthsOverview.title(for: month.bucket))
                                     .font(.title2.weight(.bold))
                                     .accessibilityAddTraits(.isHeader)
-                                MonthMosaic(tiles: model.dayTiles(ofMonth: month.id), isLoaded: month.isLoaded,
+                                MonthMosaic(plan: model.monthPlan(ofMonth: month.id), isLoaded: month.isLoaded,
                                             width: width, loader: model.loader, onSelect: onSelect)
                             }
                             .padding(.horizontal, MonthMosaic.margin)
@@ -117,10 +117,11 @@ struct MonthsOverview: View {
     }
 }
 
-/// The day tiles of one month: 1 day fills the width, 2 or 3 share a row, and from 4 days the
-/// first is a large square with two small ones beside it, then rows of three.
+/// One month's highlights: a row of up to three days, a wide featured day above a row of
+/// three, or a large featured square with two small days beside it (left or right) above a
+/// row of three, like the Months view in Photos.
 struct MonthMosaic: View {
-    let tiles: [LibraryGridModel.DayTile]
+    let plan: MonthHighlights.Plan
     let isLoaded: Bool
     let width: CGFloat
     let loader: ImageLoader
@@ -130,36 +131,39 @@ struct MonthMosaic: View {
     static let spacing: CGFloat = 5
 
     private var cell: CGFloat { max(0, (width - 2 * Self.spacing) / 3) }
+    private var big: CGFloat { 2 * cell + Self.spacing }
 
     var body: some View {
         let s = Self.spacing
+        let tiles = plan.tiles
         VStack(alignment: .leading, spacing: s) {
             if !isLoaded {
                 RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.quaternary)
                     .frame(width: width, height: cell)
             } else {
-                switch tiles.count {
-                case 0:
-                    EmptyView()
-                case 1:
-                    tile(tiles[0], width: width, height: width * 0.66, size: .preview)
-                case 2:
-                    HStack(spacing: s) {
-                        ForEach(tiles) { tile($0, width: (width - s) / 2, height: (width - s) / 2, size: .preview) }
-                    }
-                case 3:
-                    row(tiles[...])
-                default:
-                    HStack(alignment: .top, spacing: s) {
-                        tile(tiles[0], width: 2 * cell + s, height: 2 * cell + s, size: .preview)
-                        VStack(spacing: s) {
-                            tile(tiles[1], width: cell, height: cell, size: .thumbnail)
-                            tile(tiles[2], width: cell, height: cell, size: .thumbnail)
+                switch plan.layout {
+                case .row:
+                    switch tiles.count {
+                    case 0: EmptyView()
+                    case 1: tile(tiles[0], width: width, height: width * 0.66, size: .preview)
+                    case 2:
+                        HStack(spacing: s) {
+                            ForEach(tiles) { tile($0, width: (width - s) / 2, height: (width - s) / 2, size: .preview) }
                         }
+                    default: row(tiles[...])
                     }
-                    ForEach(Array(stride(from: 3, to: tiles.count, by: 3)), id: \.self) { start in
-                        row(tiles[start..<min(start + 3, tiles.count)])
+                case .wideTop:
+                    tile(tiles[0], width: width, height: width * 0.66, size: .preview)
+                    row(tiles.dropFirst().prefix(3))
+                case .feature(let featuredOnLeft):
+                    HStack(alignment: .top, spacing: s) {
+                        if featuredOnLeft { tile(tiles[0], width: big, height: big, size: .preview) }
+                        VStack(spacing: s) {
+                            ForEach(tiles.dropFirst().prefix(2)) { tile($0, width: cell, height: cell, size: .thumbnail) }
+                        }
+                        if !featuredOnLeft { tile(tiles[0], width: big, height: big, size: .preview) }
                     }
+                    row(tiles.dropFirst(3).prefix(3))
                 }
             }
         }
@@ -201,8 +205,8 @@ struct YearsOverview: View {
         ScrollView {
             LazyVStack(spacing: 16) {
                 ForEach(model.years) { year in
-                    // The cover comes from the most recent month of the year.
-                    let coverMonth = model.newestFirst ? year.monthIDs.first : year.monthIDs.last
+                    // The cover is the featured photo of one of the year's best months.
+                    let coverMonth = model.coverMonthID(ofYear: year)
                     let cover = coverMonth.flatMap(model.coverAsset(ofMonth:))
                     Button { onSelect(year, coverMonth) } label: {
                         OverviewCard(
