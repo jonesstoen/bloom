@@ -329,8 +329,9 @@ public struct LibraryGridView: View {
         }
         .refreshable { await model.load() }
         #if os(iOS)
+        // Not clipped: the grid continues behind the tab bar and the Years/Months/All switcher,
+        // like Photos (clipping cut it off above the tab bar).
         .scaleEffect(liveScale * settleScale, anchor: .center)
-        .clipped()
         .simultaneousGesture(
             MagnifyGesture()
                 .onChanged { value in pinchChanged(value, proxy: proxy) }
