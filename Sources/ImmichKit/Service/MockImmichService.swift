@@ -41,6 +41,9 @@ public actor MockImmichService: ImmichService {
     public var latency: Duration
     /// If set, every request throws this error.
     public var failure: ImmichServiceError?
+    /// If `true`, authenticated requests throw `.unauthorized` (a wrong API key).
+    /// Ping and version still succeed, as they need no key on a real server.
+    public var rejectsAPIKey = false
     public private(set) var requests: [Request] = []
     /// Requests that were cancelled while waiting for `latency`.
     public private(set) var cancelledRequests: [Request] = []
@@ -76,6 +79,7 @@ public actor MockImmichService: ImmichService {
     public func setAssets(_ assets: [Asset]) { self.assets = assets }
     public func setLatency(_ latency: Duration) { self.latency = latency }
     public func setFailure(_ failure: ImmichServiceError?) { self.failure = failure }
+    public func setRejectsAPIKey(_ rejects: Bool) { self.rejectsAPIKey = rejects }
 
     public func requestCount(_ request: Request) -> Int {
         requests.filter { $0 == request }.count
@@ -372,6 +376,9 @@ public actor MockImmichService: ImmichService {
             }
         }
         if let failure { throw failure }
+        if rejectsAPIKey, request != .ping, request != .serverVersion {
+            throw ImmichServiceError.unauthorized
+        }
     }
 
     /// Mirrors the server filters. Album/person filters use `library` and match nothing without one.
