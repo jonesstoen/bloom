@@ -88,6 +88,12 @@ public struct LibraryGridView: View {
                     LibraryScaleSwitcher(scale: $scale).padding(.bottom, 10)
                 }
             }
+            .onChange(of: scale) { old, new in
+                // From All to Months: open Months at the month you were looking at, like Photos.
+                if old == .all && new == .months {
+                    monthsScrollTarget = model.visibleCenterID.flatMap(model.monthID(ofAsset:))
+                }
+            }
             .task(id: usesLargeTitle ? menuOptions : model.options) {
                 if usesLargeTitle && menuOptions != model.options { await model.setOptions(menuOptions) }
             }
@@ -166,8 +172,13 @@ public struct LibraryGridView: View {
                     .ignoresSafeArea(edges: .top)
                 case .years:
                     YearsOverview(model: model, topMargin: 96) { _, coverMonth in
-                        monthsScrollTarget = coverMonth
-                        withAnimation(.snappy(duration: 0.25)) { scale = .months }
+                        Task {
+                            // Load the month and its neighbours first: Months scrolls to it, and
+                            // months loading around it afterwards would change heights and move it.
+                            if let coverMonth { await model.loadMonths(around: coverMonth, radius: 2) }
+                            monthsScrollTarget = coverMonth
+                            withAnimation(.snappy(duration: 0.25)) { scale = .months }
+                        }
                     }
                     .ignoresSafeArea(edges: .top)
                 }
@@ -293,8 +304,12 @@ public struct LibraryGridView: View {
         // fights the scroll to the pinch anchor and can leave the screen on unrendered rows.
         .defaultScrollAnchor(model.newestFirst ? .top : .bottom, for: .initialOffset)
         .onScrollGeometryChange(for: ScrollGeometry.self, of: { $0 }) { _, geometry in
+            let firstLayout = scrollMetrics.geometry == nil
             scrollMetrics.geometry = geometry
             scrollMetrics.pendingOffset = nil
+            // A pending jump from Months runs once the grid has laid out; before that the
+            // initial bottom anchor would override it.
+            if firstLayout { scrollToPendingMonth(proxy) }
         }
         .refreshable { await model.load() }
         #if os(iOS)
@@ -309,10 +324,9 @@ public struct LibraryGridView: View {
         .onChange(of: viewerScrollTarget) { _, id in
             if let id { proxy.scrollTo(id, anchor: .center) }
         }
-        .onAppear {
-            densityProxy = proxy
-            scrollToPendingMonth(proxy)
-        }
+        .onAppear { densityProxy = proxy }
+        // Shown again later (e.g. after Months): treat the next layout as a first layout.
+        .onDisappear { scrollMetrics.geometry = nil }
         .onChange(of: model.pendingScrollMonthID) { _, _ in scrollToPendingMonth(proxy) }
         .onChange(of: model.pendingScrollAssetID) { _, _ in scrollToPendingMonth(proxy) }
         }
@@ -325,10 +339,11 @@ public struct LibraryGridView: View {
         if let assetID = model.pendingScrollAssetID {
             // Opened from a day in Months: centre that photo, like Photos.
             model.pendingScrollAssetID = nil
+            proxy.scrollTo(assetID, anchor: .center)
+            model.assetShownInViewer(assetID)
             Task { @MainActor in
-                await Task.yield()
+                try? await Task.sleep(for: .milliseconds(250))
                 proxy.scrollTo(assetID, anchor: .center)
-                model.assetShownInViewer(assetID)
             }
             return
         }

@@ -55,6 +55,7 @@ struct MonthsOverview: View {
     var scrollTarget: String?
     let topMargin: CGFloat
     let onSelect: (Asset) -> Void
+    @State private var didScroll = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -79,10 +80,14 @@ struct MonthsOverview: View {
                 }
                 .contentMargins(.top, topMargin, for: .scrollContent)
                 .defaultScrollAnchor(model.newestFirst ? .top : .bottom, for: .initialOffset)
-                .onAppear {
-                    guard let scrollTarget else { return }
+                // Scroll once the stack has laid out (earlier, the initial bottom anchor wins),
+                // and once more after neighbouring months have settled to their real height.
+                .onScrollGeometryChange(for: Bool.self, of: { $0.contentSize.height > 0 }) { _, laidOut in
+                    guard laidOut, !didScroll, let scrollTarget else { return }
+                    didScroll = true
+                    proxy.scrollTo(scrollTarget, anchor: .top)
                     Task { @MainActor in
-                        await Task.yield()
+                        try? await Task.sleep(for: .milliseconds(250))
                         proxy.scrollTo(scrollTarget, anchor: .top)
                     }
                 }

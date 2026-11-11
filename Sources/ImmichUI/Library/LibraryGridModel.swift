@@ -284,6 +284,18 @@ public final class LibraryGridModel {
         return nil
     }
 
+    /// The month (bucket id) containing a loaded asset.
+    public func monthID(ofAsset assetID: String) -> String? { monthIDByAssetID[assetID] }
+
+    /// Loads month `id` and up to `radius` months on each side, concurrently.
+    public func loadMonths(around id: String, radius: Int) async {
+        guard let index = monthIndexByID[id] else { return }
+        let ids = months[max(0, index - radius)...min(months.count - 1, index + radius)].map(\.id)
+        await withTaskGroup(of: Void.self) { group in
+            for monthID in ids { group.addTask { await self.loadMonth(monthID) } }
+        }
+    }
+
     /// The viewer moved to `assetID`: make sure its month (and neighbours) are loaded.
     public func assetShownInViewer(_ assetID: String) {
         if let monthID = monthIDByAssetID[assetID] { monthAppeared(monthID) }

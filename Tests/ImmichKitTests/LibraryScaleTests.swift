@@ -117,4 +117,20 @@ final class LibraryScaleTests: XCTestCase {
         let norwegian = MonthsOverview.title(for: october, locale: Locale(identifier: "nb_NO")).lowercased()
         XCTAssertTrue(norwegian.contains("okt") && norwegian.contains("2026"), norwegian)
     }
+
+    func testLoadMonthsAroundATargetLoadsItsNeighbours() async throws {
+        let model = await loadedModel(MockImmichService(library: .standard))
+        let target = model.months[model.months.count / 2]
+        XCTAssertFalse(target.isLoaded)
+        await model.loadMonths(around: target.id, radius: 2)
+        let index = try XCTUnwrap(model.months.firstIndex { $0.id == target.id })
+        for i in max(0, index - 2)...min(model.months.count - 1, index + 2) {
+            XCTAssertTrue(model.months[i].isLoaded, "month \(i)")
+        }
+        if index - 3 >= 0 { XCTAssertFalse(model.months[index - 3].isLoaded) }
+        let asset = try XCTUnwrap(model.months[index].assets.first)
+        XCTAssertEqual(model.monthID(ofAsset: asset.id), target.id)
+        XCTAssertNil(model.monthID(ofAsset: "missing"))
+        await model.loadMonths(around: "missing", radius: 2)
+    }
 }
