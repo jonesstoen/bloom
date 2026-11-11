@@ -11,6 +11,7 @@ private let gridLog = Logger(subsystem: "ImmichKit", category: "LibraryGrid")
 /// they scroll into view. Visible cells drive the prefetcher, which loads thumbnails ahead.
 public struct LibraryGridView: View {
     @State private var model: LibraryGridModel
+    @State private var selection: LibrarySelectionModel
     @State private var viewerItem: ViewerItem?
     @State private var scrollSync: Task<Void, Never>?
     @State private var transitionSourceID: String?
@@ -55,6 +56,7 @@ public struct LibraryGridView: View {
     public init(model: LibraryGridModel, title: String = tr("Library"), headerStyle: HeaderStyle = .navigationBar,
                 accessory: AnyView? = nil, scrollToNewestTrigger: Int = 0, onSelect: @escaping (Asset) -> Void = { _ in }) {
         _model = State(initialValue: model)
+        _selection = State(initialValue: LibrarySelectionModel(library: model))
         self.title = title
         self.headerStyle = headerStyle
         self.accessory = accessory
@@ -91,8 +93,15 @@ public struct LibraryGridView: View {
                 if usesLargeTitle { largeHeader }
             }
             .overlay(alignment: .bottom) {
-                if usesLargeTitle && model.phase == .loaded && !model.isEmpty {
-                    LibraryScaleSwitcher(scale: $scale).padding(.bottom, 10)
+                if usesLargeTitle && (selection.isSelecting || (model.phase == .loaded && !model.isEmpty)) {
+                    Group {
+                        if selection.isSelecting {
+                            LibrarySelectionToolbar(selection: selection)
+                        } else {
+                            LibraryScaleSwitcher(scale: $scale)
+                        }
+                    }
+                    .padding(.bottom, 10)
                 }
             }
             .onChange(of: model.density) { _, density in
@@ -118,7 +127,11 @@ public struct LibraryGridView: View {
                     if !Task.isCancelled { await model.loadAllMonths() }
                 }
             }
-            .onDisappear { model.stopPrefetching() }
+            .modifier(LibrarySelectionPresentation(selection: selection))
+            .onDisappear {
+                model.stopPrefetching()
+                if selection.isPreparingShare { selection.cancelSharePreparation() }
+            }
             #if os(iOS)
             .fullScreenCover(item: $viewerItem) { item in
                 if reduceMotion {
@@ -271,18 +284,35 @@ public struct LibraryGridView: View {
                     .font(.largeTitle.weight(.bold))
                 // Its own view: the date range changes while scrolling, and reading it here
                 // would re-render this whole view (header, menus, scroll view) each time.
-                LibraryHeaderSubtitle(model: model, scale: scale)
+                if selection.isSelecting {
+                    LibrarySelectionCount(selection: selection)
+                } else {
+                    LibraryHeaderSubtitle(model: model, scale: scale)
+                }
             }
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isHeader)
             Spacer()
-            HStack(spacing: 10) {
-                densityMenu
-                    .labelStyle(.iconOnly)
-                    .font(.system(size: 18, weight: .medium))
-                    .frame(width: 44, height: 44)
-                    .photosGlass(in: Circle())
-                if let accessory { accessory }
+            if selection.isSelecting {
+                LibrarySelectionCancelButton(selection: selection)
+            } else {
+                HStack(spacing: 10) {
+                    Button(tr("Select")) {
+                        scale = .all
+                        selection.start()
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 14)
+                    .frame(minHeight: 44)
+                    .photosGlass(in: Capsule())
+                    .disabled(model.phase != .loaded || model.isEmpty)
+                    densityMenu
+                        .labelStyle(.iconOnly)
+                        .font(.system(size: 18, weight: .medium))
+                        .frame(width: 44, height: 44)
+                        .photosGlass(in: Circle())
+                    if let accessory { accessory }
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -303,7 +333,7 @@ public struct LibraryGridView: View {
     private var grid: some View {
         ScrollViewReader { proxy in
         ScrollView {
-            GridCells(model: model, columnCount: model.columnCount, spacing: Self.spacing,
+            GridCells(model: model, selection: selection, columnCount: model.columnCount, spacing: Self.spacing,
                       fillsCells: !(usesLargeTitle && aspectRatioGrid),
                       transition: photoTransition, onTap: open)
                 .equatable()
@@ -330,7 +360,10 @@ public struct LibraryGridView: View {
         .onScrollPhaseChange { _, phase in
             if phase == .interacting { scrollMetrics.userScrolled = true }
         }
-        .refreshable { await model.load() }
+        .refreshable {
+            guard !selection.isBusy else { return }
+            await model.load()
+        }
         #if os(iOS)
         // Not clipped: the grid continues behind the tab bar and the Years/Months/All switcher,
         // like Photos (clipping cut it off above the tab bar).
@@ -608,6 +641,7 @@ private struct ViewerItem: Identifiable {
 /// cells. It still updates by itself when the model's months load (Observation).
 private struct GridCells: View, Equatable {
     let model: LibraryGridModel
+    let selection: LibrarySelectionModel
     let columnCount: Int
     let spacing: CGFloat
     let fillsCells: Bool
@@ -615,7 +649,7 @@ private struct GridCells: View, Equatable {
     let onTap: (Asset) -> Void
 
     static func == (lhs: GridCells, rhs: GridCells) -> Bool {
-        lhs.model === rhs.model && lhs.columnCount == rhs.columnCount
+        lhs.model === rhs.model && lhs.selection === rhs.selection && lhs.columnCount == rhs.columnCount
             && lhs.spacing == rhs.spacing && lhs.fillsCells == rhs.fillsCells && lhs.transition == rhs.transition
     }
 
@@ -633,10 +667,8 @@ private struct GridCells: View, Equatable {
     private func cells(for month: TimelineMonth) -> some View {
         if month.isLoaded {
             ForEach(month.assets) { asset in
-                Button { onTap(asset) } label: {
-                    ThumbnailCell(asset: asset, loader: model.loader, images: model.images, fillsCell: fillsCells)
-                }
-                .buttonStyle(.plain)
+                LibrarySelectableCell(asset: asset, model: model, selection: selection,
+                                      fillsCell: fillsCells, onOpen: onTap)
                 .id(asset.id)
                 #if os(iOS)
                 .matchedTransitionSource(id: asset.id, in: transition)

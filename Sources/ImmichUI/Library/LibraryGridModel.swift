@@ -57,6 +57,8 @@ public final class LibraryGridModel {
     @ObservationIgnored private var visibleIDs: Set<String> = []
     @ObservationIgnored private var loadingMonths: Set<String> = []
     @ObservationIgnored private(set) var lastVisibleRange: Range<Int>?
+    /// Confirmed writes override snapshots still cached inside the current timeline.
+    @ObservationIgnored private var favoriteOverrides: [String: Bool] = [:]
 
     private enum PrefetchUpdate: Sendable {
         case assets([String])
@@ -128,6 +130,13 @@ public final class LibraryGridModel {
     /// Loads the month skeleton, then the months at the end the grid starts at
     /// (the newest ones). Calling it again refreshes the buckets.
     public func load() async {
+        if !favoriteOverrides.isEmpty {
+            // A bucket refresh can retain cached days when counts match. A fresh timeline
+            // reconciles external changes without clearing the visible grid before buckets arrive.
+            timeline = Timeline(service: service, options: options)
+            favoriteOverrides = [:]
+            loadingMonths = []
+        }
         if months.isEmpty { phase = .loading }
         let timeline = self.timeline
         do {
@@ -136,9 +145,11 @@ public final class LibraryGridModel {
             apply(loaded)
             phase = .loaded
         } catch is CancellationError {
+            guard timeline === self.timeline else { return }
             if months.isEmpty { phase = .idle }
             return
         } catch {
+            guard timeline === self.timeline else { return }
             if months.isEmpty { phase = .failed(error.localizedDescription) }
             return
         }
@@ -153,9 +164,9 @@ public final class LibraryGridModel {
     /// Loads the month if needed. Failures leave the placeholders and are retried on the next appear.
     public func loadMonth(_ id: String) async {
         guard let index = monthIndexByID[id], !months[index].isLoaded, !loadingMonths.contains(id) else { return }
-        loadingMonths.insert(id)
-        defer { loadingMonths.remove(id) }
         let timeline = self.timeline
+        loadingMonths.insert(id)
+        defer { if timeline === self.timeline { loadingMonths.remove(id) } }
         do {
             try await timeline.loadMonth(id)
             // Ignore months of a timeline replaced by a new sort or filter meanwhile.
@@ -337,7 +348,7 @@ public final class LibraryGridModel {
         let ids = months.filter { !$0.isLoaded && !loadingMonths.contains($0.id) }.map(\.id)
         guard !ids.isEmpty else { return }
         loadingMonths.formUnion(ids)
-        defer { loadingMonths.subtract(ids) }
+        defer { if timeline === self.timeline { loadingMonths.subtract(ids) } }
         await withTaskGroup(of: Void.self) { group in
             var next = 0
             func add() {
@@ -392,6 +403,7 @@ public final class LibraryGridModel {
         guard newOptions != options else { return }
         options = newOptions
         timeline = Timeline(service: service, options: newOptions)
+        favoriteOverrides = [:]
         stopPrefetching()
         loadingMonths = []
         visibleMonthTitle = nil
@@ -478,12 +490,54 @@ public final class LibraryGridModel {
         if title != visibleMonthTitle { visibleMonthTitle = title }
     }
 
-    private func apply(_ newMonths: [TimelineMonth]) {
+    /// Apply a batch once, retaining all timeline metadata and updating derived grid indices.
+    func applyFavoriteUpdates(_ assets: [Asset]) {
+        guard !assets.isEmpty else { return }
+        for asset in assets { favoriteOverrides[asset.id] = asset.isFavorite }
+        apply(months)
+    }
+
+    private func mergingFavoriteUpdates(into source: [TimelineMonth]) -> [TimelineMonth] {
+        guard !favoriteOverrides.isEmpty else { return source }
+        return source.map { original in
+            guard let days = original.days else { return original }
+            var month = original
+            month.days = days.compactMap { originalDay in
+                var day = originalDay
+                day.assets = originalDay.assets.compactMap { originalAsset in
+                    var asset = originalAsset
+                    if let favorite = favoriteOverrides[asset.id] { asset.isFavorite = favorite }
+                    if options.isFavorite == true, !asset.isFavorite { return nil }
+                    return asset
+                }
+                return day.assets.isEmpty ? nil : day
+            }
+            if options.isFavorite == true { month.bucket.count = month.assetCount }
+            return month
+        }
+    }
+
+    private func apply(_ source: [TimelineMonth]) {
+        let newMonths = mergingFavoriteUpdates(into: source)
         // A loaded month can hold a few more or fewer items than its placeholder count, which
         // moves every cell after it. Remember where the photo in the middle of the screen was,
         // so the grid can keep it in place (it opened in 2024 after a background load).
         let anchor = visibleCenterID
         let oldIndex = anchor.flatMap(gridIndex(ofAsset:))
+        // If filtering removes the center itself, keep its nearest surviving neighbour.
+        let newIDs = Set(newMonths.flatMap { $0.assets.map(\.id) })
+        let replacement: (id: String, index: Int)?
+        if let anchor, let oldIndex, !newIDs.contains(anchor) {
+            replacement = flatAssetIDs.compactMap { id -> (id: String, index: Int)? in
+                guard newIDs.contains(id), let index = gridIndex(ofAsset: id) else { return nil }
+                return (id, index)
+            }.min { left, right in
+                let lhs = abs(left.index - oldIndex), rhs = abs(right.index - oldIndex)
+                return lhs == rhs ? left.index < right.index : lhs < rhs
+            }
+        } else {
+            replacement = nil
+        }
         months = newMonths
         monthIndexByID = Dictionary(newMonths.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
         rebuildCellIndex()
@@ -496,10 +550,15 @@ public final class LibraryGridModel {
         flatAssetIDs = ids
         assetIndexByID = Dictionary(ids.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
         updates.yield(.assets(ids))
+        visibleIDs.formIntersection(newIDs)
         updateDateRangeTitle()
-        if let anchor, let oldIndex, let newIndex = gridIndex(ofAsset: anchor), newIndex != oldIndex {
+        let retainedAnchor = replacement?.id ?? anchor
+        let retainedOldIndex = replacement?.index ?? oldIndex
+        if let retainedAnchor, let retainedOldIndex,
+           let newIndex = gridIndex(ofAsset: retainedAnchor),
+           newIndex != retainedOldIndex || replacement != nil {
             shiftCounter += 1
-            gridShift = GridShift(anchorID: anchor, oldIndex: oldIndex, newIndex: newIndex, id: shiftCounter)
+            gridShift = GridShift(anchorID: retainedAnchor, oldIndex: retainedOldIndex, newIndex: newIndex, id: shiftCounter)
         }
         // Indices shifted, so report the visible range again.
         lastVisibleRange = nil

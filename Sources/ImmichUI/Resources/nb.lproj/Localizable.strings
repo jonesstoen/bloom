@@ -72,7 +72,7 @@
 "Videos you upload appear here." = "Videoer du laster opp, vises her.";
 
 /* Viewer */
-"Add to Favorites" = "Legg til i Favoritter";
+"Add to Favorites" = "Legg til i favoritter";
 "Aperture" = "Blender";
 "Back" = "Tilbake";
 "Camera" = "Kamera";
@@ -99,7 +99,7 @@
 "Photo information" = "Bildeinformasjon";
 "Preview Video" = "Forhåndsvisning av video";
 "Previous" = "Forrige";
-"Remove from Favorites" = "Fjern fra Favoritter";
+"Remove from Favorites" = "Fjern fra favoritter";
 "Share" = "Del";
 "Show item" = "Vis objekt";
 "The original file couldn't be downloaded. Please try again." = "Originalfilen kunne ikke lastes ned. Prøv igjen.";
@@ -145,3 +145,17 @@
 "Some suggestions couldn't be loaded." = "Noen forslag kunne ikke lastes inn.";
 "Suggestions" = "Forslag";
 "Sunsets" = "Solnedganger";
+
+/* Library selection */
+"Select" = "Marker";
+"Cancel" = "Avbryt";
+"%lld Selected" = "%lld markert";
+"Selected" = "Markert";
+"Not Selected" = "Ikke markert";
+"Preparing to Share…" = "Forbereder deling …";
+"%lld of %lld" = "%lld av %lld";
+"Cancel Download" = "Avbryt nedlasting";
+"Couldn't Update Selection" = "Kunne ikke utføre handlingen";
+"Favorite Actions" = "Favoritthandlinger";
+"Couldn't update Favorites for %@ items. Please try again." = "Kunne ikke oppdatere favorittmerking for %@ elementer. Prøv igjen.";
+"Couldn't prepare these items for sharing. Please try again." = "Kunne ikke klargjøre disse elementene for deling. Prøv igjen.";
