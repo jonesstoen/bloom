@@ -26,6 +26,12 @@ public final class LibraryGridModel {
     public var visibleAnchorID: String? {
         visibleIDs.min { (assetIndexByID[$0] ?? .max) < (assetIndexByID[$1] ?? .max) }
     }
+    /// The visible asset in the middle of the visible range: the anchor that stays in place
+    /// when the grid density changes, so a pinch keeps what you are looking at on screen.
+    public var visibleCenterID: String? {
+        let sorted = visibleIDs.compactMap { id in assetIndexByID[id].map { (id, $0) } }.sorted { $0.1 < $1.1 }
+        return sorted.isEmpty ? nil : sorted[sorted.count / 2].0
+    }
 
     @ObservationIgnored public let timeline: Timeline
     @ObservationIgnored public let service: any ImmichService

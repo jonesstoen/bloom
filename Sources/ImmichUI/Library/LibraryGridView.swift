@@ -11,7 +11,11 @@ public struct LibraryGridView: View {
     @State private var selectedAsset: Asset?
     @State private var transitionSourceID: String?
     @State private var viewerScrollTarget: String?
-    @State private var densityAnchorID: String?
+    /// Live scale while pinching, relative to the last density switch.
+    @State private var pinchScale: CGFloat = 1
+    @State private var pinchAnchor: UnitPoint = .center
+    /// Magnification at which the current density was reached during this pinch.
+    @State private var pinchBaseline: CGFloat = 1
     @Namespace private var photoTransition
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let title: String
@@ -30,7 +34,7 @@ public struct LibraryGridView: View {
         self.init(model: LibraryGridModel(service: service), title: title, onSelect: onSelect)
     }
 
-    private static let spacing: CGFloat = 2
+    private static let spacing: CGFloat = 1.5
 
     private var columns: [GridItem] {
         Array(repeating: GridItem(.flexible(), spacing: Self.spacing), count: max(1, model.columnCount))
@@ -112,7 +116,7 @@ public struct LibraryGridView: View {
     private var grid: some View {
         ScrollViewReader { proxy in
         ScrollView {
-            LazyVGrid(columns: columns, spacing: Self.spacing, pinnedViews: [.sectionHeaders]) {
+            LazyVGrid(columns: columns, spacing: Self.spacing) {
                 ForEach(model.months) { month in
                     Section {
                         cells(for: month)
@@ -126,23 +130,59 @@ public struct LibraryGridView: View {
         .defaultScrollAnchor(model.newestFirst ? .top : .bottom)
         .refreshable { await model.load() }
         #if os(iOS)
-        .simultaneousGesture(MagnifyGesture().onEnded { value in
-            changeDensity(model.density.pinched(by: value.magnification))
-        })
+        .scaleEffect(pinchScale, anchor: pinchAnchor)
+        .simultaneousGesture(
+            MagnifyGesture()
+                .onChanged { value in pinchChanged(value, proxy: proxy) }
+                .onEnded { _ in pinchEnded() }
+        )
         #endif
-        .onChange(of: model.density) { _, _ in
-            if let id = densityAnchorID { proxy.scrollTo(id, anchor: .top) }
-        }
         .onChange(of: viewerScrollTarget) { _, id in
             if let id { proxy.scrollTo(id, anchor: .center) }
         }
+        .onAppear { densityProxy = proxy }
         }
     }
 
+    @State private var densityProxy: ScrollViewProxy?
+
+    /// Follows the fingers like Photos: the grid scales live, and as soon as the pinch passes a
+    /// step it switches columns in one animation around the asset in the middle of the screen.
+    /// One pinch can step through several densities.
+    private func pinchChanged(_ value: MagnifyGesture.Value, proxy: ScrollViewProxy) {
+        if pinchScale == 1 && pinchBaseline == 1 { pinchAnchor = value.startAnchor }
+        let relative = value.magnification / pinchBaseline
+        let next = model.density.pinched(by: relative)
+        if next != model.density {
+            pinchBaseline = value.magnification
+            switchDensity(to: next, proxy: proxy)
+        } else {
+            // Rubber-band at the ends (3 or 7 columns): the grid only gives a little.
+            let atLimit = (relative > 1 && model.density == .three) || (relative < 1 && model.density == .seven)
+            let resistance: CGFloat = atLimit ? 0.15 : 0.6
+            pinchScale = 1 + (relative - 1) * resistance
+        }
+    }
+
+    private func pinchEnded() {
+        pinchBaseline = 1
+        withAnimation(reduceMotion ? nil : .spring(duration: 0.3)) { pinchScale = 1 }
+    }
+
     private func changeDensity(_ density: GridDensity) {
+        guard let proxy = densityProxy else { model.density = density; return }
+        switchDensity(to: density, proxy: proxy)
+    }
+
+    private func switchDensity(to density: GridDensity, proxy: ScrollViewProxy) {
         guard density != model.density else { return }
-        densityAnchorID = model.visibleAnchorID
-        withAnimation(reduceMotion ? nil : .snappy(duration: 0.3)) { model.density = density }
+        let anchor = model.visibleCenterID
+        // Relayout and re-anchor in the same transaction, so there is no second jump afterwards.
+        withAnimation(reduceMotion ? nil : .spring(duration: 0.35)) {
+            pinchScale = 1
+            model.density = density
+            if let anchor { proxy.scrollTo(anchor, anchor: .center) }
+        }
     }
 
     @ViewBuilder
@@ -180,17 +220,17 @@ public struct LibraryGridView: View {
     }
 }
 
-/// Month section header on a bar material, pinned while its section scrolls.
+/// Month title above its photos, in the plain bold style of the Photos grid.
 private struct MonthHeader: View {
     let title: String
 
     var body: some View {
         Text(title)
-            .font(.headline)
+            .font(.title3.weight(.bold))
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .background(.bar)
+            .padding(.horizontal, 12)
+            .padding(.top, 18)
+            .padding(.bottom, 6)
             .accessibilityAddTraits(.isHeader)
     }
 }

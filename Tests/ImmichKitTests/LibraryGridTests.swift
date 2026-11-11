@@ -17,6 +17,23 @@ final class LibraryGridTests: XCTestCase {
         XCTAssertTrue(model.viewerAssets(around: "missing").isEmpty)
     }
 
+    func testPinchAnchorIsTheMiddleVisibleAsset() async throws {
+        let mock = MockImmichService.preview
+        let model = LibraryGridModel(service: mock, loader: ImageLoader(service: mock, disk: nil))
+        await model.load()
+        XCTAssertNil(model.visibleCenterID)
+        let assets = try XCTUnwrap(model.months.last?.assets)
+        XCTAssertGreaterThanOrEqual(assets.count, 5)
+        // Appear out of order: the anchor follows grid order, not appearance order.
+        for asset in [assets[4], assets[0], assets[2], assets[1], assets[3]] { model.assetAppeared(asset.id) }
+        XCTAssertEqual(model.visibleCenterID, assets[2].id)
+        XCTAssertEqual(model.visibleAnchorID, assets[0].id)
+        model.assetDisappeared(assets[0].id)
+        model.assetDisappeared(assets[1].id)
+        XCTAssertEqual(model.visibleCenterID, assets[3].id)
+        model.stopPrefetching()
+    }
+
     func testLoadsMonthsAndVisibleRangeClearsWhenLastCellLeaves() async throws {
         let mock = MockImmichService.preview
         let model = LibraryGridModel(service: mock, loader: ImageLoader(service: mock, disk: nil))
