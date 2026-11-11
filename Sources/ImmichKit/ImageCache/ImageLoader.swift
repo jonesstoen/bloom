@@ -54,6 +54,7 @@ public actor ImageLoader {
 
     /// Running fetches. `removeAll()` empties this, so loads started before it do not repopulate the caches.
     private var inFlight: [ImageKey: InFlight] = [:]
+    private var invalidated = false
 
     /// - Parameters:
     ///   - disk: `nil` disables the disk cache (memory only).
@@ -73,6 +74,7 @@ public actor ImageLoader {
     /// Concurrent callers for the same key share one fetch. Cancelling a caller only cancels the
     /// shared fetch once every caller waiting for it has been cancelled (used by `Prefetcher`).
     public func data(for key: ImageKey) async throws -> Data {
+        guard !invalidated else { throw CancellationError() }
         if let data = memoryData(for: key) { return data }
 
         let waiter = UUID()
@@ -93,7 +95,6 @@ public actor ImageLoader {
                 case .asset: try await service.thumbnail(assetID: key.assetID, size: key.size)
                 case .person: try await service.personThumbnail(personID: key.assetID)
                 }
-                await disk?.store(data, for: key.description)
                 return data
             }
             entry = InFlight(id: UUID(), task: task, waiters: [waiter])
@@ -112,6 +113,9 @@ public actor ImageLoader {
         let data = try result.get()
         if isCurrent {
             memory.setObject(data as NSData, forKey: key.description as NSString, cost: data.count)
+            // Commit only from a still-current fetch. Enqueue the disk write before yielding,
+            // so a subsequent removeAll enqueues its deletion after this write.
+            await disk?.store(data, for: key.description)
         }
         return data
     }
@@ -157,5 +161,12 @@ public actor ImageLoader {
         inFlight = [:]
         memory.removeAllObjects()
         await disk?.removeAll()
+    }
+
+    /// Permanently closes a signed-out session, including requests from views still disappearing.
+    public func invalidate() async {
+        invalidated = true
+        for entry in inFlight.values { entry.task.cancel() }
+        await removeAll()
     }
 }

@@ -113,7 +113,7 @@ private struct ViewerPage: View {
                     .accessibilityLabel("Photo information")
             }.padding()
         }
-        .task(id: isActive) { if isActive && model.image == nil { await model.load() } }
+        .task(id: isActive) { if isActive && !model.isLoaded { await model.load() } }
         .onChange(of: isActive) { _, active in if !active { zoom = 1; showsInfo = false } }
         .sheet(isPresented: $showsInfo) {
             AssetInfoView(asset: model.asset)

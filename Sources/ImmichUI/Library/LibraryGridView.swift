@@ -72,7 +72,7 @@ public struct LibraryGridView: View {
     }
 
     private func viewer(_ asset: Asset) -> some View {
-        AssetViewer(assets: model.months.flatMap(\.assets), selectedID: asset.id,
+        AssetViewer(assets: model.viewerAssets(around: transitionSourceID ?? asset.id), selectedID: asset.id,
                     service: model.service, loader: model.loader) { id in
             if transitionSourceID != id {
                 transitionSourceID = id

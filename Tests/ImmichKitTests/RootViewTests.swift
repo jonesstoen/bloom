@@ -1,0 +1,58 @@
+import XCTest
+import ImmichKit
+@testable import ImmichUI
+
+@MainActor
+final class RootViewTests: XCTestCase {
+    func testNoCredentialsShowsLoginThenSuccessfulLoginCreatesSession() async throws {
+        let store = CredentialStore(storage: InMemorySecureStorage())
+        let mock = MockImmichService.preview
+        let root = RootModel(store: store, makeService: { _ in mock })
+        await root.restore()
+        XCTAssertEqual(root.phase, .signedOut)
+        XCTAssertNil(root.session)
+        let login = root.makeLoginModel()
+        login.server = "https://example.invalid"
+        login.apiKey = "unit-test-placeholder"
+        await login.connectNow()
+        XCTAssertEqual(root.phase, .signedIn)
+        XCTAssertNotNil(root.session)
+        XCTAssertNotNil(try store.load())
+        await root.signOut()
+        XCTAssertEqual(root.phase, .signedOut)
+        XCTAssertNil(root.session)
+        XCTAssertNil(try store.load())
+    }
+
+    func testStoredCredentialsRestoreWithoutNetworkValidation() async throws {
+        let store = CredentialStore(storage: InMemorySecureStorage())
+        try store.save(ServerCredentials(server: "https://example.invalid", apiKey: "unit-test-placeholder"))
+        let mock = MockImmichService.preview
+        await mock.setFailure(.network("Offline"))
+        let root = RootModel(store: store, makeService: { _ in mock })
+        await root.restore()
+        XCTAssertEqual(root.phase, .signedIn)
+        XCTAssertNotNil(root.session)
+    }
+
+    func testCorruptCredentialsShowRecoveryInsteadOfOverwriting() async throws {
+        let storage = InMemorySecureStorage()
+        try storage.set(Data("invalid-json".utf8), for: "server-credentials")
+        let root = RootModel(store: CredentialStore(storage: storage), makeService: { _ in MockImmichService.preview })
+        await root.restore()
+        XCTAssertEqual(root.phase, .failed)
+        XCTAssertNotNil(root.error)
+        XCTAssertNil(root.session)
+        await root.signOut()
+        XCTAssertEqual(root.phase, .signedOut)
+    }
+
+    func testCacheNamespaceSeparatesServersAndCredentials() throws {
+        let a = try ServerCredentials(server: "https://one.invalid", apiKey: "test-a")
+        let b = try ServerCredentials(server: "https://two.invalid", apiKey: "test-a")
+        let c = try ServerCredentials(server: "https://one.invalid", apiKey: "test-b")
+        XCTAssertNotEqual(RootModel.cacheDirectory(for: a), RootModel.cacheDirectory(for: b))
+        XCTAssertNotEqual(RootModel.cacheDirectory(for: a), RootModel.cacheDirectory(for: c))
+        XCTAssertEqual(RootModel.cacheDirectory(for: a), RootModel.cacheDirectory(for: a))
+    }
+}

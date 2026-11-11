@@ -10,8 +10,10 @@ public final class ViewerAssetModel {
     public private(set) var playback: MediaRequest?
     public private(set) var error: String?
     public private(set) var isLoading = false
+    public private(set) var isLoaded = false
     @ObservationIgnored private let service: any ImmichService
     @ObservationIgnored private let loader: ImageLoader
+    @ObservationIgnored private var generation = 0
 
     public init(asset: Asset, service: any ImmichService, loader: ImageLoader) {
         self.asset = asset
@@ -20,20 +22,29 @@ public final class ViewerAssetModel {
     }
 
     public func load() async {
-        guard !isLoading else { return }
+        generation += 1
+        let started = generation
         isLoading = true
+        isLoaded = false
         error = nil
-        defer { isLoading = false }
+        defer { if generation == started { isLoading = false } }
         do {
             let data = try await loader.data(for: ImageKey(assetID: asset.id, size: .preview))
             let decoded = await ThumbnailDecoder.decode(data, maxPixelSize: 2560)
             try Task.checkCancellation()
+            guard generation == started else { return }
             image = decoded
-            asset = try await service.asset(id: asset.id)
-            if asset.isVideo { playback = try await service.playbackRequest(for: asset) }
+            let detail = try await service.asset(id: asset.id)
+            let request = detail.isVideo ? try await service.playbackRequest(for: detail) : nil
+            try Task.checkCancellation()
+            guard generation == started else { return }
+            asset = detail
+            playback = request
+            isLoaded = true
         } catch is CancellationError {
             return
         } catch {
+            guard generation == started else { return }
             // Do not surface transport diagnostics containing authenticated media URLs.
             self.error = "Couldn't load this item. Please try again."
         }

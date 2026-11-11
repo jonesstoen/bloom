@@ -81,6 +81,34 @@ final class DiskImageCacheTests: XCTestCase {
 }
 
 final class ImageLoaderTests: XCTestCase {
+    func testInvalidatedSessionRejectsNewRequests() async throws {
+        let (loader, _, disk) = makeLoader()
+        _ = try await loader.data(assetID: "before", size: .thumbnail)
+        await loader.invalidate()
+        do {
+            _ = try await loader.data(assetID: "after", size: .thumbnail)
+            XCTFail("A signed-out loader must reject new requests")
+        } catch is CancellationError { }
+        let remaining = await disk.totalBytes
+        XCTAssertEqual(remaining, 0)
+    }
+
+    func testRemoveAllPreventsRunningFetchFromRepopulatingDisk() async throws {
+        let (loader, mock, disk) = makeLoader(latency: .milliseconds(80))
+        let key = ImageKey(assetID: "in-flight", size: .thumbnail)
+        let request = Task { try await loader.data(for: key) }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while await mock.requestCount(.thumbnail("in-flight", .thumbnail)) == 0 && ContinuousClock.now < deadline {
+            await Task.yield()
+        }
+        await loader.removeAll()
+        _ = try await request.value
+        let diskHasImage = await disk.contains(key.description)
+        let memoryImage = await loader.memoryData(for: key)
+        XCTAssertFalse(diskHasImage)
+        XCTAssertNil(memoryImage)
+    }
+
     private var directory: URL!
 
     override func setUp() {

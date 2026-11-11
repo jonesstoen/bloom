@@ -94,6 +94,16 @@ public final class LibraryGridModel {
 
     public var isEmpty: Bool { phase == .loaded && months.allSatisfy { $0.bucket.count == 0 } }
 
+    /// Only expose contiguous loaded months, so paging never jumps across an unloaded gap.
+    public func viewerAssets(around assetID: String) -> [Asset] {
+        guard let index = months.firstIndex(where: { $0.assets.contains(where: { $0.id == assetID }) }) else { return [] }
+        var lower = index
+        var upper = index
+        while lower > 0 && months[lower - 1].isLoaded { lower -= 1 }
+        while upper + 1 < months.count && months[upper + 1].isLoaded { upper += 1 }
+        return months[lower...upper].flatMap(\.assets)
+    }
+
     // MARK: Loading
 
     /// Loads the month skeleton, then the months at the end the grid starts at

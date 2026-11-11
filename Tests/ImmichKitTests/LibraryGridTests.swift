@@ -4,6 +4,19 @@ import ImmichKit
 
 @MainActor
 final class LibraryGridTests: XCTestCase {
+    func testViewerDoesNotJumpAcrossUnloadedMonthGaps() async throws {
+        let mock = MockImmichService.preview
+        let model = LibraryGridModel(service: mock, loader: ImageLoader(service: mock, disk: nil))
+        await model.load()
+        let oldest = try XCTUnwrap(model.months.first)
+        await model.loadMonth(oldest.id)
+        let selected = try XCTUnwrap(model.months.first?.assets.first)
+        XCTAssertEqual(model.viewerAssets(around: selected.id).map(\.id), model.months[0].assets.map(\.id))
+        await model.loadMonth(model.months[1].id)
+        XCTAssertEqual(model.viewerAssets(around: selected.id).count, model.months[0].assets.count + model.months[1].assets.count)
+        XCTAssertTrue(model.viewerAssets(around: "missing").isEmpty)
+    }
+
     func testLoadsMonthsAndVisibleRangeClearsWhenLastCellLeaves() async throws {
         let mock = MockImmichService.preview
         let model = LibraryGridModel(service: mock, loader: ImageLoader(service: mock, disk: nil))

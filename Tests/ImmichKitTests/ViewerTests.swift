@@ -4,6 +4,35 @@ import ImmichKit
 
 @MainActor
 final class ViewerTests: XCTestCase {
+    func testImmediateReturnToCancelledPageRestartsLoad() async {
+        let mock = MockImmichService(library: .standard, latency: .milliseconds(60))
+        let asset = MockLibrary.standard.assets[0]
+        let model = ViewerAssetModel(asset: asset, service: mock, loader: ImageLoader(service: mock, disk: nil))
+        let first = Task { await model.load() }
+        while !model.isLoading { await Task.yield() }
+        first.cancel()
+        await model.load()
+        await first.value
+        XCTAssertTrue(model.isLoaded)
+        XCTAssertFalse(model.isLoading)
+    }
+
+    func testCancelledDetailLoadRemainsRetryableAfterPreviewArrives() async throws {
+        let asset = MockLibrary.standard.assets.first { $0.isVideo }!
+        let mock = MockImmichService(library: .standard, latency: .milliseconds(60))
+        let model = ViewerAssetModel(asset: asset, service: mock, loader: ImageLoader(service: mock, disk: nil))
+        let request = Task { await model.load() }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while model.image == nil && ContinuousClock.now < deadline { await Task.yield() }
+        XCTAssertNotNil(model.image)
+        request.cancel()
+        await request.value
+        XCTAssertFalse(model.isLoaded)
+        await model.load()
+        XCTAssertTrue(model.isLoaded)
+        XCTAssertNotNil(model.playback)
+    }
+
     func testLoadsFullDetailAndPreview() async throws {
         let asset = MockLibrary.standard.assets.first { !$0.isVideo }!
         let mock = MockImmichService.preview
