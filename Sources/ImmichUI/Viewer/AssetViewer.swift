@@ -1,7 +1,9 @@
 import ImmichKit
 import SwiftUI
 
-/// Full-screen media pager, like viewing a photo in Photos.
+/// Full-screen media pager, laid out like viewing a photo in the iOS 26 Photos app:
+/// a glass back button and a glass title capsule (place, weekday and time) at the top,
+/// a thumbnail strip and a toolbar (share, favorite, info) at the bottom.
 ///
 /// On iOS: swipe left and right between items (a lazy paging scroll view, so it handles
 /// thousands of items), pinch or double-tap to zoom, tap to hide or show the bars, and swipe
@@ -16,21 +18,25 @@ public struct AssetViewer: View {
     @State private var selectedID: String?
     @State private var chromeVisible = true
     @State private var showsInfo = false
+    @State private var store: ViewerStore
     @Environment(\.dismiss) private var dismiss
 
     public init(assets: [Asset], selectedID: String, service: any ImmichService,
                 loader: ImageLoader? = nil, onSelection: @escaping (String) -> Void = { _ in }) {
+        let loader = loader ?? ImageLoader(service: service)
         self.assets = assets
         self.service = service
-        self.loader = loader ?? ImageLoader(service: service)
+        self.loader = loader
         self.onSelection = onSelection
         self.initialID = selectedID
         _selectedID = State(initialValue: selectedID)
+        _store = State(initialValue: ViewerStore(service: service, loader: loader))
     }
 
-    private var currentAsset: Asset? {
-        let id = selectedID ?? initialID
-        return assets.first { $0.id == id }
+    private var currentID: String { selectedID ?? initialID }
+
+    private var currentModel: ViewerAssetModel? {
+        assets.first { $0.id == currentID }.map(store.model(for:))
     }
 
     public var body: some View {
@@ -51,6 +57,15 @@ public struct AssetViewer: View {
         .onChange(of: selectedID, initial: true) { _, id in
             showsInfo = false
             if let id { onSelection(id) }
+        }
+        .sheet(isPresented: $showsInfo) {
+            if let model = currentModel {
+                AssetInfoView(asset: model.asset)
+                    #if os(iOS)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+                    #endif
+            }
         }
     }
 
@@ -78,111 +93,142 @@ public struct AssetViewer: View {
         }
         #else
         VStack {
-            if let asset = currentAsset { page(asset) }
+            if let asset = assets.first(where: { $0.id == currentID }) { page(asset) }
             HStack {
                 Button("Previous", systemImage: "chevron.left") { step(-1) }
-                    .disabled(assets.first?.id == currentAsset?.id)
+                    .disabled(assets.first?.id == currentID)
                 Button("Next", systemImage: "chevron.right") { step(1) }
-                    .disabled(assets.last?.id == currentAsset?.id)
+                    .disabled(assets.last?.id == currentID)
             }.padding()
         }
         #endif
     }
 
     private func page(_ asset: Asset) -> some View {
-        ViewerPage(asset: asset, service: service, loader: loader,
-                   isActive: (selectedID ?? initialID) == asset.id,
-                   showsInfo: $showsInfo) {
+        ViewerPage(model: store.model(for: asset), isActive: currentID == asset.id) {
             withAnimation(.easeInOut(duration: 0.2)) { chromeVisible.toggle() }
         }
     }
 
     private func step(_ delta: Int) {
-        guard let index = assets.firstIndex(where: { $0.id == (selectedID ?? initialID) }),
+        guard let index = assets.firstIndex(where: { $0.id == currentID }),
               assets.indices.contains(index + delta) else { return }
         selectedID = assets[index + delta].id
     }
 
-    // MARK: Bars
+    // MARK: Top bar
 
     private var topBar: some View {
-        HStack {
-            Button { dismiss() } label: {
-                Image(systemName: "chevron.left")
-                    .font(.body.weight(.semibold))
-                    .frame(width: 44, height: 44)
-                    .background(.ultraThinMaterial, in: Circle())
+        HStack(alignment: .center) {
+            GlassIconButton(systemImage: "chevron.left", label: "Close viewer") { dismiss() }
+            Spacer(minLength: 8)
+            if let model = currentModel {
+                titleCapsule(model)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Close viewer")
-            Spacer()
-            if let asset = currentAsset {
-                VStack(spacing: 1) {
-                    Text(asset.localDateTime.formatted(Self.dateStyle)).font(.headline)
-                    Text(asset.localDateTime.formatted(Self.timeStyle)).font(.caption).foregroundStyle(.secondary)
-                }
-                .accessibilityElement(children: .combine)
-            }
-            Spacer()
-            Color.clear.frame(width: 44, height: 44)
+            Spacer(minLength: 8)
+            // Balances the back button so the title stays centred.
+            Color.clear.frame(width: 48, height: 48)
         }
-        .padding(.horizontal)
-        .padding(.bottom, 12)
-        .background {
-            LinearGradient(colors: [.black.opacity(0.55), .clear], startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea(edges: .top)
-                .allowsHitTesting(false)
-        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
     }
+
+    private func titleCapsule(_ model: ViewerAssetModel) -> some View {
+        let date = model.asset.localDateTime
+        let title = model.placeTitle ?? date.formatted(Self.dayStyle)
+        let subtitle = model.placeTitle == nil
+            ? date.formatted(Self.timeStyle)
+            : "\(date.formatted(Self.weekdayStyle))  \(date.formatted(Self.timeStyle))"
+        return VStack(spacing: 0) {
+            Text(title).font(.headline).lineLimit(1)
+            Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 7)
+        .photosGlass(in: Capsule(), interactive: false)
+        .accessibilityElement(children: .combine)
+    }
+
+    // MARK: Bottom bar
 
     private var bottomBar: some View {
-        HStack {
-            if currentAsset?.isFavorite == true {
-                Image(systemName: "heart.fill")
-                    .font(.title3)
-                    .frame(width: 44, height: 44)
-                    .accessibilityLabel("Favorite")
-            } else {
-                Color.clear.frame(width: 44, height: 44)
+        VStack(spacing: 14) {
+            #if os(iOS)
+            ThumbnailStrip(assets: assets, selectedID: currentID, loader: loader) { id in
+                selectedID = id
             }
-            Spacer()
-            Button { showsInfo = true } label: {
-                Image(systemName: "info.circle")
-                    .font(.title3)
-                    .frame(width: 44, height: 44)
-                    .background(.ultraThinMaterial, in: Circle())
+            #endif
+            HStack {
+                if let model = currentModel {
+                    ShareAssetButton(asset: model.asset, service: service)
+                } else {
+                    Color.clear.frame(width: 48, height: 48)
+                }
+                Spacer()
+                if let model = currentModel {
+                    HStack(spacing: 4) {
+                        capsuleButton(model.asset.isFavorite ? "heart.fill" : "heart",
+                                      label: model.asset.isFavorite ? "Remove from Favorites" : "Add to Favorites") {
+                            Task { await model.toggleFavorite() }
+                        }
+                        .sensoryFeedback(.impact(weight: .light), trigger: model.asset.isFavorite)
+                        capsuleButton("info.circle", label: "Photo information") { showsInfo = true }
+                    }
+                    .padding(.horizontal, 6)
+                    .photosGlass(in: Capsule())
+                }
+                Spacer()
+                Color.clear.frame(width: 48, height: 48)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Photo information")
+            .padding(.horizontal, 20)
         }
-        .padding(.horizontal)
-        .padding(.top, 12)
-        .background {
-            LinearGradient(colors: [.clear, .black.opacity(0.55)], startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea(edges: .bottom)
-                .allowsHitTesting(false)
-        }
+        .padding(.bottom, 6)
     }
 
-    private static let dateStyle = Date.FormatStyle(calendar: Asset.localCalendar, timeZone: .gmt).day().month(.wide).year()
+    private func capsuleButton(_ systemImage: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 20, weight: .medium))
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: 48, height: 48)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    private static let dayStyle = Date.FormatStyle(calendar: Asset.localCalendar, timeZone: .gmt).day().month(.wide).year()
+    private static let weekdayStyle = Date.FormatStyle(calendar: Asset.localCalendar, timeZone: .gmt).weekday(.wide)
     private static let timeStyle = Date.FormatStyle(calendar: Asset.localCalendar, timeZone: .gmt).hour().minute()
+}
+
+/// Keeps one `ViewerAssetModel` per asset while the viewer is open, so the bars can read the
+/// current page's loaded details (place, favorite) and swiping back doesn't reload.
+@MainActor @Observable
+final class ViewerStore {
+    @ObservationIgnored private var models: [String: ViewerAssetModel] = [:]
+    @ObservationIgnored private let service: any ImmichService
+    @ObservationIgnored private let loader: ImageLoader
+
+    init(service: any ImmichService, loader: ImageLoader) {
+        self.service = service
+        self.loader = loader
+    }
+
+    func model(for asset: Asset) -> ViewerAssetModel {
+        if let model = models[asset.id] { return model }
+        let model = ViewerAssetModel(asset: asset, service: service, loader: loader)
+        models[asset.id] = model
+        return model
+    }
 }
 
 /// One item in the pager. Loads its preview and full details when it is built, so the
 /// neighbours the lazy pager builds ahead are ready before you swipe to them.
 private struct ViewerPage: View {
-    @State private var model: ViewerAssetModel
+    let model: ViewerAssetModel
     let isActive: Bool
-    @Binding var showsInfo: Bool
     let onTap: () -> Void
-
-    init(asset: Asset, service: any ImmichService, loader: ImageLoader, isActive: Bool,
-         showsInfo: Binding<Bool>, onTap: @escaping () -> Void) {
-        _model = State(initialValue: ViewerAssetModel(asset: asset, service: service, loader: loader))
-        self.isActive = isActive
-        _showsInfo = showsInfo
-        self.onTap = onTap
-    }
 
     var body: some View {
         ZStack {
@@ -207,13 +253,6 @@ private struct ViewerPage: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task { if !model.isLoaded { await model.load() } }
-        .sheet(isPresented: Binding(get: { isActive && showsInfo }, set: { showsInfo = $0 })) {
-            AssetInfoView(asset: model.asset)
-                #if os(iOS)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-                #endif
-        }
     }
 }
 
@@ -223,6 +262,6 @@ private struct ViewerPage: View {
 
 #Preview("Viewer page") {
     let mock = MockImmichService.preview
-    ViewerPage(asset: MockLibrary.standard.assets[0], service: mock, loader: ImageLoader(service: mock, disk: nil),
-               isActive: true, showsInfo: .constant(false), onTap: {})
+    ViewerPage(model: ViewerAssetModel(asset: MockLibrary.standard.assets[0], service: mock, loader: ImageLoader(service: mock, disk: nil)),
+               isActive: true, onTap: {})
 }

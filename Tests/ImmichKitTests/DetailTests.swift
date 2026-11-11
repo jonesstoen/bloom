@@ -21,6 +21,21 @@ final class MockDetailTests: XCTestCase {
         XCTAssertEqual(requests, [.asset(expected.id)])
     }
 
+    func testSetFavoriteUpdatesTheLibrary() async throws {
+        let service = MockImmichService(library: library)
+        let asset = try XCTUnwrap(library.assets.first { !$0.isFavorite })
+        let updated = try await service.setFavorite(assetID: asset.id, isFavorite: true)
+        XCTAssertTrue(updated.isFavorite)
+        let fetched = try await service.asset(id: asset.id)
+        XCTAssertTrue(fetched.isFavorite)
+        let favorites = try await service.allAssets(options: TimelineOptions(isFavorite: true))
+        XCTAssertTrue(favorites.contains { $0.id == asset.id })
+        _ = try await service.setFavorite(assetID: asset.id, isFavorite: false)
+        let reverted = try await service.asset(id: asset.id)
+        XCTAssertFalse(reverted.isFavorite)
+        await assertThrows(.unexpectedStatus(400)) { _ = try await service.setFavorite(assetID: "nope", isFavorite: true) }
+    }
+
     func testUnknownAssetIsBadRequest() async throws {
         let service = MockImmichService(library: library)
         await assertThrows(.unexpectedStatus(400)) { _ = try await service.asset(id: "nope") }
@@ -214,6 +229,27 @@ final class LiveDetailTests: XCTestCase {
         let transport = RecordingTransport(handler: handler)
         let credentials = try ServerCredentials(server: "https://photos.example.com", apiKey: "k")
         return (LiveImmichService(credentials: credentials, transport: transport), transport)
+    }
+
+    func testSetFavoriteSendsPutThenReadsTheAsset() async throws {
+        let (service, transport) = try service { _ in (200, "application/json", Self.assetJSON("a1")) }
+        let asset = try await service.setFavorite(assetID: "a1", isFavorite: true)
+        XCTAssertTrue(asset.isFavorite)
+        let requests = transport.requests.map(\.0)
+        XCTAssertEqual(requests.first?.method, .put)
+        XCTAssertEqual(requests.first?.path, "/assets/a1")
+        XCTAssertEqual(requests.first?.headerFields[.contentType], "application/json; charset=utf-8")
+        XCTAssertEqual(requests.last?.method, .get)
+    }
+
+    func testSetFavoriteMapsUnauthorized() async throws {
+        let (service, _) = try service { _ in (403, "application/json", "{}") }
+        do {
+            _ = try await service.setFavorite(assetID: "a1", isFavorite: true)
+            XCTFail("Expected an error")
+        } catch let error as ImmichServiceError {
+            XCTAssertEqual(error, .unauthorized)
+        }
     }
 
     /// An asset as the v3.4.0 spec describes it.

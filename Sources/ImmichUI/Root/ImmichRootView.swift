@@ -55,25 +55,50 @@ private struct ImmichTabs: View {
 
     var body: some View {
         TabView {
-            NavigationStack {
-                LibraryGridView(model: session.library)
-                    .toolbar {
-                        ToolbarItem(placement: .automatic) {
-                            Menu {
-                                Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive, action: signOut)
-                                    .disabled(isSigningOut)
-                            } label: { Label("Account", systemImage: "person.crop.circle") }
-                        }
-                    }
+            Tab("Library", systemImage: "photo.on.rectangle") {
+                NavigationStack {
+                    LibraryGridView(model: session.library, headerStyle: .largeTitle, accessory: AnyView(accountMenu))
+                }
             }
-            .tabItem { Label("Library", systemImage: "photo.on.rectangle") }
-            NavigationStack { AlbumsView(service: session.service, loader: session.loader) }
-                .tabItem { Label("Albums", systemImage: "rectangle.stack") }
-            NavigationStack { PeopleView(service: session.service, loader: session.loader) }
-                .tabItem { Label("People", systemImage: "person.2") }
-            NavigationStack { SearchView(service: session.service, loader: session.loader) }
-                .tabItem { Label("Search", systemImage: "magnifyingglass") }
+            Tab("Collections", systemImage: "rectangle.stack") {
+                NavigationStack {
+                    CollectionsView(service: session.service, loader: session.loader, accessory: AnyView(accountMenu))
+                }
+            }
+            // Search sits apart from the other tabs at the trailing edge, like Photos.
+            Tab("Search", systemImage: "magnifyingglass", role: .search) {
+                NavigationStack { SearchView(service: session.service, loader: session.loader) }
+            }
         }
+        .modifier(MinimizeTabBarOnScroll())
+    }
+
+    private var accountMenu: some View {
+        Menu {
+            Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive, action: signOut)
+                .disabled(isSigningOut)
+        } label: {
+            Label("Account", systemImage: "person.crop.circle")
+                .labelStyle(.iconOnly)
+                .font(.system(size: 20, weight: .medium))
+                .frame(width: 44, height: 44)
+        }
+        .photosGlass(in: Circle())
+    }
+}
+
+/// iOS 26: the tab bar shrinks while scrolling down, like Photos.
+private struct MinimizeTabBarOnScroll: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        if #available(iOS 26.0, *) {
+            content.tabBarMinimizeBehavior(.onScrollDown)
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
     }
 }
 

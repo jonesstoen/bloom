@@ -76,6 +76,9 @@ public protocol ImmichService: Sendable {
 
     /// `GET /memories`: memories matching `query`, newest first.
     func memories(_ query: MemoryQuery) async throws -> [Memory]
+
+    /// Marks or unmarks an asset as a favorite (`PUT /assets/{id}`). Returns the updated asset.
+    func setFavorite(assetID: String, isFavorite: Bool) async throws -> Asset
 }
 
 extension ImmichService {

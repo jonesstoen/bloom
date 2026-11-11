@@ -1,8 +1,8 @@
 import ImmichKit
 import SwiftUI
 
-/// The Library tab: every photo in a square grid with one section per month, like
-/// "All Photos" in the Photos app. Oldest at the top, opening scrolled to the newest at the bottom.
+/// The Library tab: every photo in one continuous square grid, like the Photos app's library.
+/// Oldest at the top, opening scrolled to the newest at the bottom.
 ///
 /// Months appear right away with placeholder cells sized from the server's counts and load as
 /// they scroll into view. Visible cells drive the prefetcher, which loads thumbnails ahead.
@@ -19,22 +19,44 @@ public struct LibraryGridView: View {
     @Namespace private var photoTransition
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let title: String
+    private let headerStyle: HeaderStyle
+    private let accessory: AnyView?
     private let onSelect: (Asset) -> Void
 
+    public enum HeaderStyle: Sendable {
+        /// Photos' library tab: a large title floating over the photos, with glass buttons.
+        case largeTitle
+        /// A regular navigation bar with a back button (album and person grids).
+        case navigationBar
+    }
+
     /// - Parameters:
-    ///   - title: navigation title ("Library").
+    ///   - title: the title ("Library").
+    ///   - headerStyle: `.largeTitle` for a top-level tab, `.navigationBar` when pushed.
+    ///   - accessory: extra glass button(s) shown next to the grid options (e.g. the account menu).
     ///   - onSelect: called when an asset is tapped (opens the viewer).
-    public init(model: LibraryGridModel, title: String = "Library", onSelect: @escaping (Asset) -> Void = { _ in }) {
+    public init(model: LibraryGridModel, title: String = "Library", headerStyle: HeaderStyle = .navigationBar,
+                accessory: AnyView? = nil, onSelect: @escaping (Asset) -> Void = { _ in }) {
         _model = State(initialValue: model)
         self.title = title
+        self.headerStyle = headerStyle
+        self.accessory = accessory
         self.onSelect = onSelect
     }
 
-    public init(service: any ImmichService, title: String = "Library", onSelect: @escaping (Asset) -> Void = { _ in }) {
-        self.init(model: LibraryGridModel(service: service), title: title, onSelect: onSelect)
+    public init(service: any ImmichService, title: String = "Library", headerStyle: HeaderStyle = .navigationBar,
+                onSelect: @escaping (Asset) -> Void = { _ in }) {
+        self.init(model: LibraryGridModel(service: service), title: title, headerStyle: headerStyle, onSelect: onSelect)
     }
 
     private static let spacing: CGFloat = 1.5
+    private var usesLargeTitle: Bool {
+        #if os(iOS)
+        headerStyle == .largeTitle
+        #else
+        false
+        #endif
+    }
 
     private var columns: [GridItem] {
         Array(repeating: GridItem(.flexible(), spacing: Self.spacing), count: max(1, model.columnCount))
@@ -45,16 +67,14 @@ public struct LibraryGridView: View {
             .navigationTitle(title)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar(usesLargeTitle ? .hidden : .automatic, for: .navigationBar)
             .toolbar {
-                Menu {
-                    ForEach(GridDensity.allCases, id: \.rawValue) { density in
-                        Button { changeDensity(density) } label: {
-                            if density == model.density {
-                                Label("\(density.rawValue) Columns", systemImage: "checkmark")
-                            } else { Text("\(density.rawValue) Columns") }
-                        }
-                    }
-                } label: { Label("Grid density", systemImage: "square.grid.3x3") }
+                if !usesLargeTitle {
+                    ToolbarItem(placement: .topBarTrailing) { densityMenu }
+                }
+            }
+            .overlay(alignment: .top) {
+                if usesLargeTitle { largeHeader }
             }
             #endif
             .task {
@@ -113,20 +133,71 @@ public struct LibraryGridView: View {
         }
     }
 
+    // MARK: Header
+
+    private var densityMenu: some View {
+        Menu {
+            Picker("Grid", selection: Binding(get: { model.density }, set: { changeDensity($0) })) {
+                ForEach(GridDensity.allCases, id: \.rawValue) { density in
+                    Text("\(density.rawValue) Columns").tag(density)
+                }
+            }
+        } label: {
+            Label("Grid options", systemImage: "line.3.horizontal.decrease")
+        }
+    }
+
+    /// Large title and subtitle over a soft blur, with glass buttons on the right, like Photos.
+    private var largeHeader: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title)
+                    .font(.largeTitle.weight(.bold))
+                Text(model.visibleMonthTitle ?? model.footerText)
+                    .font(.subheadline.weight(.semibold))
+                    .contentTransition(.numericText())
+                    .animation(.default, value: model.visibleMonthTitle)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isHeader)
+            Spacer()
+            HStack(spacing: 10) {
+                densityMenu
+                    .labelStyle(.iconOnly)
+                    .font(.system(size: 18, weight: .medium))
+                    .frame(width: 44, height: 44)
+                    .photosGlass(in: Circle())
+                if let accessory { accessory }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 14)
+        .background {
+            Rectangle()
+                .fill(.regularMaterial)
+                .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.55),
+                                             .init(color: .clear, location: 1)],
+                                     startPoint: .top, endPoint: .bottom))
+                .ignoresSafeArea(edges: .top)
+                .allowsHitTesting(false)
+        }
+    }
+
+    // MARK: Grid
+
     private var grid: some View {
         ScrollViewReader { proxy in
         ScrollView {
+            // One continuous grid across months, like Photos (no section breaks).
             LazyVGrid(columns: columns, spacing: Self.spacing) {
                 ForEach(model.months) { month in
-                    Section {
-                        cells(for: month)
-                    } header: {
-                        MonthHeader(title: LibraryGridModel.monthTitle(for: month.bucket))
-                    }
+                    cells(for: month)
                 }
             }
             footer
         }
+        .contentMargins(.top, usesLargeTitle ? 96 : 0, for: .scrollContent)
+        .ignoresSafeArea(edges: usesLargeTitle ? .top : [])
         .defaultScrollAnchor(model.newestFirst ? .top : .bottom)
         .refreshable { await model.load() }
         #if os(iOS)
@@ -220,33 +291,14 @@ public struct LibraryGridView: View {
     }
 }
 
-/// Month title above its photos, in the plain bold style of the Photos grid.
-private struct MonthHeader: View {
-    let title: String
-
-    var body: some View {
-        Text(title)
-            .font(.title3.weight(.bold))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.top, 18)
-            .padding(.bottom, 6)
-            .accessibilityAddTraits(.isHeader)
-    }
-}
-
 // MARK: - Previews
 
 #Preview("Library") {
     let mock = MockImmichService.preview
     return NavigationStack {
-        LibraryGridView(model: LibraryGridModel(service: mock, loader: ImageLoader(service: mock, disk: nil)))
+        LibraryGridView(model: LibraryGridModel(service: mock, loader: ImageLoader(service: mock, disk: nil)),
+                        headerStyle: .largeTitle)
     }
-}
-
-#Preview("Month header") {
-    let _ = MockImmichService.preview
-    MonthHeader(title: "June 2026")
 }
 
 #Preview("Newest first, slow") {

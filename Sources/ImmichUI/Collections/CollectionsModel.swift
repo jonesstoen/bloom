@@ -11,6 +11,9 @@ public final class CollectionsModel {
     public private(set) var loadingPeople = false
     public private(set) var loadedAlbums = false
     public private(set) var loadedPeople = false
+    /// Memories, newest first, without empty ones.
+    public private(set) var memories: [Memory] = []
+    public private(set) var loadedMemories = false
     @ObservationIgnored public let service: any ImmichService
     @ObservationIgnored public let loader: ImageLoader
 
@@ -45,5 +48,21 @@ public final class CollectionsModel {
             loadedPeople = true
         } catch is CancellationError { return }
         catch { peopleError = "Couldn't load people. Please try again." }
+    }
+
+    /// Memories are a bonus row: a failure just leaves the row out.
+    public func loadMemories() async {
+        do {
+            let result = try await service.memories(MemoryQuery())
+            try Task.checkCancellation()
+            memories = Self.sortedMemories(result)
+            loadedMemories = true
+        } catch {
+            loadedMemories = true
+        }
+    }
+
+    static func sortedMemories(_ memories: [Memory]) -> [Memory] {
+        memories.filter { !$0.assets.isEmpty }.sorted { $0.memoryAt > $1.memoryAt }
     }
 }

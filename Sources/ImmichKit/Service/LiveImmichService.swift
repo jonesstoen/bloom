@@ -235,6 +235,11 @@ public struct LiveImmichService: ImmichService {
         try await rawRequest(method: .post, path: path, json: json, operationID: operationID, maxBytes: maxBytes)
     }
 
+    /// A JSON `PUT` through the same transport, bypassing the generated decoder.
+    func rawPUT(path: String, json: Data, operationID: String, maxBytes: Int = 16 * 1024 * 1024) async throws -> Data {
+        try await rawRequest(method: .put, path: path, json: json, operationID: operationID, maxBytes: maxBytes)
+    }
+
     private func rawRequest(
         method: HTTPRequest.Method, path: String, json: Data?, operationID: String, maxBytes: Int
     ) async throws -> Data {

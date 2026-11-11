@@ -21,6 +21,26 @@ public final class ViewerAssetModel {
         self.loader = loader
     }
 
+    /// Flips the favorite flag right away, like Photos, and rolls back if the server refuses.
+    public func toggleFavorite() async {
+        let target = !asset.isFavorite
+        asset.isFavorite = target
+        do {
+            let updated = try await service.setFavorite(assetID: asset.id, isFavorite: target)
+            guard asset.id == updated.id else { return }
+            asset.isFavorite = updated.isFavorite
+        } catch {
+            asset.isFavorite = !target
+            self.error = target ? "Couldn't add to Favorites." : "Couldn't remove from Favorites."
+        }
+    }
+
+    /// Short place name for the viewer title ("Oslo"), when the asset has a location.
+    public var placeTitle: String? {
+        guard let exif = asset.exif else { return nil }
+        return exif.city?.nilIfEmpty ?? exif.state?.nilIfEmpty ?? exif.country?.nilIfEmpty
+    }
+
     public func load() async {
         generation += 1
         let started = generation
@@ -54,5 +74,12 @@ public final class ViewerAssetModel {
 enum ViewerGesture {
     static func shouldDismiss(x: Double, y: Double, zoom: Double) -> Bool {
         zoom == 1 && y > 100 && y > abs(x) * 1.5
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

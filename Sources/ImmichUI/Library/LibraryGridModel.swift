@@ -39,7 +39,11 @@ public final class LibraryGridModel {
     @ObservationIgnored public let prefetcher: Prefetcher
     @ObservationIgnored public let images: ThumbnailImageCache
 
+    /// Title of the month in the middle of the screen ("November 2026"), for the header subtitle.
+    public private(set) var visibleMonthTitle: String?
+
     @ObservationIgnored private var monthIndexByID: [String: Int] = [:]
+    @ObservationIgnored private var monthIDByAssetID: [String: String] = [:]
     /// Index of each loaded asset in the flat list sent to the prefetcher.
     @ObservationIgnored private(set) var assetIndexByID: [String: Int] = [:]
     @ObservationIgnored private(set) var flatAssetIDs: [String] = []
@@ -186,6 +190,7 @@ public final class LibraryGridModel {
     }
 
     private func reportVisibleRange() {
+        updateVisibleMonthTitle()
         guard let range = Self.visibleRange(of: visibleIDs, in: assetIndexByID) else {
             lastVisibleRange = nil
             updates.yield(.cancel)
@@ -196,9 +201,20 @@ public final class LibraryGridModel {
         updates.yield(.visible(range))
     }
 
+    private func updateVisibleMonthTitle() {
+        guard let id = visibleCenterID, let monthID = monthIDByAssetID[id],
+              let index = monthIndexByID[monthID] else { return }
+        let title = Self.monthTitle(for: months[index].bucket)
+        if title != visibleMonthTitle { visibleMonthTitle = title }
+    }
+
     private func apply(_ newMonths: [TimelineMonth]) {
         months = newMonths
         monthIndexByID = Dictionary(newMonths.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
+        monthIDByAssetID = Dictionary(
+            newMonths.flatMap { month in month.assets.map { ($0.id, month.id) } },
+            uniquingKeysWith: { first, _ in first }
+        )
         let ids = newMonths.flatMap { $0.assets.map(\.id) }
         guard ids != flatAssetIDs else { return }
         flatAssetIDs = ids

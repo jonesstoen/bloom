@@ -25,6 +25,7 @@ public actor MockImmichService: ImmichService {
         case mediaRequest(MediaRequest.Kind, String)
         case mapMarkers
         case memories
+        case setFavorite(String, Bool)
     }
 
     /// Base URL of the media requests the mock hands out. Nothing answers there.
@@ -265,6 +266,14 @@ public actor MockImmichService: ImmichService {
         try await begin(.asset(id))
         guard let asset = assetsByID[id] else { throw ImmichServiceError.unexpectedStatus(400) }
         return asset
+    }
+
+    /// Updates the favorite flag in the fake library; HTTP 400 for an unknown id.
+    public func setFavorite(assetID: String, isFavorite: Bool) async throws -> Asset {
+        try await begin(.setFavorite(assetID, isFavorite))
+        guard let index = assets.firstIndex(where: { $0.id == assetID }) else { throw ImmichServiceError.unexpectedStatus(400) }
+        assets[index].isFavorite = isFavorite
+        return assets[index]
     }
 
     /// A large placeholder JPEG (the same bytes as the preview) for known assets.
