@@ -43,7 +43,7 @@ Uploading from the iPhone (backup) is not implemented yet: Bloom shows what is o
 The `ImmichKit` library product exposes all three modules. Deployment targets are iOS 18 and macOS 15; iOS 26
 features (Liquid Glass, tab bar accessory) are used when available. macOS compiles the shared UI.
 
-The logo kit (SVG masters, app icons, colours and usage rules) is in [`Branding/bloom-logo`](Branding/bloom-logo/README.md).
+Where each part lives: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). The logo kit (SVG masters, app icons, colours and usage rules) is in [`Branding/bloom-logo`](Branding/bloom-logo/README.md).
 
 ## Create the iPhone app in Xcode
 

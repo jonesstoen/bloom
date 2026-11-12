@@ -8,7 +8,13 @@ final class LocalizationTests: XCTestCase {
     override func tearDown() { Localization.languageOverride = nil; super.tearDown() }
 
     private var packageRoot: URL {
-        URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        // The folder holding Package.swift, however deep this test file sits.
+        var url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        while !FileManager.default.fileExists(atPath: url.appendingPathComponent("Package.swift").path),
+              url.pathComponents.count > 1 {
+            url.deleteLastPathComponent()
+        }
+        return url
     }
 
     func testNorwegianVariantsChooseBokmalAndEverythingElseEnglish() {

@@ -12,3 +12,8 @@ HANDOFF.md
 
 # Isolated Codex implementation checkouts
 .worktrees/
+
+# Xcode
+xcuserdata/
+*.xcuserstate
+DerivedData/
