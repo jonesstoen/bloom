@@ -66,3 +66,30 @@ public struct GridLayout: Equatable, Sendable {
         Double(origin(of: index).y) - anchor * (visibleHeight - cell)
     }
 }
+
+/// A programmatic scroll that hasn't landed yet. After a column switch SwiftUI reports the new
+/// content height once with the old layout's offset before the scroll lands (measured), so until
+/// the reported offset reaches the target, the target is where the grid really is.
+public enum PendingScroll {
+    public struct Resolution: Equatable, Sendable {
+        /// The content offset to work with.
+        public var offset: Double
+        /// The target still waited for, `nil` once landed.
+        public var pending: Double?
+    }
+
+    /// - Parameters:
+    ///   - pending: the `contentOffset.y` the last programmatic scroll aims at.
+    ///   - reportedOffset: `ScrollGeometry.contentOffset.y`.
+    ///   - contentHeight: `ScrollGeometry.contentSize.height`; with the insets and the full frame
+    ///     height it gives the offsets the scroll view clamps to.
+    public static func resolve(pending: Double?, reportedOffset: Double, contentHeight: Double,
+                               frameHeight: Double, insetTop: Double, insetBottom: Double) -> Resolution {
+        guard let pending, pending.isFinite else { return Resolution(offset: reportedOffset, pending: nil) }
+        let lowest = -insetTop
+        let highest = max(lowest, contentHeight + insetBottom - frameHeight)
+        let target = min(max(pending, lowest), highest)
+        if abs(reportedOffset - target) < 1 { return Resolution(offset: reportedOffset, pending: nil) }
+        return Resolution(offset: target, pending: target)
+    }
+}

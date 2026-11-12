@@ -63,3 +63,41 @@ final class GridLayoutTests: XCTestCase {
         XCTAssertNil(model.firstGridIndex(ofMonth: "no-such-month"))
     }
 }
+
+/// After a column switch SwiftUI reports the new content height once with the old offset before
+/// the programmatic scroll lands (measured with a probe). Taking that offset as real made a quick
+/// second pinch step read a 5-column offset as a 3-column one and jump months back.
+final class PendingScrollTests: XCTestCase {
+    private func resolve(_ pending: Double?, reported: Double, contentHeight: Double = 100_000) -> PendingScroll.Resolution {
+        PendingScroll.resolve(pending: pending, reportedOffset: reported, contentHeight: contentHeight,
+                              frameHeight: 874, insetTop: 96, insetBottom: 34)
+    }
+
+    func testStaleOffsetIsIgnoredUntilTheScrollLands() {
+        let stale = resolve(19_904, reported: 208_046)
+        XCTAssertEqual(stale.offset, 19_904, "use where the grid is going, not the old layout's offset")
+        XCTAssertEqual(stale.pending, 19_904, "still waiting for the scroll to land")
+        let landed = resolve(19_904, reported: 19_904.3)
+        XCTAssertEqual(landed.offset, 19_904.3, accuracy: 0.0001)
+        XCTAssertNil(landed.pending)
+    }
+
+    func testNothingPendingUsesTheReportedOffset() {
+        let result = resolve(nil, reported: 1_234)
+        XCTAssertEqual(result.offset, 1_234)
+        XCTAssertNil(result.pending)
+    }
+
+    /// The scroll view clamps a target past either end; that clamped offset counts as landed.
+    func testClampedTargetsCountAsLanded() {
+        // Max offset: content 10 000 + bottom inset 34 − frame 874 = 9 160.
+        let pastBottom = resolve(9_500, reported: 9_160, contentHeight: 10_000)
+        XCTAssertEqual(pastBottom.offset, 9_160)
+        XCTAssertNil(pastBottom.pending)
+        let pastTop = resolve(-400, reported: -96)
+        XCTAssertEqual(pastTop.offset, -96)
+        XCTAssertNil(pastTop.pending)
+        XCTAssertEqual(resolve(9_500, reported: 50_000, contentHeight: 10_000).offset, 9_160,
+                       "a stale report resolves to the clamped target")
+    }
+}

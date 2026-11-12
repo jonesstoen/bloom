@@ -81,7 +81,10 @@ struct LibraryGridScroll: View {
                 scrollGeometryChanged(geometry)
             }
             .onScrollPhaseChange { _, phase in
-                if phase == .interacting { scrollMetrics.userScrolled = true }
+                guard phase == .interacting, !scrollMetrics.isPinching else { return }
+                scrollMetrics.userScrolled = true
+                // The finger takes over: what the scroll view reports is where it is.
+                scrollMetrics.pendingOffset = nil
             }
             .refreshable {
                 guard !mutationBlocked else { return }
@@ -101,7 +104,10 @@ struct LibraryGridScroll: View {
                 if let id, let index = model.gridIndex(ofAsset: id) { scroll(toCell: index, anchor: 0.5) }
             }
             // Shown again later (e.g. after Months): treat the next layout as a first layout.
-            .onDisappear { scrollMetrics.geometry = nil }
+            .onDisappear {
+                scrollMetrics.geometry = nil
+                scrollMetrics.pendingOffset = nil
+            }
             .onChange(of: model.pendingScrollMonthID) { _, _ in scrollToPendingMonth() }
             .onChange(of: model.pendingScrollAssetID) { _, _ in scrollToPendingMonth() }
             .onChange(of: model.gridShift) { _, shift in keepInPlace(shift) }
@@ -132,10 +138,10 @@ struct LibraryGridScroll: View {
     private func scrollGeometryChanged(_ geometry: ScrollGeometry) {
         let firstLayout = scrollMetrics.geometry == nil
         scrollMetrics.geometry = geometry
-        scrollMetrics.pendingOffset = nil
+        let offset = scrollMetrics.resolve(geometry)
         let layout = gridLayout(width: geometry.containerSize.width)
-        buildRows(layout, contentOffset: geometry.contentOffset.y, frameHeight: geometry.visibleRect.height)
-        reportScreen(layout, geometry: geometry)
+        buildRows(layout, contentOffset: offset, frameHeight: geometry.visibleRect.height)
+        reportScreen(layout, geometry: geometry, offset: offset)
         if firstLayout && !scrollMetrics.didOpen && model.pendingScrollAssetID == nil && model.pendingScrollMonthID == nil {
             scrollMetrics.didOpen = true
             openAtNewest()
@@ -153,8 +159,8 @@ struct LibraryGridScroll: View {
 
     /// The cells on screen (between the large title and the tab bar): the header's date range and
     /// whether the tab bar shows the Years / Months / All switcher.
-    private func reportScreen(_ layout: GridLayout, geometry: ScrollGeometry) {
-        guard let range = layout.screenRange(top: geometry.contentOffset.y + geometry.contentInsets.top,
+    private func reportScreen(_ layout: GridLayout, geometry: ScrollGeometry, offset: Double) {
+        guard let range = layout.screenRange(top: offset + geometry.contentInsets.top,
                                              height: geometry.containerSize.height) else { return }
         model.screenRangeChanged(range)
         guard let chrome else { return }
@@ -176,8 +182,12 @@ struct LibraryGridScroll: View {
 
     private func scroll(toY y: Double, layout: GridLayout, geometry: ScrollGeometry, animation: Animation? = nil) {
         if let animation {
+            scrollMetrics.pendingOffset = nil
             withAnimation(animation) { scrollPosition.scrollTo(y: y) }
         } else {
+            // `scrollTo(y:)` measures from below the top inset; the scroll view reports
+            // `contentOffset`, which is y − insetTop once it lands.
+            scrollMetrics.setPending(y - geometry.contentInsets.top)
             buildRows(layout, contentOffset: y - geometry.contentInsets.top, frameHeight: geometry.visibleRect.height)
             var transaction = Transaction()
             transaction.disablesAnimations = true
@@ -220,7 +230,7 @@ struct LibraryGridScroll: View {
         guard let shift, let geometry = scrollMetrics.geometry, pinch.liveScale == 1, pinch.settleScale == 1 else { return }
         let layout = gridLayout(width: geometry.containerSize.width)
         // Where the photo was on screen, from the layout before the change.
-        let screenY = Double(layout.origin(of: shift.oldIndex).y) - geometry.contentOffset.y
+        let screenY = Double(layout.origin(of: shift.oldIndex).y) - scrollMetrics.offset(geometry)
         guard screenY > -layout.cell, screenY < geometry.visibleRect.height else { return }
         let offset = Double(layout.origin(of: shift.newIndex).y) - screenY
         scroll(toY: offset + geometry.contentInsets.top, layout: layout, geometry: geometry)
@@ -248,6 +258,7 @@ struct LibraryGridScroll: View {
     /// through several densities.
     private func pinchChanged(_ value: MagnifyGesture.Value) {
         guard !mutationBlocked else { return }
+        scrollMetrics.isPinching = true
         let relative = value.magnification / pinch.baseline
         let next = model.density.pinched(by: relative)
         if next != model.density {
@@ -264,6 +275,7 @@ struct LibraryGridScroll: View {
     }
 
     private func pinchEnded() {
+        scrollMetrics.isPinching = false
         pinch.baseline = 1
         withAnimation(reduceMotion ? nil : .spring(duration: 0.3)) { pinch.liveScale = 1 }
     }
@@ -282,9 +294,9 @@ struct LibraryGridScroll: View {
             return
         }
         let width = geometry.containerSize.width
-        // A fast pinch can switch again before the grid reports its new offset; then the offset
-        // this view scrolled to last time is the current one.
-        let currentOffset = scrollMetrics.pendingOffset ?? geometry.contentOffset.y
+        // A fast pinch can switch again before the last switch's scroll has landed; then its
+        // target is the current offset (see `PendingScroll`).
+        let currentOffset = scrollMetrics.offset(geometry)
         let anchor = GridPinchAnchor.anchor(
             offset: currentOffset, focalX: width / 2, focalY: geometry.visibleRect.height / 2,
             width: width, spacing: Self.spacing, from: model.density.rawValue, to: density.rawValue,
@@ -293,7 +305,6 @@ struct LibraryGridScroll: View {
         withTransaction(transaction) {
             model.density = density
             if let anchor {
-                scrollMetrics.pendingOffset = anchor.offset
                 scroll(toY: anchor.offset + geometry.contentInsets.top, layout: newLayout, geometry: geometry)
             }
             pinch.liveScale = 1
@@ -334,12 +345,45 @@ private struct PinchScaleEffect: ViewModifier {
 
 private final class ScrollMetrics {
     var geometry: ScrollGeometry?
-    /// Offset of the last density switch until the grid reports geometry for the new layout.
+    /// The `contentOffset.y` a programmatic scroll aims at, until the scroll view reports it.
     var pendingOffset: Double?
+    /// Reports since `pendingOffset` was set that didn't match it.
+    private var staleReports = 0
+    /// A pinch is in progress (its fingers can make the scroll view report interaction).
+    var isPinching = false
     /// The grid has been opened at the newest photos once.
     var didOpen = false
     /// The user has touched the grid (then it is never scrolled for them on open).
     var userScrolled = false
+
+    func setPending(_ offset: Double) {
+        pendingOffset = offset
+        staleReports = 0
+    }
+
+    /// The offset the grid is really at for a new report: the pending target while the report
+    /// still has the old layout's offset. Two such reports in a row mean the scroll isn't going
+    /// to land (something else moved it), and the report wins.
+    func resolve(_ geometry: ScrollGeometry) -> Double {
+        let resolution = resolution(geometry)
+        if resolution.pending == nil || staleReports >= 2 {
+            pendingOffset = nil
+            return geometry.contentOffset.y
+        }
+        staleReports += 1
+        return resolution.offset
+    }
+
+    /// The current offset without consuming a report.
+    func offset(_ geometry: ScrollGeometry) -> Double {
+        resolution(geometry).offset
+    }
+
+    private func resolution(_ geometry: ScrollGeometry) -> PendingScroll.Resolution {
+        PendingScroll.resolve(pending: pendingOffset, reportedOffset: geometry.contentOffset.y,
+                              contentHeight: geometry.contentSize.height, frameHeight: geometry.visibleRect.height,
+                              insetTop: geometry.contentInsets.top, insetBottom: geometry.contentInsets.bottom)
+    }
 }
 
 /// The cells of the grid: only the rows in `window`, each placed at its exact position in a frame
