@@ -6,7 +6,12 @@ import Observation
 @MainActor @Observable
 public final class ViewerAssetModel {
     public private(set) var asset: Asset
+    /// The preview, sharp enough to fill the screen. `nil` until it has loaded.
     public private(set) var image: CGImage?
+    /// The small grid thumbnail, shown until the preview arrives so opening a photo is instant.
+    public private(set) var placeholder: CGImage?
+    /// What the page shows: the preview, or the thumbnail while it loads.
+    public var displayImage: CGImage? { image ?? placeholder }
     public private(set) var playback: MediaRequest?
     public private(set) var error: String?
     public private(set) var isLoading = false
@@ -19,8 +24,9 @@ public final class ViewerAssetModel {
     @ObservationIgnored private let loader: ImageLoader
     @ObservationIgnored private var generation = 0
 
-    public init(asset: Asset, service: any ImmichService, loader: ImageLoader) {
+    public init(asset: Asset, service: any ImmichService, loader: ImageLoader, placeholder: CGImage? = nil) {
         self.asset = asset
+        self.placeholder = placeholder
         self.service = service
         self.loader = loader
     }
@@ -79,6 +85,10 @@ public final class ViewerAssetModel {
         isLoaded = false
         error = nil
         defer { if generation == started { isLoading = false } }
+        if displayImage == nil, let data = await loader.memoryData(for: ImageKey(assetID: asset.id, size: .thumbnail)) {
+            let thumbnail = await ThumbnailDecoder.decode(data)
+            if generation == started, image == nil { placeholder = thumbnail }
+        }
         do {
             let data = try await loader.data(for: ImageKey(assetID: asset.id, size: .preview))
             let decoded = await ThumbnailDecoder.decode(data, maxPixelSize: 2560)

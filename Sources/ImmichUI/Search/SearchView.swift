@@ -269,7 +269,8 @@ public struct SearchView: View {
     }
 
     private func viewer(_ asset: Asset) -> some View {
-        AssetViewer(assets: model.assets, selectedID: asset.id, service: model.service, loader: model.loader, onSelection: { id in
+        AssetViewer(assets: model.assets, selectedID: asset.id, service: model.service, loader: model.loader,
+                    thumbnails: images, onSelection: { id in
             transitionID = id
             if id == model.assets.last?.id { Task { await model.loadMore() } }
         })

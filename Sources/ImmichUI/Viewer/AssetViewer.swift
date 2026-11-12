@@ -32,7 +32,7 @@ public struct AssetViewer: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(assets: [Asset], selectedID: String, service: any ImmichService,
-                loader: ImageLoader? = nil,
+                loader: ImageLoader? = nil, thumbnails: ThumbnailImageCache? = nil,
                 onMoveToTrash: (@MainActor (Asset) async throws -> Void)? = nil,
                 onRestore: (@MainActor (Asset) async throws -> Void)? = nil, onSelection: @escaping (String) -> Void = { _ in }) {
         let loader = loader ?? ImageLoader(service: service)
@@ -46,7 +46,7 @@ public struct AssetViewer: View {
         self.initialID = selectedID
         self.indexByID = Dictionary(assets.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
         _selectedID = State(initialValue: selectedID)
-        _store = State(initialValue: ViewerStore(service: service, loader: loader))
+        _store = State(initialValue: ViewerStore(service: service, loader: loader, thumbnails: thumbnails))
     }
 
     private var trashInteractionBlocked: Bool { trash.pendingAsset != nil || trash.isBusy }
@@ -369,10 +369,12 @@ final class ViewerStore {
     @ObservationIgnored private var models: [String: ViewerAssetModel] = [:]
     @ObservationIgnored private let service: any ImmichService
     @ObservationIgnored private let loader: ImageLoader
+    @ObservationIgnored private let thumbnails: ThumbnailImageCache?
 
-    init(service: any ImmichService, loader: ImageLoader) {
+    init(service: any ImmichService, loader: ImageLoader, thumbnails: ThumbnailImageCache? = nil) {
         self.service = service
         self.loader = loader
+        self.thumbnails = thumbnails
     }
 
     func stopLivePhotos() {
@@ -381,7 +383,8 @@ final class ViewerStore {
 
     func model(for asset: Asset) -> ViewerAssetModel {
         if let model = models[asset.id] { return model }
-        let model = ViewerAssetModel(asset: asset, service: service, loader: loader)
+        let thumbnail = thumbnails?.image(for: ImageKey(assetID: asset.id, size: .thumbnail))
+        let model = ViewerAssetModel(asset: asset, service: service, loader: loader, placeholder: thumbnail)
         models[asset.id] = model
         return model
     }
@@ -400,7 +403,7 @@ private struct ViewerPage: View {
         ZStack {
             if model.asset.isVideo, let request = model.playback {
                 VideoPlaybackView(request: request, isActive: isActive && livePlaybackAllowed)
-            } else if let image = model.image {
+            } else if let image = model.displayImage {
                 #if os(iOS)
                 ZoomableImage(image: image, isActive: isActive, onSingleTap: onTap,
                               livePhotoEnabled: livePlaybackAllowed && model.asset.isLivePhoto && model.playback != nil,
@@ -434,6 +437,18 @@ private struct ViewerPage: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay {
+            // The preview failed while the thumbnail is showing: say so rather than leave it blurry.
+            if model.image == nil, model.placeholder != nil, !model.asset.isVideo, let error = model.error {
+                VStack(spacing: 12) {
+                    Text(error).font(.callout).multilineTextAlignment(.center)
+                    Button(tr("Try Again")) { Task { await model.load() } }
+                }
+                .padding()
+                .photosGlass(in: RoundedRectangle(cornerRadius: 16), interactive: false)
+                .padding(.horizontal, 32)
+            }
+        }
         .overlay(alignment: .bottom) {
             if let error = model.livePhotoPlaybackError, isActive {
                 VStack(spacing: 8) {

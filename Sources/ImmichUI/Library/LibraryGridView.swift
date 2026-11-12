@@ -211,7 +211,7 @@ public struct LibraryGridView: View {
         if canRestore { restoreAction = { asset in try await restore(asset) } }
         else { restoreAction = nil }
         return AssetViewer(assets: item.assets, selectedID: item.selectedID,
-                    service: model.service, loader: model.loader, onMoveToTrash: trashAction, onRestore: restoreAction, onSelection: { id in
+                    service: model.service, loader: model.loader, thumbnails: model.images, onMoveToTrash: trashAction, onRestore: restoreAction, onSelection: { id in
             guard transitionSourceID != id else { return }
             transitionSourceID = id
             model.assetShownInViewer(id)

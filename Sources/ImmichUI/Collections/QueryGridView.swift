@@ -104,11 +104,11 @@ public struct QueryGridView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         .fullScreenCover(item: $selected) { asset in
-            AssetViewer(assets: model.assets, selectedID: asset.id, service: model.service, loader: model.loader)
+            AssetViewer(assets: model.assets, selectedID: asset.id, service: model.service, loader: model.loader, thumbnails: images)
         }
         #else
         .sheet(item: $selected) { asset in
-            AssetViewer(assets: model.assets, selectedID: asset.id, service: model.service, loader: model.loader)
+            AssetViewer(assets: model.assets, selectedID: asset.id, service: model.service, loader: model.loader, thumbnails: images)
                 .frame(minWidth: 700, minHeight: 500)
         }
         #endif
