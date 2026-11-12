@@ -140,4 +140,12 @@ The root shares one loader across tabs and namespaces its disk cache by a digest
 
 ## License
 
-MIT, see [LICENSE](LICENSE). `Sources/ImmichAPI/openapi.json` is the Immich API specification, published by the Immich project under AGPL-3.0. Bloom is an independent client and is not affiliated with Immich.
+Copyright © 2026 Johannes Støen.
+
+Bloom is free software: you can redistribute it and/or modify it under the terms of the GNU General
+Public License as published by the Free Software Foundation, either version 3 of the License, or (at
+your option) any later version. It is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; see [LICENSE](LICENSE) for details.
+
+`Sources/ImmichAPI/openapi.json` is the Immich API specification, published by the Immich project
+under AGPL-3.0. Bloom is an independent client and is not affiliated with Immich.
