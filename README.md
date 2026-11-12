@@ -99,7 +99,8 @@ ImmichRootView(service: MockImmichService.preview)
 
 This root initializer uses an in-memory session and does not read the real Keychain. In Debug
 builds the app can also start in this demo mode with the launch argument `-BloomDemo` (and
-`-BloomDemoTab collections|search`); that is how the README screenshots are taken. Release builds ignore it. The deterministic mock has hundreds of generated photos, albums, people and metadata. Its search uses word matching rather than CLIP, and mock videos show a placeholder because they have no playable media.
+`-BloomDemoTab collections|search`); the README screenshots are taken that way, in English with
+`-AppleLanguages (en)`. Release builds ignore it. The deterministic mock has hundreds of generated photos, albums, people and metadata. Its search uses word matching rather than CLIP, and mock videos show a placeholder because they have no playable media.
 
 ## Run all three checks
 
