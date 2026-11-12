@@ -657,13 +657,6 @@ public struct LibraryGridView: View {
     }
 }
 
-/// The identity of a placeholder cell in an unloaded month: unique across months, so the one
-/// continuous grid never repeats an ID.
-struct PlaceholderSlot: Hashable {
-    let monthID: String
-    let index: Int
-}
-
 /// The Library header's subtitle: the dates on screen in All, the year range in Years.
 private struct LibraryHeaderSubtitle: View {
     let model: LibraryGridModel

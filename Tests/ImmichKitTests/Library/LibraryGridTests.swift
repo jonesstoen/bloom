@@ -61,8 +61,8 @@ final class LibraryGridTests: XCTestCase {
     }
 
     func testVisibilityIgnoresUnknownIDsAndIncludesLastIndex() {
-        XCTAssertEqual(LibraryGridModel.visibleRange(of: ["a", "c", "missing"], in: ["a": 2, "c": 5]), 2..<6)
-        XCTAssertNil(LibraryGridModel.visibleRange(of: ["missing"], in: ["a": 2]))
+        XCTAssertEqual(PrefetchFeed.visibleRange(of: ["a", "c", "missing"], in: ["a": 2, "c": 5]), 2..<6)
+        XCTAssertNil(PrefetchFeed.visibleRange(of: ["missing"], in: ["a": 2]))
     }
 
     func testDurationFormatting() {
