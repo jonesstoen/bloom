@@ -3,8 +3,7 @@ import Foundation
 
 /// Exact positions for the Months view, like `GridLayout` for All: every month's height follows
 /// from its tile layout, so the view builds only the months near the screen and a jump to a
-/// month lands exactly. (A LazyVStack only estimated months it hadn't built: a jump landed short
-/// and needed a second scroll that visibly moved the view.)
+/// month lands exactly in one scroll.
 struct MonthsLayout {
     struct Month {
         let id: String

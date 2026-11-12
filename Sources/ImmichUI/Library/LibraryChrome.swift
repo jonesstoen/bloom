@@ -31,9 +31,7 @@ public final class LibraryChrome {
 
     // MARK: Scroll position
 
-    /// More than one row of newer photos is off screen. Decided from the cells SwiftUI reports on
-    /// screen rather than the scroll offset: LazyVGrid only estimates the height of rows it hasn't
-    /// built, so after a jump (opening at the newest photos, a pinch) offsets don't map to rows.
+    /// More than one row of newer photos is off screen (`visible` from `GridLayout.screenRange`).
     /// The tab bar's inset changing when the switcher appears can't flip it back: a taller bar only
     /// hides more of the newest row.
     static func isAway(visible: ClosedRange<Int>, itemCount: Int, columns: Int, newestFirst: Bool) -> Bool {

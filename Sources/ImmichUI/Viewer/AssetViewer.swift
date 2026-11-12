@@ -192,10 +192,10 @@ public struct AssetViewer: View {
     }
 
     /// Other pages load their previews once the current one has its own (or failed), so the
-    /// photo on screen gets the whole connection first. When the viewer opens, the lazy pager
-    /// briefly builds the window's first page before it scrolls to the photo, and that page used
-    /// to start downloading an unrelated preview (measured). Published through the store, which
-    /// pages observe themselves: values passed from here don't reach pages already built.
+    /// photo on screen gets the whole connection first. (When the viewer opens, the lazy pager
+    /// briefly builds the window's first page before it scrolls to the photo.) Published through
+    /// the store, which pages observe themselves: values passed from here don't reach pages
+    /// already built.
     private var neighboursMayLoad: Bool {
         guard let model = currentModel else { return true }
         return model.image != nil || model.error != nil

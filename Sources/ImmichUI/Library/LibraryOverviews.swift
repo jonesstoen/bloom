@@ -73,8 +73,7 @@ struct LibraryScaleSwitcher: View {
                         .padding(.horizontal, isCompact ? 10 : 16)
                         .padding(.vertical, isCompact ? 6 : 9)
                         .background {
-                            // A clear lighter capsule behind the current level, like Photos (the
-                            // 14 % tint before was hard to see on the phone).
+                            // A clear lighter capsule behind the current level, like Photos.
                             if scale == option {
                                 Capsule().fill(.primary.opacity(0.24))
                                     .overlay(Capsule().strokeBorder(.primary.opacity(0.12), lineWidth: 0.5))

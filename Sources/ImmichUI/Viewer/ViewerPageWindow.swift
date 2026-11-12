@@ -1,10 +1,9 @@
 import Foundation
 
 /// Which pages the viewer's pager builds: the ones around the current item, moved along as you
-/// swipe. A lazy pager over the whole library has to lay out every page before the one it opens
-/// at; with the newest photos at the end of 12 600, that took ~0.35 s on the simulator, most of
-/// the delay before a photo appeared. `scrollPosition(id:)` keeps the current page in place when
-/// the window moves (measured).
+/// swipe. A lazy pager has to lay out every page before the one it opens at, which is slow deep
+/// into a large library (the newest photos are at the end). `scrollPosition(id:)` keeps the
+/// current page in place when the window moves.
 enum ViewerPageWindow {
     /// `index` and up to `radius` items on each side.
     static func around(_ index: Int, count: Int, radius: Int = 50) -> Range<Int> {

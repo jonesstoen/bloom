@@ -2,9 +2,8 @@ import CoreGraphics
 import Foundation
 
 /// The Library grid's layout. Every cell is the same square, so every position is exact: the grid
-/// builds only the rows near the screen and places them itself. (LazyVGrid estimated the height of
-/// rows it hadn't built; after a jump or a pinch those estimates were off by up to 40 %, which put
-/// pinches and the header's dates weeks away and made scrollTo land in the wrong place.)
+/// builds only the rows near the screen and places them itself. Lazy stacks only estimate rows
+/// they haven't built, which is not good enough for jumps, pinch anchors and the header's dates.
 public struct GridLayout: Equatable, Sendable {
     public let width: Double
     public let spacing: Double
@@ -68,8 +67,8 @@ public struct GridLayout: Equatable, Sendable {
 }
 
 /// A programmatic scroll that hasn't landed yet. After a column switch SwiftUI reports the new
-/// content height once with the old layout's offset before the scroll lands (measured), so until
-/// the reported offset reaches the target, the target is where the grid really is.
+/// content height with the old layout's offset before the scroll lands, so until the reported
+/// offset reaches the target, the target is where the grid really is.
 public enum PendingScroll {
     public struct Resolution: Equatable, Sendable {
         /// The content offset to work with.

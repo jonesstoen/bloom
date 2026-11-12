@@ -43,9 +43,8 @@ struct LibraryGridScroll: View {
     /// re-render the view.
     @State private var pinch = PinchScale()
     /// True while two fingers pinch. Scrolling is off meanwhile: otherwise the scroll view can
-    /// start a pan during the pinch and carry on from the offset of the old column count, which
-    /// overrides the switch's scroll and lands months back (seen in device logs). A gesture
-    /// state resets by itself, also when the gesture is cancelled.
+    /// start a pan during the pinch and carry on from the old column count's offset, overriding
+    /// the switch's scroll. A gesture state resets by itself, also when the gesture is cancelled.
     @GestureState private var isPinching = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
