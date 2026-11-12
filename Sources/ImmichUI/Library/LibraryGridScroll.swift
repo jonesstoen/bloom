@@ -46,6 +46,11 @@ struct LibraryGridScroll: View {
     /// The pinch's visual scale, read only by `PinchScaleEffect` so a pinch frame doesn't
     /// re-render the view.
     @State private var pinch = PinchScale()
+    /// True while two fingers pinch. Scrolling is off meanwhile: otherwise the scroll view can
+    /// start a pan during the pinch and carry on from the offset of the old column count, which
+    /// overrides the switch's scroll and lands months back (seen in device logs). A gesture
+    /// state resets by itself, also when the gesture is cancelled.
+    @GestureState private var isPinching = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(model: LibraryGridModel, selection: LibrarySelectionModel, chrome: LibraryChrome?, usesLargeTitle: Bool,
@@ -101,8 +106,10 @@ struct LibraryGridScroll: View {
             // Not clipped: the grid continues behind the tab bar and the Years/Months/All switcher,
             // like Photos (clipping cut it off above the tab bar).
             .modifier(PinchScaleEffect(pinch: pinch))
+            .scrollDisabled(isPinching)
             .simultaneousGesture(
                 MagnifyGesture()
+                    .updating($isPinching) { _, state, _ in state = true }
                     .onChanged { value in pinchChanged(value) }
                     .onEnded { _ in pinchEnded() }
             )
@@ -384,11 +391,11 @@ private final class ScrollMetrics {
     }
 
     /// The offset the grid is really at for a new report: the pending target while the report
-    /// still has the old layout's offset. Two such reports in a row mean the scroll isn't going
-    /// to land (something else moved it), and the report wins.
+    /// still has the old layout's offset (one on the simulator, two on an iPhone). After four
+    /// the scroll isn't going to land (something else moved it), and the report wins.
     func resolve(_ geometry: ScrollGeometry) -> Double {
         let resolution = resolution(geometry)
-        if resolution.pending == nil || staleReports >= 2 {
+        if resolution.pending == nil || staleReports >= 4 {
             pendingOffset = nil
             return geometry.contentOffset.y
         }
