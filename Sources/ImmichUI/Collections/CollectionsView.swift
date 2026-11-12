@@ -103,7 +103,9 @@ public struct CollectionsView: View {
 
     private var memoriesRow: some View {
         let years = MemoryStoryModel.groupedYears(from: model.memories)
-        return CollectionRow(title: tr("Memories"), fold: fold(.memories)) {
+        return CollectionRow(title: tr("Memories"),
+                             destination: AnyView(MemoriesView(years: years, service: model.service, loader: model.loader)),
+                             fold: fold(.memories)) {
             ForEach(years) { year in
                 Button { openMemory = MemoryStorySelection(years: years, startingYear: year.year) } label: {
                     MemoryCard(year: year, loader: model.loader)
@@ -357,14 +359,17 @@ private struct PinnedCard<Background: View>: View {
 }
 
 /// A tall memory card with its cover photo, title and year, like Photos' Memories row.
-private struct MemoryCard: View {
+struct MemoryCard: View {
     let year: MemoryStoryYear
     let loader: ImageLoader
+    /// Fixed 300 × 380 in the Collections row; `nil` fills the width (Memories list) at that ratio.
+    var width: CGFloat? = 300
     @State private var image: CGImage?
 
     var body: some View {
         Rectangle().fill(.quaternary)
-            .frame(width: 300, height: 380)
+            .aspectRatio(300.0 / 380.0, contentMode: .fit)
+            .frame(width: width)
             .overlay {
                 if let image { Image(decorative: image, scale: 1).resizable().scaledToFill() }
             }
@@ -540,5 +545,55 @@ private struct MapCoverView: View {
             .allowsHitTesting(false)
             // A new region (after a refresh) needs a new map: initialPosition is read once.
             .id(region)
+    }
+}
+
+/// All memories, like Photos' Memories screen: one large card per year, newest first. Tapping a
+/// card plays that year's story.
+struct MemoriesView: View {
+    let years: [MemoryStoryYear]
+    let service: any ImmichService
+    let loader: ImageLoader
+    @State private var openYear: MemoryStorySelection?
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 20) {
+                ForEach(years) { year in
+                    Button { openYear = MemoryStorySelection(years: years, startingYear: year.year) } label: {
+                        MemoryCard(year: year, loader: loader, width: nil)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 8)
+        }
+        .overlay {
+            if years.isEmpty {
+                ContentUnavailableView(tr("No Memories"), systemImage: "sparkles.rectangle.stack",
+                                       description: Text(tr("Photos from this day in earlier years appear here.")))
+            }
+        }
+        .navigationTitle(tr("Memories"))
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.large)
+        .fullScreenCover(item: $openYear) { selection in
+            MemoryStoryView(years: selection.years, startingYear: selection.startingYear, service: service, loader: loader)
+        }
+        #else
+        .sheet(item: $openYear) { selection in
+            MemoryStoryView(years: selection.years, startingYear: selection.startingYear, service: service, loader: loader)
+                .frame(minWidth: 700, minHeight: 500)
+        }
+        #endif
+    }
+}
+
+#Preview("Memories") {
+    let mock = MockImmichService.preview
+    NavigationStack {
+        MemoriesView(years: MemoryStoryModel.groupedYears(from: MockLibrary.standard.memories),
+                     service: mock, loader: ImageLoader(service: mock, disk: nil))
     }
 }

@@ -205,3 +205,7 @@
 /* Collections: fold a section */
 "Show %@" = "Vis %@";
 "Hide %@" = "Skjul %@";
+
+/* All memories */
+"No Memories" = "Ingen minner";
+"Photos from this day in earlier years appear here." = "Bilder fra denne dagen tidligere år vises her.";
