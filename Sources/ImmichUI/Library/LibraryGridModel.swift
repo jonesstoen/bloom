@@ -21,6 +21,9 @@ public final class LibraryGridModel {
     /// Months in display order. Unloaded months have `days == nil`.
     public private(set) var months: [TimelineMonth] = []
     public private(set) var phase: Phase = .idle
+    public private(set) var isTrashing = false
+    /// Invalidates other session views that may still contain pre-mutation asset snapshots.
+    public private(set) var trashRevision = 0
     private struct FooterCounts: Equatable {
         var allLoaded = true
         var reported = 0
@@ -66,7 +69,11 @@ public final class LibraryGridModel {
     @ObservationIgnored private(set) var lastVisibleRange: Range<Int>?
     /// Confirmed writes override snapshots still cached inside the current timeline.
     @ObservationIgnored private var favoriteOverrides: [String: Bool] = [:]
+    @ObservationIgnored private var confirmedTrashedIDs: Set<String> = []
+    /// An uncertain write keeps its error presentation, but that presentation is not a cache.
+    @ObservationIgnored private var needsFreshTrashLoad = false
     @ObservationIgnored private let snapshotStore: TimelineSnapshotStore?
+    @ObservationIgnored private var snapshotRevision: UInt64 = 0
     @ObservationIgnored private var didAttemptRestore = false
     @ObservationIgnored private var loadGeneration = 0
     @ObservationIgnored private var snapshotSave: Task<Void, Never>?
@@ -144,20 +151,32 @@ public final class LibraryGridModel {
     /// Loads the month skeleton, then the months at the end the grid starts at
     /// (the newest ones). Calling it again refreshes the buckets.
     public func load() async {
+        await load(reconcilingTrash: true)
+    }
+
+    private func load(reconcilingTrash: Bool) async {
+        guard !isTrashing else { return }
         loadGeneration += 1
         let generation = loadGeneration
         snapshotSave?.cancel()
         loadingMonths = []
-        if !favoriteOverrides.isEmpty {
-            // A fresh actor reconciles confirmed writes with later external favorite changes.
+        if !favoriteOverrides.isEmpty || (reconcilingTrash && (!confirmedTrashedIDs.isEmpty || needsFreshTrashLoad)) {
+            // Explicit refresh reconciles local writes with later external favorite/restore
+            // changes. A fresh actor cannot return a pre-write in-memory snapshot.
             timeline = Timeline(service: service, options: options)
             favoriteOverrides = [:]
+            if reconcilingTrash { confirmedTrashedIDs = [] }
             loadingMonths = []
             // An explicit refresh must not resurrect the disk copy of those old flags.
             didAttemptRestore = true
         }
         if months.isEmpty { phase = .loading }
         let timeline = self.timeline
+        if let snapshotStore {
+            let revision = await snapshotStore.revision
+            guard isCurrent(timeline, generation), !Task.isCancelled else { return }
+            snapshotRevision = revision
+        }
         if !didAttemptRestore {
             let cached = await snapshotStore?.load(options: timeline.options)
             guard isCurrent(timeline, generation), !Task.isCancelled else { return }
@@ -179,6 +198,9 @@ public final class LibraryGridModel {
             let loaded = try await timeline.loadBuckets(preservingLoadedMonths: snapshotStore != nil)
             guard isCurrent(timeline, generation), !Task.isCancelled else { return }
             apply(loaded)
+            // The replacement is now server-backed (possibly unloaded bucket placeholders),
+            // so none of the uncertain old presentation can leak into a later disk save.
+            needsFreshTrashLoad = false
             phase = .loaded
         } catch is CancellationError {
             guard isCurrent(timeline, generation) else { return }
@@ -220,7 +242,8 @@ public final class LibraryGridModel {
 
     /// Loads the month if needed. Failures leave the placeholders and are retried on the next appear.
     public func loadMonth(_ id: String) async {
-        guard let index = monthIndexByID[id], !months[index].isLoaded, !loadingMonths.contains(id) else { return }
+        guard !isTrashing, !needsFreshTrashLoad,
+              let index = monthIndexByID[id], !months[index].isLoaded, !loadingMonths.contains(id) else { return }
         let timeline = self.timeline
         let generation = loadGeneration
         loadingMonths.insert(id)
@@ -259,11 +282,13 @@ public final class LibraryGridModel {
     }
 
     private func persistSnapshot(timeline: Timeline, generation: Int) async {
-        guard let snapshotStore, isCurrent(timeline, generation), !Task.isCancelled else { return }
+        guard let snapshotStore, !isTrashing, !needsFreshTrashLoad,
+              isCurrent(timeline, generation), !Task.isCancelled else { return }
         // Capture options and the already merged presentation together before hopping actors.
         let snapshot = months
         let options = timeline.options
-        await snapshotStore.save(months: snapshot, options: options)
+        let revision = snapshotRevision
+        await snapshotStore.save(months: snapshot, options: options, expectedRevision: revision)
     }
 
     /// A cell (asset or placeholder) of month `id` appeared: load it and its neighbours.
@@ -446,6 +471,9 @@ public final class LibraryGridModel {
     /// (applying after each month would rebuild the grid ~100 times). Cached by the timeline,
     /// so this happens once per session.
     public func loadAllMonths() async {
+        // An unknown write deliberately leaves the old presentation visible, while its
+        // replacement Timeline has no authoritative buckets. Only load() can reconcile it.
+        guard !isTrashing, !needsFreshTrashLoad else { return }
         let timeline = self.timeline
         let generation = loadGeneration
         let ids = months.filter { !$0.isLoaded && !loadingMonths.contains($0.id) }.map(\.id)
@@ -502,6 +530,7 @@ public final class LibraryGridModel {
     /// Switches sort or filter (e.g. Recently Added, Favorites) and reloads. The grid's order
     /// (`newestFirst`) stays as it was created.
     public func setOptions(_ newOptions: TimelineOptions) async {
+        guard !isTrashing else { return }
         var newOptions = newOptions
         newOptions.newestFirst = newestFirst
         guard newOptions != options else { return }
@@ -517,7 +546,9 @@ public final class LibraryGridModel {
         screenRange = nil
         apply([])
         phase = .idle
-        await load()
+        // Changing a partition must not discard confirmed removals. Only an explicit refresh
+        // may reconcile those with an external restore.
+        await load(reconcilingTrash: false)
     }
 
     // MARK: Visibility and prefetching
@@ -596,6 +627,90 @@ public final class LibraryGridModel {
         if title != visibleMonthTitle { visibleMonthTitle = title }
     }
 
+    /// The service only moves items to trash. Results with uncertain outcomes still invalidate
+    /// old snapshots, but only confirmed IDs disappear from this presentation.
+    public func moveToTrash(_ assets: [Asset]) async throws -> TrashResult {
+        guard !isTrashing else { throw ImmichServiceError.invalidResponse }
+        guard !assets.isEmpty, options.isTrashed != true, !assets.contains(where: \.isTrashed) else {
+            return TrashResult(confirmedIDs: [], failedIDs: [])
+        }
+        isTrashing = true
+        defer { isTrashing = false }
+        // Stop pre-write callbacks at once. Cancelling a task alone does not stop a service
+        // response or an already enqueued actor operation from completing later.
+        loadGeneration += 1
+        loadingMonths = []
+        snapshotSave?.cancel()
+        if let snapshotStore {
+            // Invalidate before sending a write so a force-quit after server acceptance cannot
+            // leave the pre-write disk cache available on the next launch. New saves are
+            // blocked by isTrashing, and queued saves retain the previous revision.
+            snapshotRevision = await snapshotStore.clearAll()
+        }
+        var seen: Set<String> = []
+        let ids = assets.map(\.id).filter { seen.insert($0).inserted }
+        do {
+            let result = try await service.moveToTrash(assetIDs: ids)
+            let requested = Set(ids)
+            guard Set(result.confirmedIDs).isSubset(of: requested),
+                  Set(result.failedIDs).isSubset(of: requested),
+                  Set(result.confirmedIDs).isDisjoint(with: result.failedIDs),
+                  Set(result.confirmedIDs + result.failedIDs) == requested else {
+                throw ImmichServiceError.invalidResponse
+            }
+            // Do not check Task.isCancelled here: confirmed server writes must reach local
+            // presentation/cache invalidation even if the viewer has already disappeared.
+            await applyTrashOutcome(confirmedIDs: Set(result.confirmedIDs), uncertain: !result.failedIDs.isEmpty)
+            return result
+        } catch {
+            // A failure may follow an accepted write. Retain selection/presentation, but never
+            // restore or persist this old presentation until a fresh server load replaces it.
+            await applyTrashOutcome(confirmedIDs: [], uncertain: true)
+            throw error
+        }
+    }
+
+    private func applyTrashOutcome(confirmedIDs: Set<String>, uncertain: Bool) async {
+        confirmedTrashedIDs.formUnion(confirmedIDs)
+        needsFreshTrashLoad = needsFreshTrashLoad || uncertain
+        apply(months)
+        let replacement = Timeline(service: service, options: options)
+        timeline = replacement
+        didAttemptRestore = true
+        let generation = loadGeneration
+        let snapshot = months
+        trashRevision += 1
+        if !needsFreshTrashLoad {
+            // The already filtered current partition is safe, but every other sort/filter
+            // partition was discarded because it may contain one of the same IDs.
+            _ = await replacement.restore(snapshot)
+            guard isCurrent(replacement, generation) else { return }
+            scheduleSnapshotSave()
+        }
+    }
+
+    private func removingTrashedAssets(from source: [TimelineMonth]) -> [TimelineMonth] {
+        guard !confirmedTrashedIDs.isEmpty, options.isTrashed != true else { return source }
+        return source.map { original in
+            guard let days = original.days else { return original }
+            var month = original
+            var removed = false
+            month.days = days.compactMap { originalDay in
+                var day = originalDay
+                day.assets = originalDay.assets.filter { asset in
+                    guard confirmedTrashedIDs.contains(asset.id) else { return true }
+                    removed = true
+                    return false
+                }
+                return day.assets.isEmpty ? nil : day
+            }
+            // For a changed loaded month, use its actual remaining grid items. A retained
+            // bucket count can belong to a newer response than the days it accompanies.
+            if removed { month.bucket.count = month.assetCount }
+            return month
+        }
+    }
+
     /// Apply a batch once, retaining all timeline metadata and updating derived grid indices.
     func applyFavoriteUpdates(_ assets: [Asset]) {
         guard !assets.isEmpty else { return }
@@ -625,7 +740,7 @@ public final class LibraryGridModel {
     }
 
     private func apply(_ source: [TimelineMonth]) {
-        let newMonths = mergingFavoriteUpdates(into: source)
+        let newMonths = removingTrashedAssets(from: mergingFavoriteUpdates(into: source))
         // A loaded month can hold a few more or fewer items than its placeholder count, which
         // moves every cell after it. Remember where the photo in the middle of the screen was,
         // so the grid can keep it in place (it opened in 2024 after a background load).

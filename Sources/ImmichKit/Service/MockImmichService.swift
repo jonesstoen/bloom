@@ -26,6 +26,7 @@ public actor MockImmichService: ImmichService {
         case mapMarkers
         case memories
         case setFavorite(String, Bool)
+        case moveToTrash(String)
     }
 
     /// Base URL of the media requests the mock hands out. Nothing answers there.
@@ -80,6 +81,36 @@ public actor MockImmichService: ImmichService {
     public func setAssets(_ assets: [Asset]) { self.assets = assets }
     public func setLatency(_ latency: Duration) { self.latency = latency }
     public func setFailure(_ failure: ImmichServiceError?) { self.failure = failure }
+
+    private var trashFailures: Set<String> = []
+    public func setTrashFailures(_ ids: Set<String>) { trashFailures = ids }
+
+    public func moveToTrash(assetIDs: [String]) async throws -> TrashResult {
+        let ids = try TrashRequestIDs.validated(assetIDs)
+        var confirmed: [String] = []
+        var failed: [String] = []
+        for (offset, id) in ids.enumerated() {
+            if Task.isCancelled {
+                failed.append(contentsOf: ids[offset...])
+                break
+            }
+            if assetsByID[id]?.isTrashed == true {
+                confirmed.append(id)
+                continue
+            }
+            do {
+                try await begin(.moveToTrash(id))
+                guard !trashFailures.contains(id), let index = assets.firstIndex(where: { $0.id == id }) else {
+                    throw ImmichServiceError.invalidResponse
+                }
+                assets[index].isTrashed = true
+                confirmed.append(id)
+            } catch {
+                failed.append(id)
+            }
+        }
+        return TrashResult(confirmedIDs: confirmed, failedIDs: failed)
+    }
 
     /// Added to every bucket's count, like a server whose bucket counts differ slightly from the
     /// assets it returns for the bucket (e.g. stacks). For testing layout shifts.

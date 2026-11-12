@@ -79,9 +79,18 @@ public protocol ImmichService: Sendable {
 
     /// Marks or unmarks an asset as a favorite (`PUT /assets/{id}`). Returns the updated asset.
     func setFavorite(assetID: String, isFavorite: Bool) async throws -> Asset
+
+    /// Moves only these assets to Immich trash. Never performs permanent deletion.
+    /// Call only after an explicit user confirmation; partial/uncertain failures are returned.
+    func moveToTrash(assetIDs: [String]) async throws -> TrashResult
 }
 
 extension ImmichService {
+    /// Custom read-only services fail closed unless they explicitly implement trash support.
+    public func moveToTrash(assetIDs: [String]) async throws -> TrashResult {
+        throw TrashError.unavailable
+    }
+
     /// Markers for the main timeline (not archived).
     public func mapMarkers() async throws -> [MapMarker] {
         try await mapMarkers(MapMarkerOptions())

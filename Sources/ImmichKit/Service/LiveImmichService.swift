@@ -240,6 +240,19 @@ public struct LiveImmichService: ImmichService {
         try await rawRequest(method: .put, path: path, json: json, operationID: operationID, maxBytes: maxBytes)
     }
 
+    /// The trash endpoint documents only 204. Do not broaden this to arbitrary success codes.
+    func sendTrashRequest(json: Data) async throws {
+        var request = HTTPRequest(method: .delete, scheme: nil, authority: nil, path: "/assets")
+        request.headerFields[.accept] = "application/json"
+        request.headerFields[.contentType] = "application/json; charset=utf-8"
+        request.headerFields[APIKeyMiddleware.headerName] = credentials.apiKey
+        let (response, _) = try await Self.mapErrors {
+            try await transport.send(request, body: HTTPBody(json), baseURL: credentials.apiBaseURL,
+                                     operationID: "deleteAssets")
+        }
+        guard response.status.code == 204 else { throw Self.error(forStatus: response.status.code) }
+    }
+
     private func rawRequest(
         method: HTTPRequest.Method, path: String, json: Data?, operationID: String, maxBytes: Int
     ) async throws -> Data {

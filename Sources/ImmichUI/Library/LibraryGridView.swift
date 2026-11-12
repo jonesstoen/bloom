@@ -35,6 +35,7 @@ public struct LibraryGridView: View {
     private let headerStyle: HeaderStyle
     private let accessory: AnyView?
     private let scrollToNewestTrigger: Int
+    private let allowsTrash: Bool
     private let onSelect: (Asset) -> Void
 
     public enum HeaderStyle: Sendable {
@@ -51,9 +52,10 @@ public struct LibraryGridView: View {
     ///   - onSelect: called when an asset is tapped (opens the viewer).
     ///   - scrollToNewestTrigger: changing it scrolls to the newest photos (the tab was tapped again).
     public init(model: LibraryGridModel, title: String = tr("Library"), headerStyle: HeaderStyle = .navigationBar,
-                accessory: AnyView? = nil, scrollToNewestTrigger: Int = 0, onSelect: @escaping (Asset) -> Void = { _ in }) {
+                accessory: AnyView? = nil, scrollToNewestTrigger: Int = 0, allowsTrash: Bool = false, onSelect: @escaping (Asset) -> Void = { _ in }) {
         _model = State(initialValue: model)
         _selection = State(initialValue: LibrarySelectionModel(library: model))
+        self.allowsTrash = allowsTrash
         self.title = title
         self.headerStyle = headerStyle
         self.accessory = accessory
@@ -61,9 +63,9 @@ public struct LibraryGridView: View {
         self.onSelect = onSelect
     }
 
-    public init(service: any ImmichService, title: String = tr("Library"), headerStyle: HeaderStyle = .navigationBar,
+    public init(service: any ImmichService, title: String = tr("Library"), headerStyle: HeaderStyle = .navigationBar, allowsTrash: Bool = false,
                 onSelect: @escaping (Asset) -> Void = { _ in }) {
-        self.init(model: LibraryGridModel(service: service), title: title, headerStyle: headerStyle, onSelect: onSelect)
+        self.init(model: LibraryGridModel(service: service), title: title, headerStyle: headerStyle, allowsTrash: allowsTrash, onSelect: onSelect)
     }
 
     private static let spacing: CGFloat = 1.5
@@ -74,6 +76,9 @@ public struct LibraryGridView: View {
         false
         #endif
     }
+
+    private var canMoveToTrash: Bool { allowsTrash && model.options.isTrashed != true }
+    private var mutationBlocked: Bool { selection.isBusy || selection.pendingTrashAssets != nil || model.isTrashing }
 
     public var body: some View {
         content
@@ -93,9 +98,9 @@ public struct LibraryGridView: View {
                 if usesLargeTitle && (selection.isSelecting || (model.phase == .loaded && !model.isEmpty)) {
                     Group {
                         if selection.isSelecting {
-                            LibrarySelectionToolbar(selection: selection)
+                            LibrarySelectionToolbar(selection: selection, allowsTrash: canMoveToTrash)
                         } else {
-                            LibraryScaleSwitcher(scale: $scale)
+                            LibraryScaleSwitcher(scale: $scale).disabled(mutationBlocked)
                         }
                     }
                     .padding(.bottom, 10)
@@ -134,7 +139,7 @@ public struct LibraryGridView: View {
             }
             #if os(iOS)
             .fullScreenCover(item: $viewerItem) { item in
-                if reduceMotion {
+                if reduceMotion || transitionSourceID == nil {
                     viewer(item)
                 } else {
                     viewer(item)
@@ -148,8 +153,11 @@ public struct LibraryGridView: View {
 
     /// The viewer gets its list of assets once, when it opens, so swiping doesn't rebuild it.
     private func viewer(_ item: ViewerItem) -> some View {
-        AssetViewer(assets: item.assets, selectedID: item.selectedID,
-                    service: model.service, loader: model.loader) { id in
+        let trashAction: (@MainActor (Asset) async throws -> Void)?
+        if canMoveToTrash { trashAction = { asset in try await moveToTrash(asset) } }
+        else { trashAction = nil }
+        return AssetViewer(assets: item.assets, selectedID: item.selectedID,
+                    service: model.service, loader: model.loader, onMoveToTrash: trashAction) { id in
             guard transitionSourceID != id else { return }
             transitionSourceID = id
             model.assetShownInViewer(id)
@@ -162,6 +170,16 @@ public struct LibraryGridView: View {
                 if !Task.isCancelled { viewerScrollTarget = id }
             }
         }
+    }
+
+    private func moveToTrash(_ asset: Asset) async throws {
+        scrollSync?.cancel()
+        scrollSync = nil
+        viewerScrollTarget = nil
+        let result = try await model.moveToTrash([asset])
+        guard result.confirmedIDs.contains(asset.id) else { throw ImmichServiceError.invalidResponse }
+        // The removed transition source must not trigger another scroll after dismissal.
+        if transitionSourceID == asset.id { transitionSourceID = nil }
     }
 
     private func open(_ asset: Asset) {
@@ -264,6 +282,7 @@ public struct LibraryGridView: View {
         } label: {
             Label(tr("Grid options"), systemImage: isFiltered ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease")
         }
+        .disabled(mutationBlocked)
     }
 
     private var isFiltered: Bool { usesLargeTitle && favoritesOnly }
@@ -305,7 +324,7 @@ public struct LibraryGridView: View {
                     .padding(.horizontal, 14)
                     .frame(minHeight: 44)
                     .photosGlass(in: Capsule())
-                    .disabled(model.phase != .loaded || model.isEmpty)
+                    .disabled(model.phase != .loaded || model.isEmpty || mutationBlocked)
                     densityMenu
                         .labelStyle(.iconOnly)
                         .font(.system(size: 18, weight: .medium))
@@ -361,7 +380,7 @@ public struct LibraryGridView: View {
             if phase == .interacting { scrollMetrics.userScrolled = true }
         }
         .refreshable {
-            guard !selection.isBusy else { return }
+            guard !mutationBlocked else { return }
             await model.load()
         }
         #if os(iOS)
@@ -477,6 +496,7 @@ public struct LibraryGridView: View {
     /// step it switches columns around the asset in the middle of the screen. One pinch can step
     /// through several densities.
     private func pinchChanged(_ value: MagnifyGesture.Value, proxy: ScrollViewProxy) {
+        guard !mutationBlocked else { return }
         let relative = value.magnification / pinchBaseline
         let next = model.density.pinched(by: relative)
         if next != model.density {
@@ -498,6 +518,7 @@ public struct LibraryGridView: View {
     }
 
     private func changeDensity(_ density: GridDensity) {
+        guard !mutationBlocked else { return }
         guard let proxy = densityProxy else { model.density = density; return }
         switchDensity(to: density, proxy: proxy, fromVisualScale: 1)
     }

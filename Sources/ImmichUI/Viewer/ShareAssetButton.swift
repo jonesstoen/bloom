@@ -10,12 +10,16 @@ struct ShareAssetButton: View {
     let asset: Asset
     let service: any ImmichService
     var onPrepare: () -> Void = {}
+    var onBusyChanged: (Bool) -> Void = { _ in }
     @State private var isPreparing = false
     @State private var file: SharedFile?
     @State private var failed = false
 
     var body: some View {
         Button {
+            guard !isPreparing, file == nil else { return }
+            isPreparing = true
+            onBusyChanged(true)
             onPrepare()
             Task { await prepare() }
         } label: {
@@ -34,7 +38,7 @@ struct ShareAssetButton: View {
         .disabled(isPreparing)
         .accessibilityLabel(tr("Share"))
         #if os(iOS)
-        .sheet(item: $file) { file in
+        .sheet(item: $file, onDismiss: { onBusyChanged(false) }) { file in
             ActivityView(items: [file.url])
                 .presentationDetents([.medium, .large])
                 .ignoresSafeArea()
@@ -48,14 +52,21 @@ struct ShareAssetButton: View {
     }
 
     private func prepare() async {
-        isPreparing = true
         defer { isPreparing = false }
         do {
             let data = try await service.original(assetID: asset.id)
-            file = SharedFile(url: try SharedFile.write(data, for: asset))
+            let prepared = SharedFile(url: try SharedFile.write(data, for: asset))
+            #if os(iOS)
+            file = prepared
+            #else
+            // This button has no share-sheet presentation on macOS.
+            _ = prepared
+            onBusyChanged(false)
+            #endif
         } catch is CancellationError {
-            return
+            onBusyChanged(false)
         } catch {
+            onBusyChanged(false)
             failed = true
         }
     }

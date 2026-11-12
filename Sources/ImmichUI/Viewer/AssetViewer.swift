@@ -20,24 +20,33 @@ public struct AssetViewer: View {
     @State private var selectedID: String?
     @State private var chromeVisible = true
     @State private var showsInfo = false
+    @State private var shareActive = false
     @State private var showsAccessibleMenu = false
+    @State private var trashConfirmationSubmitted = false
+    @State private var trash: ViewerTrashModel
+    private let allowsTrash: Bool
     @State private var store: ViewerStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(assets: [Asset], selectedID: String, service: any ImmichService,
-                loader: ImageLoader? = nil, onSelection: @escaping (String) -> Void = { _ in }) {
+                loader: ImageLoader? = nil,
+                onMoveToTrash: (@MainActor (Asset) async throws -> Void)? = nil, onSelection: @escaping (String) -> Void = { _ in }) {
         let loader = loader ?? ImageLoader(service: service)
         self.assets = assets
         self.service = service
         self.loader = loader
         self.onSelection = onSelection
+        self.allowsTrash = onMoveToTrash != nil
+        _trash = State(initialValue: ViewerTrashModel(action: onMoveToTrash))
         self.initialID = selectedID
         self.indexByID = Dictionary(assets.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
         _selectedID = State(initialValue: selectedID)
         _store = State(initialValue: ViewerStore(service: service, loader: loader))
     }
+
+    private var trashInteractionBlocked: Bool { trash.pendingAsset != nil || trash.isBusy }
 
     private var currentID: String { selectedID ?? initialID }
 
@@ -50,17 +59,25 @@ public struct AssetViewer: View {
     public var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            pager
+            pager.disabled(trashInteractionBlocked)
         }
         .overlay(alignment: .top) {
-            if chromeVisible { topBar.transition(.opacity) }
+            if chromeVisible { topBar.transition(.opacity).disabled(trashInteractionBlocked) }
         }
         .overlay(alignment: .bottom) {
-            if chromeVisible { bottomBar.transition(.opacity) }
+            if chromeVisible { bottomBar.transition(.opacity).disabled(trashInteractionBlocked) }
+        }
+        .overlay {
+            if trash.isBusy {
+                ProgressView(tr("Moving to Trash…"))
+                    .padding(24)
+                    .photosGlass(in: RoundedRectangle(cornerRadius: 20), interactive: false)
+            }
         }
         .preferredColorScheme(.dark)
         #if os(iOS)
         .statusBarHidden(!chromeVisible)
+        .interactiveDismissDisabled(trashInteractionBlocked)
         #endif
         .onChange(of: selectedID, initial: true) { _, id in
             showsInfo = false
@@ -74,6 +91,30 @@ public struct AssetViewer: View {
             if phase != .active { store.stopLivePhotos() }
         }
         .onDisappear { store.stopLivePhotos() }
+        .confirmationDialog(tr("Move to Recently Deleted?"), isPresented: Binding(
+            get: { trash.pendingAsset != nil },
+            set: { if !$0 && !trashConfirmationSubmitted { trash.cancelConfirmation() } }
+        ), titleVisibility: .visible) {
+            Button(tr("Move to Trash"), role: .destructive) {
+                trashConfirmationSubmitted = true
+                Task {
+                    let succeeded = await trash.confirm()
+                    trashConfirmationSubmitted = false
+                    if succeeded { dismiss() }
+                }
+            }
+            Button(tr("Cancel"), role: .cancel) { trash.cancelConfirmation() }
+        } message: {
+            Text(tr("You can recover these items from Recently Deleted in Immich until your server removes them."))
+        }
+        .alert(tr("Couldn't Move to Trash"), isPresented: Binding(
+            get: { trash.error != nil },
+            set: { if !$0 { trash.dismissError() } }
+        )) {
+            Button(tr("OK"), role: .cancel) { trash.dismissError() }
+        } message: {
+            if let error = trash.error { Text(error) }
+        }
         .confirmationDialog(tr("More"), isPresented: $showsAccessibleMenu, titleVisibility: .hidden) {
             if let model = currentModel { menuActions(model) }
         }
@@ -107,6 +148,8 @@ public struct AssetViewer: View {
             .scrollTargetBehavior(.paging)
             .scrollPosition(id: $selectedID)
             .scrollIndicators(.hidden)
+            .scrollDisabled(trashInteractionBlocked)
+            .allowsHitTesting(!trashInteractionBlocked)
             .ignoresSafeArea()
             .onAppear { proxy.scrollTo(initialID) }
         }
@@ -125,7 +168,7 @@ public struct AssetViewer: View {
 
     private func page(_ asset: Asset) -> some View {
         ViewerPage(model: store.model(for: asset), isActive: currentID == asset.id,
-                   livePlaybackAllowed: scenePhase == .active && !showsInfo && !showsAccessibleMenu) {
+                   livePlaybackAllowed: scenePhase == .active && !showsInfo && !showsAccessibleMenu && !trashInteractionBlocked) {
             withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { chromeVisible.toggle() }
         }
     }
@@ -220,7 +263,7 @@ public struct AssetViewer: View {
         } else {
             Task {
                 if model.playback == nil { await model.load() }
-                guard currentID == model.asset.id, scenePhase == .active, !showsInfo else { return }
+                guard currentID == model.asset.id, scenePhase == .active, !showsInfo, !trashInteractionBlocked else { return }
                 model.startLivePhotoPlayback()
             }
         }
@@ -254,7 +297,8 @@ public struct AssetViewer: View {
             #endif
             HStack {
                 if let model = currentModel {
-                    ShareAssetButton(asset: model.asset, service: service, onPrepare: model.stopLivePhotoPlayback)
+                    ShareAssetButton(asset: model.asset, service: service, onPrepare: model.stopLivePhotoPlayback,
+                                     onBusyChanged: { shareActive = $0 })
                 } else {
                     Color.clear.frame(width: 48, height: 48)
                 }
@@ -272,7 +316,16 @@ public struct AssetViewer: View {
                     .photosGlass(in: Capsule())
                 }
                 Spacer()
-                Color.clear.frame(width: 48, height: 48)
+                if allowsTrash, let model = currentModel, !model.asset.isTrashed {
+                    capsuleButton("trash", label: tr("Move to Trash")) {
+                        store.stopLivePhotos()
+                        trash.request(model.asset)
+                    }
+                    .photosGlass(in: Circle())
+                    .disabled(shareActive)
+                } else {
+                    Color.clear.frame(width: 48, height: 48)
+                }
             }
             .padding(.horizontal, 20)
         }
@@ -333,7 +386,7 @@ private struct ViewerPage: View {
     var body: some View {
         ZStack {
             if model.asset.isVideo, let request = model.playback {
-                VideoPlaybackView(request: request, isActive: isActive)
+                VideoPlaybackView(request: request, isActive: isActive && livePlaybackAllowed)
             } else if let image = model.image {
                 #if os(iOS)
                 ZoomableImage(image: image, isActive: isActive, onSingleTap: onTap,
@@ -419,4 +472,9 @@ private struct ViewerPage: View {
     let mock = MockImmichService.preview
     ViewerPage(model: ViewerAssetModel(asset: MockLibrary.standard.assets[0], service: mock, loader: ImageLoader(service: mock, disk: nil)),
                isActive: true, onTap: {})
+}
+
+#Preview("Viewer with Trash") {
+    AssetViewer(assets: MockLibrary.standard.assets, selectedID: MockLibrary.standard.assets[0].id,
+                service: MockImmichService.preview, onMoveToTrash: { _ in })
 }

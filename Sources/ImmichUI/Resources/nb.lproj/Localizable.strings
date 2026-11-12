@@ -171,3 +171,11 @@
 "Favorite Actions" = "Favoritthandlinger";
 "Couldn't update Favorites for %@ items. Please try again." = "Kunne ikke oppdatere favorittmerking for %@ elementer. Prøv igjen.";
 "Couldn't prepare these items for sharing. Please try again." = "Kunne ikke klargjøre disse elementene for deling. Prøv igjen.";
+"Move to Trash" = "Flytt til papirkurven";
+"Move to Recently Deleted?" = "Flytte til Nylig slettet?";
+"Move %@ items to Recently Deleted?" = "Flytte %@ objekter til Nylig slettet?";
+"You can recover these items from Recently Deleted in Immich until your server removes them." = "Du kan gjenopprette disse objektene fra Nylig slettet i Immich fram til serveren fjerner dem.";
+"Moving to Trash…" = "Flytter til papirkurven …";
+"Couldn't Move to Trash" = "Kunne ikke flytte til papirkurven";
+"Couldn't move this item to Trash. Please try again." = "Kunne ikke flytte dette objektet til papirkurven. Prøv igjen.";
+"Couldn't move %@ items to Trash. Please try again." = "Kunne ikke flytte %@ objekter til papirkurven. Prøv igjen.";

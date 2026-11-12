@@ -103,6 +103,12 @@ public final class SearchModel {
         recentSearches = []
     }
 
+    /// A library write invalidates result pages and late responses, while preserving the
+    /// person's query, exact metadata filter and recent-search history.
+    public func invalidateAfterLibraryMutation() {
+        invalidate()
+    }
+
     public func search() async {
         invalidate()
         guard let query, !Task.isCancelled else { return }

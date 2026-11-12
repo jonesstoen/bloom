@@ -25,6 +25,7 @@
 "The server rejected the API key. Check that it is correct, has not been deleted, and has access to your library." = "Serveren avviste API-nøkkelen. Sjekk at den er riktig, ikke er slettet og har tilgang til biblioteket ditt.";
 
 /* Service errors */
+"Moving items to Recently Deleted isn't available on this server." = "Flytting av objekter til Nylig slettet er ikke tilgjengelig på denne serveren.";
 "Could not reach the server: %@" = "Fikk ikke kontakt med serveren: %@";
 "The server answered with HTTP status %lld." = "Serveren svarte med HTTP-status %lld.";
 "The server rejected the API key." = "Serveren avviste API-nøkkelen.";

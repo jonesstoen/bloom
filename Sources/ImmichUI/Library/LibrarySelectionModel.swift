@@ -14,6 +14,7 @@ public final class LibrarySelectionModel {
     public private(set) var totalCount = 0
     public private(set) var error: String?
     public private(set) var sharedFiles: PreparedShare?
+    public private(set) var pendingTrashAssets: [Asset]?
     public var selectedCount: Int { selectedIDs.count }
 
     @ObservationIgnored private let library: LibraryGridModel
@@ -34,13 +35,13 @@ public final class LibrarySelectionModel {
     }
 
     public func start() {
-        guard !isBusy else { return }
+        guard !isBusy, pendingTrashAssets == nil else { return }
         isSelecting = true
         error = nil
     }
 
     public func cancel() {
-        guard !isBusy else { return }
+        guard !isBusy, pendingTrashAssets == nil else { return }
         isSelecting = false
         selectedIDs = []
         selectedAssets = []
@@ -50,7 +51,7 @@ public final class LibrarySelectionModel {
     }
 
     public func toggle(_ asset: Asset) {
-        guard isSelecting, !isBusy,
+        guard isSelecting, !isBusy, pendingTrashAssets == nil,
               let index = library.gridIndex(ofAsset: asset.id),
               let loaded = library.gridAsset(atGridIndex: index) else { return }
         if selectedIDs.remove(loaded.id) != nil {
@@ -63,9 +64,52 @@ public final class LibrarySelectionModel {
 
     public func dismissError() { error = nil }
 
+    /// Capture the exact selection; no service operation occurs until confirmation.
+    public func requestTrash() {
+        guard isSelecting, !isBusy, pendingTrashAssets == nil, !library.isTrashing,
+              library.options.isTrashed != true, !selectedAssets.isEmpty,
+              selectedAssets.allSatisfy({ !$0.isTrashed }) else { return }
+        error = nil
+        pendingTrashAssets = selectedAssets
+    }
+
+    public func cancelTrashConfirmation() {
+        guard !isBusy else { return }
+        pendingTrashAssets = nil
+    }
+
+    public func confirmTrash() async {
+        guard !isBusy, let assets = pendingTrashAssets else { return }
+        pendingTrashAssets = nil
+        isBusy = true
+        error = nil
+        completedCount = 0
+        totalCount = assets.count
+        defer { isBusy = false }
+        do {
+            let result = try await library.moveToTrash(assets)
+            let confirmed = Set(result.confirmedIDs)
+            selectedAssets = assets.filter { !confirmed.contains($0.id) }
+            selectedIDs = Set(selectedAssets.map(\.id))
+            completedCount = confirmed.count
+            if !selectedAssets.isEmpty { reportTrashFailure(selectedAssets.count) }
+        } catch {
+            // Keep all unconfirmed identities for an explicit, newly confirmed retry.
+            selectedAssets = assets
+            selectedIDs = Set(assets.map(\.id))
+            if let error = error as? TrashError { self.error = error.localizedDescription }
+            else { reportTrashFailure(assets.count) }
+        }
+    }
+
+    private func reportTrashFailure(_ count: Int) {
+        error = tr("Couldn't move %@ items to Trash. Please try again.",
+                   count.formatted(.number.locale(Localization.locale)))
+    }
+
     /// One explicit, idempotent target for the whole batch, including mixed selections.
     public func setFavorites(_ target: Bool) async {
-        guard isSelecting, !isBusy, !selectedAssets.isEmpty else { return }
+        guard isSelecting, !isBusy, pendingTrashAssets == nil, !selectedAssets.isEmpty else { return }
         isBusy = true
         error = nil
         completedCount = 0
@@ -108,7 +152,7 @@ public final class LibrarySelectionModel {
     }
 
     public func prepareShare() async {
-        guard isSelecting, !isBusy, !selectedAssets.isEmpty else { return }
+        guard isSelecting, !isBusy, pendingTrashAssets == nil, !selectedAssets.isEmpty else { return }
         isBusy = true
         isPreparingShare = true
         error = nil

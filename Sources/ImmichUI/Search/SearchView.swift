@@ -14,6 +14,10 @@ public struct SearchView: View {
         _model = State(initialValue: SearchModel(service: service, loader: loader))
     }
 
+    public init(model: SearchModel) {
+        _model = State(initialValue: model)
+    }
+
     public var body: some View {
         Group {
             if model.query == nil { suggestions }
@@ -265,10 +269,10 @@ public struct SearchView: View {
     }
 
     private func viewer(_ asset: Asset) -> some View {
-        AssetViewer(assets: model.assets, selectedID: asset.id, service: model.service, loader: model.loader) { id in
+        AssetViewer(assets: model.assets, selectedID: asset.id, service: model.service, loader: model.loader, onSelection: { id in
             transitionID = id
             if id == model.assets.last?.id { Task { await model.loadMore() } }
-        }
+        })
     }
 }
 

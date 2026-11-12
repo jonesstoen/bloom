@@ -6,6 +6,8 @@ import Foundation
 public actor TimelineSnapshotStore {
     public nonisolated let directory: URL
     public nonisolated let byteLimit: Int
+    /// A save must retain the revision from the generation that produced its snapshot.
+    public private(set) var revision: UInt64 = 0
     private var isInvalidated = false
     private let files = FileManager.default
 
@@ -45,8 +47,9 @@ public actor TimelineSnapshotStore {
         return data.count == size && (extra?.isEmpty ?? true) ? data : nil
     }
 
-    public func save(months: [TimelineMonth], options: TimelineOptions) {
-        guard !isInvalidated, !Task.isCancelled, byteLimit > 0, TimelineSnapshotValidation.isValid(months),
+    public func save(months: [TimelineMonth], options: TimelineOptions, expectedRevision: UInt64? = nil) {
+        guard expectedRevision == nil || expectedRevision == revision,
+              !isInvalidated, !Task.isCancelled, byteLimit > 0, TimelineSnapshotValidation.isValid(months),
               let url = fileURL(options: options),
               let data = try? JSONEncoder().encode(Snapshot(schemaVersion: 1, options: options, months: months)),
               data.count <= byteLimit else { return }
@@ -58,6 +61,16 @@ public actor TimelineSnapshotStore {
         } catch {
             // A cache failure must never prevent the network-backed library from working.
         }
+    }
+
+    /// Removes every sort/filter partition without closing this store. Old queued saves cannot
+    /// recreate them when they supply the revision captured with their original snapshot.
+    /// Deliberately runs even in a cancelled task: the server may already have accepted a write.
+    @discardableResult
+    public func clearAll() -> UInt64 {
+        revision &+= 1
+        try? files.removeItem(at: directory)
+        return revision
     }
 
     /// Serialized with writes (there are no suspension points during file operations).

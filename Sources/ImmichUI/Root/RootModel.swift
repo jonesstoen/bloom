@@ -10,6 +10,7 @@ public final class ImmichSession: Identifiable {
     public let service: any ImmichService
     public let loader: ImageLoader
     public let library: LibraryGridModel
+    public let search: SearchModel
     public let snapshotStore: TimelineSnapshotStore?
 
     init(service: any ImmichService, disk: DiskImageCache?, snapshotStore: TimelineSnapshotStore? = nil) {
@@ -18,6 +19,7 @@ public final class ImmichSession: Identifiable {
         let loader = ImageLoader(service: service, disk: disk)
         self.loader = loader
         self.library = LibraryGridModel(service: service, loader: loader, snapshotStore: snapshotStore)
+        self.search = SearchModel(service: service, loader: loader)
     }
 }
 
@@ -78,7 +80,7 @@ public final class RootModel {
     }
 
     public func signOut() async {
-        guard !isSigningOut else { return }
+        guard !isSigningOut, session?.library.isTrashing != true else { return }
         isSigningOut = true
         defer { isSigningOut = false }
         do {

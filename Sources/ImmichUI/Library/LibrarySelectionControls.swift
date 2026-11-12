@@ -34,7 +34,7 @@ struct LibrarySelectableCell: View {
                 }
         }
         .buttonStyle(.plain)
-        .disabled(selection.isBusy)
+        .disabled(selection.isBusy || selection.pendingTrashAssets != nil)
         .accessibilityAddTraits(selection.isSelecting && isSelected ? .isSelected : [])
         .accessibilityValue(selection.isSelecting ? (isSelected ? tr("Selected") : tr("Not Selected")) : "")
     }
@@ -59,12 +59,13 @@ struct LibrarySelectionCancelButton: View {
             .padding(.horizontal, 14)
             .frame(minHeight: 44)
             .photosGlass(in: Capsule())
-            .disabled(selection.isBusy)
+            .disabled(selection.isBusy || selection.pendingTrashAssets != nil)
     }
 }
 
 struct LibrarySelectionToolbar: View {
     let selection: LibrarySelectionModel
+    var allowsTrash = false
 
     var body: some View {
         VStack(spacing: 8) {
@@ -75,7 +76,7 @@ struct LibrarySelectionToolbar: View {
                         .frame(width: 44, height: 44)
                 }
                 .accessibilityLabel(tr("Share"))
-                .disabled(selection.selectedCount == 0 || selection.isBusy)
+                .disabled(selection.selectedCount == 0 || selection.isBusy || selection.pendingTrashAssets != nil)
 
                 VStack(spacing: 3) {
                     if selection.isPreparingShare {
@@ -108,7 +109,17 @@ struct LibrarySelectionToolbar: View {
                         .frame(width: 44, height: 44)
                 }
                 .accessibilityLabel(tr("Favorite Actions"))
-                .disabled(selection.selectedCount == 0 || selection.isBusy)
+                .disabled(selection.selectedCount == 0 || selection.isBusy || selection.pendingTrashAssets != nil)
+
+                if allowsTrash {
+                    Button(role: .destructive) { selection.requestTrash() } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 20, weight: .medium))
+                            .frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel(tr("Move to Trash"))
+                    .disabled(selection.selectedCount == 0 || selection.isBusy || selection.pendingTrashAssets != nil)
+                }
             }
             if selection.isPreparingShare {
                 Button(tr("Cancel Download")) { selection.cancelSharePreparation() }
@@ -127,6 +138,7 @@ struct LibrarySelectionToolbar: View {
 /// Keeps the prepared files alive until the system sheet has actually finished dismissing.
 struct LibrarySelectionPresentation: ViewModifier {
     let selection: LibrarySelectionModel
+    @State private var trashConfirmationSubmitted = false
     @State private var presentedShare: SelectionShareItems?
 
     func body(content: Content) -> some View {
@@ -148,6 +160,23 @@ struct LibrarySelectionPresentation: ViewModifier {
                 }
                 .padding(32)
                 #endif
+            }
+            .confirmationDialog(tr("Move %@ items to Recently Deleted?",
+                                   (selection.pendingTrashAssets?.count ?? 0).formatted(.number.locale(Localization.locale))),
+                                isPresented: Binding(
+                                    get: { selection.pendingTrashAssets != nil },
+                                    set: { if !$0 && !trashConfirmationSubmitted { selection.cancelTrashConfirmation() } }
+                                ), titleVisibility: .visible) {
+                Button(tr("Move to Trash"), role: .destructive) {
+                    trashConfirmationSubmitted = true
+                    Task {
+                        await selection.confirmTrash()
+                        trashConfirmationSubmitted = false
+                    }
+                }
+                Button(tr("Cancel"), role: .cancel) { selection.cancelTrashConfirmation() }
+            } message: {
+                Text(tr("You can recover these items from Recently Deleted in Immich until your server removes them."))
             }
             .alert(tr("Couldn't Update Selection"), isPresented: Binding(
                 get: { selection.error != nil },
@@ -190,7 +219,7 @@ private struct LibraryActivityView: UIViewControllerRepresentable {
         LibrarySelectableCell(asset: MockLibrary.standard.assets[0], model: model,
                               selection: selection, fillsCell: true, onOpen: { _ in })
             .frame(width: 140, height: 140)
-        LibrarySelectionToolbar(selection: selection)
+        LibrarySelectionToolbar(selection: selection, allowsTrash: true)
     }
     .padding()
     .modifier(LibrarySelectionPresentation(selection: selection))
