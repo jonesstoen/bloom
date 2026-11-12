@@ -58,6 +58,8 @@ private struct ImmichTabs: View {
     /// Bumped when the Library tab is tapped while it is already open.
     @State private var libraryReselections = 0
     @State private var showsAbout = false
+    /// Years / Months / All and the Library's scroll state, shared with the tab bar.
+    @State private var libraryChrome = LibraryChrome()
 
     enum AppTab: Hashable { case library, collections, search }
 
@@ -76,7 +78,7 @@ private struct ImmichTabs: View {
             Tab(tr("Library"), systemImage: "photo.on.rectangle", value: AppTab.library) {
                 NavigationStack {
                     LibraryGridView(model: session.library, headerStyle: .largeTitle, accessory: AnyView(accountMenu),
-                                    scrollToNewestTrigger: libraryReselections, allowsTrash: true)
+                                    chrome: libraryChrome, scrollToNewestTrigger: libraryReselections, allowsTrash: true)
                 }
             }
             Tab(tr("Collections"), systemImage: "rectangle.stack", value: AppTab.collections) {
@@ -101,7 +103,9 @@ private struct ImmichTabs: View {
         .onChange(of: session.library.restoreRevision) { _, _ in
             session.search.invalidateAfterLibraryMutation()
         }
-        .modifier(MinimizeTabBarOnScroll())
+        .modifier(LibraryScaleAccessory(chrome: libraryChrome, isLibraryTab: selection == .library))
+        .modifier(MinimizeTabBarOnScroll(direction: LibraryChrome.tabBarMinimizeDirection(
+            libraryTab: selection == .library, newestFirst: libraryChrome.newestFirst)))
         .sheet(isPresented: $showsAbout) {
             AboutBloomView(icons: AppIconModel(switcher: SystemAppIconSwitcher()))
         }
@@ -122,12 +126,49 @@ private struct ImmichTabs: View {
     }
 }
 
-/// iOS 26: the tab bar shrinks while scrolling down, like Photos.
+/// iOS 26.1+: Years / Months / All sits in the tab bar like Photos. Hidden at the newest photos;
+/// once you scroll away it shows between the minimized tab button and Search (inline), or above
+/// the tabs while they are expanded. Earlier systems keep the floating switcher in the grid.
+private struct LibraryScaleAccessory: ViewModifier {
+    let chrome: LibraryChrome
+    let isLibraryTab: Bool
+
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        if #available(iOS 26.1, *) {
+            content.tabViewBottomAccessory(isEnabled: isLibraryTab && chrome.wantsSwitcher) {
+                AccessorySwitcher(chrome: chrome)
+            }
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
+    }
+}
+
+#if os(iOS)
+@available(iOS 26.0, *)
+private struct AccessorySwitcher: View {
+    @Bindable var chrome: LibraryChrome
+    @Environment(\.tabViewBottomAccessoryPlacement) private var placement
+
+    var body: some View {
+        LibraryScaleSwitcher(scale: $chrome.scale, showsGlass: false, isCompact: placement == .inline)
+            .disabled(chrome.isBlocked)
+    }
+}
+#endif
+
+/// iOS 26: the tab bar shrinks while scrolling, like Photos: in the Library toward older photos.
 private struct MinimizeTabBarOnScroll: ViewModifier {
+    let direction: LibraryChrome.MinimizeDirection
+
     func body(content: Content) -> some View {
         #if os(iOS)
         if #available(iOS 26.0, *) {
-            content.tabBarMinimizeBehavior(.onScrollDown)
+            content.tabBarMinimizeBehavior(direction == .up ? .onScrollUp : .onScrollDown)
         } else {
             content
         }

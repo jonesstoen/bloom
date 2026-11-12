@@ -21,8 +21,8 @@ public struct LibraryGridView: View {
     @State private var pinchBaseline: CGFloat = 1
     /// Latest scroll geometry, kept outside observation so scrolling doesn't re-render the view.
     @State private var scrollMetrics = ScrollMetrics()
-    /// Years / Months / All (the Library tab only).
-    @State private var scale: LibraryScale = .all
+    /// Years / Months / All (the Library tab only), when no `chrome` shares it with the tab bar.
+    @State private var localScale: LibraryScale = .all
     @State private var monthsScrollTarget: String?
     /// Sort, filter and view options, remembered between launches (the Library tab only).
     @AppStorage("library.sortsByDateAdded") private var sortsByDateAdded = false
@@ -34,6 +34,8 @@ public struct LibraryGridView: View {
     private let title: String
     private let headerStyle: HeaderStyle
     private let accessory: AnyView?
+    /// Shared with the tab bar, which then shows the Years / Months / All switcher (iOS 26.1+).
+    private let chrome: LibraryChrome?
     private let scrollToNewestTrigger: Int
     private let allowsTrash: Bool
     private let allowsRestore: Bool
@@ -53,8 +55,10 @@ public struct LibraryGridView: View {
     ///   - accessory: extra glass button(s) shown next to the grid options (e.g. the account menu).
     ///   - onSelect: called when an asset is tapped (opens the viewer).
     ///   - scrollToNewestTrigger: changing it scrolls to the newest photos (the tab was tapped again).
+    ///   - chrome: state shared with the tab bar, so the Years / Months / All switcher can sit in it.
     public init(model: LibraryGridModel, title: String = tr("Library"), headerStyle: HeaderStyle = .navigationBar,
-                accessory: AnyView? = nil, scrollToNewestTrigger: Int = 0, allowsTrash: Bool = false, allowsRestore: Bool = false,
+                accessory: AnyView? = nil, chrome: LibraryChrome? = nil, scrollToNewestTrigger: Int = 0,
+                allowsTrash: Bool = false, allowsRestore: Bool = false,
                 onRestore: (@MainActor ([Asset]) async throws -> RestoreResult)? = nil, onSelect: @escaping (Asset) -> Void = { _ in }) {
         _model = State(initialValue: model)
         _selection = State(initialValue: LibrarySelectionModel(library: model, onRestore: onRestore))
@@ -64,6 +68,7 @@ public struct LibraryGridView: View {
         self.title = title
         self.headerStyle = headerStyle
         self.accessory = accessory
+        self.chrome = chrome
         self.scrollToNewestTrigger = scrollToNewestTrigger
         self.onSelect = onSelect
     }
@@ -80,6 +85,31 @@ public struct LibraryGridView: View {
         #else
         false
         #endif
+    }
+
+    private var scale: LibraryScale {
+        get { chrome?.scale ?? localScale }
+        nonmutating set {
+            if let chrome { chrome.scale = newValue } else { localScale = newValue }
+        }
+    }
+
+    private var scaleBinding: Binding<LibraryScale> {
+        Binding(get: { scale }, set: { scale = $0 })
+    }
+
+    /// iOS 26.1+ with a chrome: the tab bar shows the switcher (`tabViewBottomAccessory`), so the
+    /// grid doesn't float its own above it.
+    private var switcherInTabBar: Bool {
+        #if os(iOS)
+        if #available(iOS 26.1, *) { return chrome != nil && usesLargeTitle }
+        #endif
+        return false
+    }
+
+    /// The switcher may show: photos loaded and the selection toolbar isn't using the bottom.
+    private var switcherAvailable: Bool {
+        usesLargeTitle && model.phase == .loaded && !model.isEmpty && !selection.isSelecting
     }
 
     private var canMoveToTrash: Bool { allowsTrash && model.options.isTrashed != true }
@@ -117,13 +147,16 @@ public struct LibraryGridView: View {
                     Group {
                         if selection.isSelecting {
                             LibrarySelectionToolbar(selection: selection, allowsTrash: canMoveToTrash, allowsRestore: canRestore)
-                        } else if usesLargeTitle {
-                            LibraryScaleSwitcher(scale: $scale).disabled(mutationBlocked)
+                        } else if usesLargeTitle && !switcherInTabBar {
+                            LibraryScaleSwitcher(scale: scaleBinding).disabled(mutationBlocked)
                         }
                     }
                     .padding(.bottom, 10)
                 }
             }
+            .onChange(of: switcherAvailable, initial: true) { _, available in chrome?.isAvailable = available }
+            .onChange(of: mutationBlocked, initial: true) { _, blocked in chrome?.isBlocked = blocked }
+            .onAppear { chrome?.newestFirst = model.newestFirst }
             .onChange(of: model.density) { _, density in
                 if usesLargeTitle { storedColumns = density.rawValue }
             }
@@ -405,6 +438,18 @@ public struct LibraryGridView: View {
             // A pending jump from Months runs once the grid has laid out; before that the
             // initial bottom anchor would override it.
             if firstLayout { scrollToPendingMonth(proxy) }
+        }
+        // Coarse on purpose: only crossing the threshold reaches the tab bar.
+        .onScrollGeometryChange(for: Bool.self, of: { geometry in
+            guard let chrome else { return false }
+            let distance = LibraryChrome.distanceFromNewest(
+                contentHeight: geometry.contentSize.height,
+                insetTop: geometry.contentInsets.top, insetBottom: geometry.contentInsets.bottom,
+                visibleMinY: geometry.visibleRect.minY, visibleMaxY: geometry.visibleRect.maxY,
+                newestFirst: model.newestFirst)
+            return LibraryChrome.isAway(distance: distance, wasAway: chrome.isAwayFromNewest)
+        }) { _, away in
+            if chrome?.isAwayFromNewest != away { chrome?.isAwayFromNewest = away }
         }
         .onScrollPhaseChange { _, phase in
             if phase == .interacting { scrollMetrics.userScrolled = true }

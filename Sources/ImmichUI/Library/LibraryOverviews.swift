@@ -15,9 +15,14 @@ public enum LibraryScale: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// The floating glass switcher at the bottom of the Library.
+/// The Years / Months / All switcher: floating glass at the bottom of the Library, or (iOS 26.1+)
+/// inside the tab bar's accessory, which brings its own glass.
 struct LibraryScaleSwitcher: View {
     @Binding var scale: LibraryScale
+    /// Off in the tab bar accessory: the system draws the glass there.
+    var showsGlass = true
+    /// Between the minimized tab button and Search there is less room.
+    var isCompact = false
     @Namespace private var selection
 
     var body: some View {
@@ -27,9 +32,10 @@ struct LibraryScaleSwitcher: View {
                     withAnimation(.snappy(duration: 0.25)) { scale = option }
                 } label: {
                     Text(option.title)
-                        .font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 9)
+                        .font((isCompact ? Font.footnote : .subheadline).weight(.semibold))
+                        .lineLimit(1)
+                        .padding(.horizontal, isCompact ? 10 : 16)
+                        .padding(.vertical, isCompact ? 6 : 9)
                         .background {
                             if scale == option {
                                 Capsule().fill(.primary.opacity(0.14))
@@ -42,8 +48,15 @@ struct LibraryScaleSwitcher: View {
                 .accessibilityAddTraits(scale == option ? .isSelected : [])
             }
         }
-        .padding(4)
-        .photosGlass(in: Capsule())
+        .padding(showsGlass ? 4 : 2)
+        .modifier(SwitcherGlass(isOn: showsGlass))
+    }
+}
+
+private struct SwitcherGlass: ViewModifier {
+    let isOn: Bool
+    func body(content: Content) -> some View {
+        if isOn { content.photosGlass(in: Capsule()) } else { content }
     }
 }
 
