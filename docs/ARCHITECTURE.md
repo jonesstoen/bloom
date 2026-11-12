@@ -16,8 +16,8 @@ Open `Package.swift` in Xcode to browse just the package.
 | `ImmichKit/Credentials/` | Server URL + API key in the Keychain, connection test | `CredentialStore.swift` |
 | `ImmichKit/Mock/` | The deterministic demo library used by tests and previews | `MockLibrary.swift` |
 | `ImmichUI/Root/` | Tabs, sign-in/out flow, About Bloom and the app icon picker | `ImmichRootView.swift` |
-| `ImmichUI/Library/` | The Library grid: exact layout, pinch, header, selection, Years/Months | `LibraryGridView.swift`, `GridLayout.swift` |
-| `ImmichUI/Collections/` | Collections tab: memories, pinned, albums, people, map, add to album | `CollectionsView.swift` |
+| `ImmichUI/Library/` | The Library grid: exact layout, pinch, header, selection, Years/Months | `LibraryGridView.swift`, `LibraryGridScroll.swift`, `LibraryGridModel.swift`, `GridLayout.swift` |
+| `ImmichUI/Collections/` | Collections tab: memories, pinned, albums, people, map, add to album | `CollectionsView.swift`, `CollectionSections.swift` |
 | `ImmichUI/Viewer/` | Full-screen viewer, info sheet, Live Photos | `AssetViewer.swift` |
 | `ImmichUI/Search/` | Search tab | `SearchView.swift` |
 | `ImmichUI/Login/` | Sign-in screen | `LoginView.swift` |
