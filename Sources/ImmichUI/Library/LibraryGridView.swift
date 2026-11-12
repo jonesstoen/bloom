@@ -133,10 +133,15 @@ public struct LibraryGridView: View {
                 }
             }
             .overlay(alignment: .top) {
-                if usesLargeTitle {
+                // Months and Years have no title, like Photos: their month and year titles head
+                // the content, which runs up under the status bar.
+                if usesLargeTitle && scale == .all {
                     LibraryLargeHeader(title: title, model: model, selection: selection, scale: scale,
                                        mutationBlocked: mutationBlocked, accessory: accessory,
                                        onSelect: { scale = .all; selection.start() }) { optionsMenu }
+                        .transition(.opacity)
+                } else if usesLargeTitle {
+                    StatusBarFade().transition(.opacity)
                 }
             }
             .overlay(alignment: .bottom) {
@@ -299,17 +304,15 @@ public struct LibraryGridView: View {
             // Decided here, as Months is built: set later (onChange), Months had already
             // opened at the newest months.
             MonthsOverview(model: model, scrollTarget: monthsScrollTarget ?? model.visibleCenterID.flatMap(model.monthID(ofAsset:)),
-                           topMargin: 96) { asset in
+                           topMargin: 8) { asset in
                 model.pendingScrollAssetID = asset.id
                 withAnimation(.snappy(duration: 0.25)) { scale = .all }
             }
-            .ignoresSafeArea(edges: .top)
         case .years:
-            YearsOverview(model: model, topMargin: 96) { _, coverMonth in
+            YearsOverview(model: model, topMargin: 8) { _, coverMonth in
                 monthsScrollTarget = coverMonth
                 withAnimation(.snappy(duration: 0.25)) { scale = .months }
             }
-            .ignoresSafeArea(edges: .top)
         }
     }
 
@@ -380,4 +383,19 @@ private struct ViewerItem: Identifiable {
         LibraryGridView(service: mock)
     }
     .task { await mock.setFailure(.network("The request timed out.")) }
+}
+
+/// A soft blur behind the status bar for Months and Years, which have no header: the content
+/// scrolls up under it, like Photos.
+private struct StatusBarFade: View {
+    var body: some View {
+        Rectangle()
+            .fill(.regularMaterial)
+            .mask(LinearGradient(colors: [.black, .black.opacity(0.8), .clear], startPoint: .top, endPoint: .bottom))
+            // Grows up over the status bar from a few points below it.
+            .frame(height: 10)
+            .ignoresSafeArea(edges: .top)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
 }
