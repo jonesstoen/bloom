@@ -13,11 +13,7 @@ public struct LibraryGridView: View {
     @State private var scrollSync: Task<Void, Never>?
     @State private var transitionSourceID: String?
     @State private var viewerScrollTarget: String?
-    /// The pinch's visual scale, read only by `PinchScaleEffect` so a pinch frame doesn't
-    /// re-render this whole view (header, menus, scroll view).
-    @State private var pinch = PinchScale()
-    /// Latest scroll geometry, kept outside observation so scrolling doesn't re-render the view.
-    @State private var scrollMetrics = ScrollMetrics()
+    @State private var densityRequest: DensityRequest?
     /// Years / Months / All (the Library tab only), when no `chrome` shares it with the tab bar.
     @State private var localScale: LibraryScale = .all
     @State private var monthsScrollTarget: String?
@@ -66,7 +62,6 @@ public struct LibraryGridView: View {
         self.headerStyle = headerStyle
         self.accessory = accessory
         self.chrome = chrome
-        _scrollPosition = State(initialValue: ScrollPosition(edge: model.newestFirst ? .top : .bottom))
         self.scrollToNewestTrigger = scrollToNewestTrigger
         self.onSelect = onSelect
     }
@@ -76,7 +71,6 @@ public struct LibraryGridView: View {
         self.init(model: LibraryGridModel(service: service), title: title, headerStyle: headerStyle, allowsTrash: allowsTrash, allowsRestore: allowsRestore, onRestore: onRestore, onSelect: onSelect)
     }
 
-    private static let spacing: CGFloat = 1.5
     private var usesLargeTitle: Bool {
         #if os(iOS)
         headerStyle == .largeTitle
@@ -133,12 +127,16 @@ public struct LibraryGridView: View {
                                 Button(tr("Select")) { selection.start() }
                                     .disabled(model.phase != .loaded || model.isEmpty || mutationBlocked)
                             }
-                        } else { densityMenu }
+                        } else { optionsMenu }
                     }
                 }
             }
             .overlay(alignment: .top) {
-                if usesLargeTitle { largeHeader }
+                if usesLargeTitle {
+                    LibraryLargeHeader(title: title, model: model, selection: selection, scale: scale,
+                                       mutationBlocked: mutationBlocked, accessory: accessory,
+                                       onSelect: { scale = .all; selection.start() }) { optionsMenu }
+                }
             }
             .overlay(alignment: .bottom) {
                 if (usesLargeTitle || canRestore) && (selection.isSelecting || (model.phase == .loaded && !model.isEmpty)) {
@@ -157,6 +155,10 @@ public struct LibraryGridView: View {
             .onAppear { chrome?.newestFirst = model.newestFirst }
             .onChange(of: model.density) { _, density in
                 if usesLargeTitle { storedColumns = density.rawValue }
+            }
+            .onChange(of: scrollToNewestTrigger) { _, _ in
+                // The grid scrolls to the newest photos itself; this goes back to All.
+                if scale != .all { withAnimation(.snappy(duration: 0.25)) { scale = .all } }
             }
             .onChange(of: scale) { old, new in
                 // From All to Months: open Months at the month you were looking at, like Photos.
@@ -288,65 +290,41 @@ public struct LibraryGridView: View {
 
     @ViewBuilder
     private var overview: some View {
-                switch scale {
-                case .all: EmptyView()
-                case .months:
-                    MonthsOverview(model: model, scrollTarget: monthsScrollTarget, topMargin: 96) { asset in
-                        model.pendingScrollAssetID = asset.id
-                        withAnimation(.snappy(duration: 0.25)) { scale = .all }
-                    }
-                    .ignoresSafeArea(edges: .top)
-                case .years:
-                    YearsOverview(model: model, topMargin: 96) { _, coverMonth in
-                        monthsScrollTarget = coverMonth
-                        withAnimation(.snappy(duration: 0.25)) { scale = .months }
-                    }
-                    .ignoresSafeArea(edges: .top)
-                }
-    }
-
-
-    // MARK: Header
-
-    /// The grid options menu. In the Library tab it has Photos' sort, filter and view options.
-    private var densityMenu: some View {
-        Menu {
-            if usesLargeTitle {
-                Picker(tr("Sort"), selection: $sortsByDateAdded) {
-                    Text(tr("Sort by Recently Added")).tag(true)
-                    Text(tr("Sort by Date Captured")).tag(false)
-                }
-                .pickerStyle(.inline)
-                Menu {
-                    Picker(tr("Filter"), selection: $favoritesOnly) {
-                        Label(tr("All Items"), systemImage: "photo.on.rectangle").tag(false)
-                        Label(tr("Favorites"), systemImage: "heart").tag(true)
-                    }
-                    .pickerStyle(.inline)
-                } label: {
-                    Label(tr("Filter"), systemImage: "line.3.horizontal.decrease.circle")
-                }
+        switch scale {
+        case .all: EmptyView()
+        case .months:
+            MonthsOverview(model: model, scrollTarget: monthsScrollTarget, topMargin: 96) { asset in
+                model.pendingScrollAssetID = asset.id
+                withAnimation(.snappy(duration: 0.25)) { scale = .all }
             }
-            Menu {
-                Toggle(isOn: $aspectRatioGrid) {
-                    Label(tr("Aspect Ratio Grid"), systemImage: "rectangle.grid.3x2")
-                }
-                Picker(tr("Columns"), selection: Binding(get: { model.density }, set: { changeDensity($0) })) {
-                    ForEach(GridDensity.allCases, id: \.rawValue) { density in
-                        Text(tr("%lld Columns", Int64(density.rawValue))).tag(density)
-                    }
-                }
-                .pickerStyle(.inline)
-            } label: {
-                Label(tr("View Options"), systemImage: "eye")
+            .ignoresSafeArea(edges: .top)
+        case .years:
+            YearsOverview(model: model, topMargin: 96) { _, coverMonth in
+                monthsScrollTarget = coverMonth
+                withAnimation(.snappy(duration: 0.25)) { scale = .months }
             }
-        } label: {
-            Label(tr("Grid options"), systemImage: isFiltered ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease")
+            .ignoresSafeArea(edges: .top)
         }
-        .disabled(mutationBlocked)
     }
 
-    private var isFiltered: Bool { usesLargeTitle && favoritesOnly }
+    // MARK: Grid
+
+    private var grid: some View {
+        LibraryGridScroll(model: model, selection: selection, chrome: chrome, usesLargeTitle: usesLargeTitle,
+                          fillsCells: !(usesLargeTitle && aspectRatioGrid), mutationBlocked: mutationBlocked,
+                          viewerScrollTarget: viewerScrollTarget, scrollToNewestTrigger: scrollToNewestTrigger,
+                          densityRequest: densityRequest, transition: photoTransition, onTap: open)
+    }
+
+    // MARK: Options
+
+    private var optionsMenu: some View {
+        LibraryOptionsMenu(showsSortAndFilter: usesLargeTitle, sortsByDateAdded: $sortsByDateAdded,
+                           favoritesOnly: $favoritesOnly, aspectRatioGrid: $aspectRatioGrid,
+                           density: Binding(get: { model.density },
+                                            set: { if !mutationBlocked { densityRequest = DensityRequest(density: $0) } }))
+            .disabled(mutationBlocked)
+    }
 
     /// The timeline options for the current menu choices (the Library tab only).
     private var menuOptions: TimelineOptions {
@@ -355,443 +333,12 @@ public struct LibraryGridView: View {
         options.isFavorite = favoritesOnly ? true : nil
         return options
     }
-
-    /// Large title and subtitle over a soft blur, with glass buttons on the right, like Photos.
-    private var largeHeader: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 0) {
-                Text(title)
-                    .font(.largeTitle.weight(.bold))
-                // Its own view: the date range changes while scrolling, and reading it here
-                // would re-render this whole view (header, menus, scroll view) each time.
-                if selection.isSelecting {
-                    LibrarySelectionCount(selection: selection)
-                } else {
-                    LibraryHeaderSubtitle(model: model, scale: scale)
-                }
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityAddTraits(.isHeader)
-            Spacer()
-            if selection.isSelecting {
-                LibrarySelectionCancelButton(selection: selection)
-            } else {
-                HStack(spacing: 10) {
-                    Button(tr("Select")) {
-                        scale = .all
-                        selection.start()
-                    }
-                    .font(.subheadline.weight(.semibold))
-                    // "Marker" in Norwegian wrapped onto two lines in the narrow capsule.
-                    .lineLimit(1)
-                    .fixedSize()
-                    .padding(.horizontal, 14)
-                    .frame(minHeight: 44)
-                    .photosGlass(in: Capsule())
-                    .disabled(model.phase != .loaded || model.isEmpty || mutationBlocked)
-                    densityMenu
-                        .labelStyle(.iconOnly)
-                        .font(.system(size: 18, weight: .medium))
-                        .frame(width: 44, height: 44)
-                        .photosGlass(in: Circle())
-                    if let accessory { accessory }
-                }
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 14)
-        .background {
-            Rectangle()
-                .fill(.regularMaterial)
-                .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.55),
-                                             .init(color: .clear, location: 1)],
-                                     startPoint: .top, endPoint: .bottom))
-                .ignoresSafeArea(edges: .top)
-                .allowsHitTesting(false)
-        }
-    }
-
-    // MARK: Grid
-
-    private var grid: some View {
-        GeometryReader { container in
-            let layout = gridLayout(width: container.size.width)
-            ScrollView {
-                VStack(spacing: 0) {
-                    GridCells(model: model, selection: selection, window: gridWindow, layout: layout,
-                              fillsCells: !(usesLargeTitle && aspectRatioGrid),
-                              transition: photoTransition, onTap: open)
-                        .equatable()
-                    footer
-                }
-            }
-            .contentMargins(.top, usesLargeTitle ? 96 : 0, for: .scrollContent)
-            .ignoresSafeArea(edges: usesLargeTitle ? .top : [])
-            // Only for the first position; every later scroll is computed from the exact layout.
-            .defaultScrollAnchor(model.newestFirst ? .top : .bottom, for: .initialOffset)
-            .scrollPosition($scrollPosition)
-            .onScrollGeometryChange(for: ScrollGeometry.self, of: { $0 }) { _, geometry in
-                scrollGeometryChanged(geometry)
-            }
-            .onScrollPhaseChange { _, phase in
-                if phase == .interacting { scrollMetrics.userScrolled = true }
-            }
-            .refreshable {
-                guard !mutationBlocked else { return }
-                await model.load()
-            }
-            #if os(iOS)
-            // Not clipped: the grid continues behind the tab bar and the Years/Months/All switcher,
-            // like Photos (clipping cut it off above the tab bar).
-            .modifier(PinchScaleEffect(pinch: pinch))
-            .simultaneousGesture(
-                MagnifyGesture()
-                    .onChanged { value in pinchChanged(value) }
-                    .onEnded { _ in pinchEnded() }
-            )
-            #endif
-            .onChange(of: viewerScrollTarget) { _, id in
-                if let id, let index = model.gridIndex(ofAsset: id) { scroll(toCell: index, anchor: 0.5) }
-            }
-            // Shown again later (e.g. after Months): treat the next layout as a first layout.
-            .onDisappear { scrollMetrics.geometry = nil }
-            .onChange(of: model.pendingScrollMonthID) { _, _ in scrollToPendingMonth() }
-            .onChange(of: model.pendingScrollAssetID) { _, _ in scrollToPendingMonth() }
-            .onChange(of: model.gridShift) { _, shift in keepInPlace(shift) }
-            .onChange(of: scrollToNewestTrigger) { _, _ in scrollToNewest() }
-        }
-        .ignoresSafeArea(edges: usesLargeTitle ? .top : [])
-    }
-
-    /// Where the scroll view is; every programmatic scroll sets an exact y (see `GridLayout`).
-    @State private var scrollPosition = ScrollPosition(edge: .bottom)
-    /// The rows of cells currently built (only those near the screen).
-    @State private var gridWindow = GridWindow()
-
-    private func gridLayout(width: Double, columns: Int? = nil) -> GridLayout {
-        GridLayout(width: width, spacing: Self.spacing, columns: columns ?? model.columnCount,
-                   itemCount: model.gridItemCount)
-    }
-
-    /// Every scroll frame: which rows to build, which cells are on screen, and the first open.
-    private func scrollGeometryChanged(_ geometry: ScrollGeometry) {
-        let firstLayout = scrollMetrics.geometry == nil
-        scrollMetrics.geometry = geometry
-        scrollMetrics.pendingOffset = nil
-        let layout = gridLayout(width: geometry.containerSize.width)
-        buildRows(layout, contentOffset: geometry.contentOffset.y, frameHeight: geometry.visibleRect.height)
-        reportScreen(layout, geometry: geometry)
-        if firstLayout && !scrollMetrics.didOpen && model.pendingScrollAssetID == nil && model.pendingScrollMonthID == nil {
-            scrollMetrics.didOpen = true
-            openAtNewest()
-        }
-        // A pending jump from Months runs once the grid has laid out.
-        if firstLayout { scrollToPendingMonth() }
-    }
-
-    /// Builds the rows around the part of the content that is (or is about to be) on screen.
-    private func buildRows(_ layout: GridLayout, contentOffset: Double, frameHeight: Double) {
-        let rows = layout.renderRows(visibleTop: contentOffset, visibleBottom: contentOffset + frameHeight,
-                                     margin: 4, chunk: 4)
-        if gridWindow.rows != rows { gridWindow.rows = rows }
-    }
-
-    /// The cells on screen (between the large title and the tab bar): the header's date range and
-    /// whether the tab bar shows the Years / Months / All switcher.
-    private func reportScreen(_ layout: GridLayout, geometry: ScrollGeometry) {
-        guard let range = layout.screenRange(top: geometry.contentOffset.y + geometry.contentInsets.top,
-                                             height: geometry.containerSize.height) else { return }
-        model.screenRangeChanged(range)
-        guard let chrome else { return }
-        let away = LibraryChrome.isAway(visible: range, itemCount: model.gridItemCount,
-                                        columns: model.columnCount, newestFirst: model.newestFirst)
-        if chrome.isAwayFromNewest != away { chrome.isAwayFromNewest = away }
-    }
-
-    /// Scrolls so cell `index` sits at `anchor` of the visible area (0 top, 0.5 middle, 1 bottom).
-    /// The rows there are built first, so they are on screen when the scroll lands.
-    private func scroll(toCell index: Int, anchor: Double, animation: Animation? = nil) {
-        guard let geometry = scrollMetrics.geometry else { return }
-        let layout = gridLayout(width: geometry.containerSize.width)
-        let y = layout.scrollY(toShow: index, anchor: anchor, visibleHeight: geometry.containerSize.height)
-        scroll(toY: y, layout: layout, geometry: geometry, animation: animation)
-    }
-
-    private func scroll(toY y: Double, layout: GridLayout, geometry: ScrollGeometry, animation: Animation? = nil) {
-        if animation == nil {
-            buildRows(layout, contentOffset: y - geometry.contentInsets.top, frameHeight: geometry.visibleRect.height)
-        }
-        if let animation {
-            withAnimation(animation) { scrollPosition.scrollTo(y: y) }
-        } else {
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) { scrollPosition.scrollTo(y: y) }
-        }
-    }
-
-    /// Opens at the newest photos, and again once their months have loaded (real counts can differ
-    /// from the server's bucket counts), unless the user has started scrolling.
-    private func openAtNewest() {
-        let count = model.gridItemCount
-        guard count > 0 else { return }
-        scroll(toCell: model.newestFirst ? 0 : count - 1, anchor: model.newestFirst ? 0 : 1)
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(400))
-            guard scrollMetrics.geometry != nil, !scrollMetrics.userScrolled, model.gridItemCount > 0 else { return }
-            scroll(toCell: model.newestFirst ? 0 : model.gridItemCount - 1, anchor: model.newestFirst ? 0 : 1)
-        }
-    }
-
-    /// The Library tab was tapped again: back to All and the newest photos, like Photos.
-    private func scrollToNewest() {
-        if scale != .all { withAnimation(.snappy(duration: 0.25)) { scale = .all } }
-        let count = model.gridItemCount
-        guard count > 0 else { return }
-        // On the next run loop turn, after iOS has started its own scroll to the top, so this
-        // scroll replaces it.
-        Task { @MainActor in
-            await Task.yield()
-            scroll(toCell: model.newestFirst ? 0 : count - 1, anchor: model.newestFirst ? 0 : 1,
-                   animation: .smooth(duration: 0.45))
-        }
-    }
-
-    /// Months loaded with a slightly different number of items than their placeholders moved
-    /// the photo in the middle of the screen to another cell: scroll so it stays where it was.
-    private func keepInPlace(_ shift: LibraryGridModel.GridShift?) {
-        guard let shift, let geometry = scrollMetrics.geometry, pinch.liveScale == 1, pinch.settleScale == 1 else { return }
-        let layout = gridLayout(width: geometry.containerSize.width)
-        // Where the photo was on screen, from the layout before the change.
-        let screenY = Double(layout.origin(of: shift.oldIndex).y) - geometry.contentOffset.y
-        guard screenY > -layout.cell, screenY < geometry.visibleRect.height else { return }
-        let offset = Double(layout.origin(of: shift.newIndex).y) - screenY
-        scroll(toY: offset + geometry.contentInsets.top, layout: layout, geometry: geometry)
-    }
-
-    /// Opened from Months: a day centres that photo, a month card shows the month at the top.
-    private func scrollToPendingMonth() {
-        guard scrollMetrics.geometry != nil else { return }
-        if let assetID = model.pendingScrollAssetID {
-            model.pendingScrollAssetID = nil
-            if let index = model.gridIndex(ofAsset: assetID) { scroll(toCell: index, anchor: 0.5) }
-            model.assetShownInViewer(assetID)
-            return
-        }
-        guard let monthID = model.pendingScrollMonthID, let index = model.firstGridIndex(ofMonth: monthID) else { return }
-        model.pendingScrollMonthID = nil
-        scroll(toCell: index, anchor: 0)
-        model.monthAppeared(monthID)
-    }
-
-    /// Follows the fingers like Photos: the grid scales live, and as soon as the pinch passes a
-    /// step it switches columns around the asset in the middle of the screen. One pinch can step
-    /// through several densities.
-    private func pinchChanged(_ value: MagnifyGesture.Value) {
-        guard !mutationBlocked else { return }
-        let relative = value.magnification / pinch.baseline
-        let next = model.density.pinched(by: relative)
-        if next != model.density {
-            pinch.baseline = value.magnification
-            switchDensity(to: next, fromVisualScale: pinch.liveScale)
-        } else {
-            // Rubber-band at the ends (3 or 7 columns): the grid only gives a little.
-            let atLimit = (relative > 1 && model.density == .three) || (relative < 1 && model.density == .seven)
-            let resistance: CGFloat = atLimit ? 0.15 : 0.6
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) { pinch.liveScale = 1 + (relative - 1) * resistance }
-        }
-    }
-
-    private func pinchEnded() {
-        pinch.baseline = 1
-        withAnimation(reduceMotion ? nil : .spring(duration: 0.3)) { pinch.liveScale = 1 }
-    }
-
-    private func changeDensity(_ density: GridDensity) {
-        guard !mutationBlocked else { return }
-        switchDensity(to: density, fromVisualScale: 1)
-    }
-
-    /// Switches columns around the photo in the middle of the screen. The layout is exact, so the
-    /// new column count and the scroll that keeps that photo in place go in one transaction and
-    /// land exactly (measured on the simulator). The new layout is shown scaled to the size the old
-    /// cells had on screen and springs to its real size: one continuous motion.
-    private func switchDensity(to density: GridDensity, fromVisualScale visual: CGFloat) {
-        guard density != model.density else { return }
-        let ratio = CGFloat(density.rawValue) / CGFloat(model.density.rawValue)
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        guard let geometry = scrollMetrics.geometry else {
-            withTransaction(transaction) { model.density = density }
-            return
-        }
-        let width = geometry.containerSize.width
-        // A fast pinch can switch again before the grid reports its new offset; then the offset
-        // this view scrolled to last time is the current one.
-        let currentOffset = scrollMetrics.pendingOffset ?? geometry.contentOffset.y
-        let anchor = GridPinchAnchor.anchor(
-            offset: currentOffset, focalX: width / 2, focalY: geometry.visibleRect.height / 2,
-            width: width, spacing: Self.spacing, from: model.density.rawValue, to: density.rawValue,
-            itemCount: model.gridItemCount)
-        let newLayout = gridLayout(width: width, columns: density.rawValue)
-        withTransaction(transaction) {
-            model.density = density
-            if let anchor {
-                scrollMetrics.pendingOffset = anchor.offset
-                scroll(toY: anchor.offset + geometry.contentInsets.top, layout: newLayout, geometry: geometry)
-            }
-            pinch.liveScale = 1
-            pinch.settleScale = reduceMotion ? 1 : visual * ratio * pinch.settleScale
-        }
-        withAnimation(reduceMotion ? nil : .spring(duration: 0.35, bounce: 0)) { pinch.settleScale = 1 }
-    }
-
-    private var footer: some View {
-        Text(model.footerText)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 24)
-    }
-}
-
-/// The Library header's subtitle: the dates on screen in All, the year range in Years.
-private struct LibraryHeaderSubtitle: View {
-    let model: LibraryGridModel
-    let scale: LibraryScale
-
-    var body: some View {
-        Text(text)
-            .font(.subheadline.weight(.semibold))
-            .contentTransition(.numericText())
-            .animation(.default, value: text)
-    }
-
-    private var text: String {
-        switch scale {
-        case .all where model.options.isFavorite == true: tr("Favorites")
-        // Grouped by upload date, the month on screen says when photos were added, not taken.
-        case .all where model.options.sortsByDateAdded: tr("Recently Added")
-        case .all: model.visibleDateRangeTitle ?? model.visibleMonthTitle ?? model.footerText
-        case .months: model.footerText
-        case .years:
-            if let first = model.years.first?.year, let last = model.years.last?.year, first != last {
-                "\(min(first, last))–\(max(first, last))"
-            } else {
-                model.footerText
-            }
-        }
-    }
-}
-
-/// The rows of the grid that have cells built. Observed only by `GridCells`, so moving the window
-/// while scrolling doesn't re-render the Library view around it.
-@MainActor
-@Observable
-private final class GridWindow {
-    var rows: Range<Int> = 0..<0
-}
-
-/// The pinch's visual scale. Changes on every gesture frame, so only `PinchScaleEffect` reads it.
-@MainActor
-@Observable
-private final class PinchScale {
-    /// Follows the fingers while pinching (never animated), relative to the last density switch.
-    var liveScale: CGFloat = 1
-    /// Bridges a density switch: the new layout starts at the old cell size and springs to 1.
-    var settleScale: CGFloat = 1
-    /// Magnification at which the current density was reached during this pinch.
-    @ObservationIgnored var baseline: CGFloat = 1
-}
-
-/// Scales the grid with the pinch. Its own view, so each gesture frame updates only this.
-private struct PinchScaleEffect: ViewModifier {
-    let pinch: PinchScale
-
-    func body(content: Content) -> some View {
-        content.scaleEffect(pinch.liveScale * pinch.settleScale, anchor: .center)
-    }
-}
-
-private final class ScrollMetrics {
-    var geometry: ScrollGeometry?
-    /// Offset of the last density switch until the grid reports geometry for the new layout.
-    var pendingOffset: Double?
-    /// The grid has been opened at the newest photos once.
-    var didOpen = false
-    /// The user has touched the grid (then it is never scrolled for them on open).
-    var userScrolled = false
 }
 
 private struct ViewerItem: Identifiable {
     let id = UUID()
     let assets: [Asset]
     let selectedID: String
-}
-
-/// The cells of the grid: only the rows in `window`, each placed at its exact position in a frame
-/// as tall as the whole grid (see `GridLayout`). Split out and `Equatable` so that state changes in
-/// the parent (pinch scale on every gesture frame, the viewer's current photo) don't rebuild it;
-/// it updates by itself when the window moves or months load (Observation).
-private struct GridCells: View, Equatable {
-    let model: LibraryGridModel
-    let selection: LibrarySelectionModel
-    let window: GridWindow
-    let layout: GridLayout
-    let fillsCells: Bool
-    let transition: Namespace.ID
-    let onTap: (Asset) -> Void
-
-    static func == (lhs: GridCells, rhs: GridCells) -> Bool {
-        lhs.model === rhs.model && lhs.selection === rhs.selection && lhs.window === rhs.window
-            && lhs.layout == rhs.layout && lhs.fillsCells == rhs.fillsCells && lhs.transition == rhs.transition
-    }
-
-    var body: some View {
-        let cell = layout.cell
-        ZStack(alignment: .topLeading) {
-            // IDs must be unique across the whole grid: the asset id, or the placeholder slot of an
-            // unloaded month (plain indices would repeat and confuse identity and transitions).
-            ForEach(layout.items(inRows: window.rows).map { index in
-                WindowCell(index: index, id: model.gridItemID(atGridIndex: index) ?? AnyHashable(index))
-            }) { item in
-                let origin = layout.origin(of: item.index)
-                content(item)
-                    .frame(width: cell, height: cell)
-                    .offset(x: origin.x, y: origin.y)
-            }
-        }
-        .frame(width: layout.width, height: layout.height, alignment: .topLeading)
-    }
-
-    @ViewBuilder
-    private func content(_ item: WindowCell) -> some View {
-        if let asset = model.gridAsset(atGridIndex: item.index) {
-            LibrarySelectableCell(asset: asset, model: model, selection: selection,
-                                  fillsCell: fillsCells, onOpen: onTap)
-            #if os(iOS)
-            .matchedTransitionSource(id: asset.id, in: transition)
-            #endif
-            .onAppear {
-                model.assetAppeared(asset.id)
-                if let month = model.monthID(ofAsset: asset.id) { model.monthAppeared(month) }
-            }
-            .onDisappear { model.assetDisappeared(asset.id) }
-        } else {
-            PlaceholderCell()
-                .onAppear {
-                    if let month = model.gridMonthID(atGridIndex: item.index) { model.monthAppeared(month) }
-                }
-        }
-    }
-}
-
-/// A built cell: its grid index and its identity (asset id or placeholder slot).
-private struct WindowCell: Identifiable {
-    let index: Int
-    let id: AnyHashable
 }
 
 // MARK: - Previews
