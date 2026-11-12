@@ -32,3 +32,5 @@
 "The server sent a response that is not an Immich API response. Check the server URL." = "Serveren sendte et svar som ikke er fra Immich. Sjekk serveradressen.";
 "The server URL is not valid." = "Serveradressen er ikke gyldig.";
 "Bloom is set to view only. Turn on Allow Changes in the account menu to change your library." = "Bloom er satt til bare visning. Slå på Tillat endringer i kontomenyen for å endre biblioteket.";
+"Server Redirected" = "Serveren videresendte";
+"The server sent Bloom to a different address. Bloom doesn't follow it, so your API key stays with this server. Enter the address the server uses, for example with https://." = "Serveren sendte Bloom videre til en annen adresse. Bloom følger ikke etter, så API-nøkkelen blir hos denne serveren. Skriv inn adressen serveren bruker, for eksempel med https://.";

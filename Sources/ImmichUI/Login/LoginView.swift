@@ -85,7 +85,14 @@ public struct LoginView: View {
         } header: {
             Text(tr("Server"))
         } footer: {
-            Text(tr("Create an API key in the Immich web app under Account Settings › API Keys. It is stored in the Keychain on this device."))
+            VStack(alignment: .leading, spacing: 8) {
+                if model.isUnencrypted {
+                    Label(tr("This address isn't encrypted, so your API key is sent as plain text. Use https unless the server is only on your own network."),
+                          systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+                Text(tr("Create an API key in the Immich web app under Account Settings › API Keys. It is stored in the Keychain on this device."))
+            }
         }
     }
 

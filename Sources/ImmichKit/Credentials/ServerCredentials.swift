@@ -34,7 +34,7 @@ public struct ServerCredentials: Sendable, Hashable, Codable, CustomStringConver
 
     public var debugDescription: String { description }
 
-    static func normalizedServerURL(from input: String) -> URL? {
+    public static func normalizedServerURL(from input: String) -> URL? {
         var text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
         if !text.contains("://") {

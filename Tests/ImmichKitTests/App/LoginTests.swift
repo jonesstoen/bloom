@@ -69,12 +69,27 @@ final class ConnectionTesterTests: XCTestCase {
         XCTAssertEqual(LoginError.fromAuthenticated(ImmichServiceError.unexpectedStatus(500)), .serverError(500))
         XCTAssertEqual(LoginError.fromAuthenticated(ImmichServiceError.network("x")), .serverUnreachable("x"))
         XCTAssertEqual(LoginError.fromUnauthenticated(ImmichServiceError.unauthorized), .notImmichServer)
+        // A refused redirect (SameOriginRedirects) arrives as its 3xx status.
+        XCTAssertEqual(LoginError.fromUnauthenticated(ImmichServiceError.unexpectedStatus(302)), .redirected)
+        XCTAssertEqual(LoginError.fromAuthenticated(ImmichServiceError.unexpectedStatus(301)), .redirected)
+    }
+
+    @MainActor
+    func testPlainHTTPAddressesAreFlagged() {
+        let login = RootModel(store: CredentialStore(storage: InMemorySecureStorage()), makeService: { _ in MockImmichService() })
+            .makeLoginModel()
+        login.server = "http://192.168.1.10:2283"
+        XCTAssertTrue(login.isUnencrypted)
+        login.server = "https://photos.example.com"
+        XCTAssertFalse(login.isUnencrypted)
+        login.server = "photos.example.com"
+        XCTAssertFalse(login.isUnencrypted, "no scheme means https")
     }
 
     func testMessagesNeverContainKey() {
         let errors: [LoginError] = [
             .missingServer, .missingAPIKey, .invalidServerURL, .serverUnreachable("x"),
-            .notImmichServer, .invalidAPIKey, .serverError(500), .saveFailed,
+            .notImmichServer, .invalidAPIKey, .serverError(500), .saveFailed, .redirected,
         ]
         for error in errors {
             XCTAssertFalse(error.title.isEmpty)

@@ -10,8 +10,10 @@ public struct LiveImmichService: ImmichService {
     let client: Client
     private let transport: any ClientTransport
 
-    /// - Parameter transport: defaults to `URLSessionTransport`; tests inject a stub.
-    public init(credentials: ServerCredentials, transport: any ClientTransport = URLSessionTransport()) {
+    /// - Parameter transport: defaults to `URLSessionTransport` on a session that refuses redirects
+    ///   to other servers (`SameOriginRedirects`); tests inject a stub.
+    public init(credentials: ServerCredentials,
+                transport: any ClientTransport = LiveImmichService.defaultTransport) {
         self.credentials = credentials
         self.transport = transport
         self.client = Client(
@@ -20,6 +22,11 @@ public struct LiveImmichService: ImmichService {
             transport: transport,
             middlewares: [APIKeyMiddleware(apiKey: credentials.apiKey), BinaryContentTypeMiddleware()]
         )
+    }
+
+    /// URLSession transport on the redirect-checking session.
+    public static var defaultTransport: any ClientTransport {
+        URLSessionTransport(configuration: .init(session: SameOriginRedirects.session))
     }
 
     public func ping() async throws {

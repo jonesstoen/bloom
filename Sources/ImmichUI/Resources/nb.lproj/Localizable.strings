@@ -225,3 +225,4 @@
 "Today" = "I dag";
 "Yesterday" = "I går";
 "Allow Changes" = "Tillat endringer";
+"This address isn't encrypted, so your API key is sent as plain text. Use https unless the server is only on your own network." = "Denne adressen er ikke kryptert, så API-nøkkelen sendes som klartekst. Bruk https med mindre serveren bare er på ditt eget nettverk.";

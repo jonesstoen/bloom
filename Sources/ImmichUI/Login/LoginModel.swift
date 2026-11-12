@@ -51,6 +51,11 @@ public final class LoginModel {
         return nil
     }
 
+    /// The address is plain `http://`: the API key would travel unencrypted.
+    public var isUnencrypted: Bool {
+        ServerCredentials.normalizedServerURL(from: server)?.scheme == "http"
+    }
+
     public var canConnect: Bool {
         !isConnecting
             && !server.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

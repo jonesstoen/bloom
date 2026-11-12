@@ -16,6 +16,8 @@ public enum LoginError: Error, Sendable, Equatable, LocalizedError {
     case invalidAPIKey
     /// The server answered with an error status.
     case serverError(Int)
+    /// The server redirected to another address, which Bloom doesn't follow (the API key would go along).
+    case redirected
     /// The connection worked, but the credentials could not be saved to the Keychain.
     case saveFailed
 
@@ -28,6 +30,7 @@ public enum LoginError: Error, Sendable, Equatable, LocalizedError {
         case .notImmichServer: return tr("Not an Immich Server")
         case .invalidAPIKey: return tr("Wrong API Key")
         case .serverError: return tr("Server Error")
+        case .redirected: return tr("Server Redirected")
         case .saveFailed: return tr("Could Not Save Login")
         }
     }
@@ -50,6 +53,8 @@ public enum LoginError: Error, Sendable, Equatable, LocalizedError {
             return tr("The server answered with HTTP status %lld. Try again later.", Int64(status))
         case .saveFailed:
             return tr("The connection works, but the login could not be saved to the Keychain.")
+        case .redirected:
+            return tr("The server sent Bloom to a different address. Bloom doesn't follow it, so your API key stays with this server. Enter the address the server uses, for example with https://.")
         }
     }
 
@@ -62,6 +67,8 @@ public enum LoginError: Error, Sendable, Equatable, LocalizedError {
             return .invalidServerURL
         case ImmichServiceError.network(let detail):
             return .serverUnreachable(detail)
+        case ImmichServiceError.unexpectedStatus(let status) where (300..<400).contains(status):
+            return .redirected
         case ImmichServiceError.unexpectedStatus(let status) where status >= 500:
             return .serverError(status)
         default:
@@ -75,6 +82,8 @@ public enum LoginError: Error, Sendable, Equatable, LocalizedError {
         switch error {
         case ImmichServiceError.unauthorized:
             return .invalidAPIKey
+        case ImmichServiceError.unexpectedStatus(let status) where (300..<400).contains(status):
+            return .redirected
         case ImmichServiceError.unexpectedStatus(let status) where status < 500:
             return .serverError(status)
         default:
