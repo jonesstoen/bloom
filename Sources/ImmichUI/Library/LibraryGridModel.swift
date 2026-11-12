@@ -21,6 +21,13 @@ public final class LibraryGridModel {
     /// Months in display order. Unloaded months have `days == nil`.
     public private(set) var months: [TimelineMonth] = []
     public private(set) var phase: Phase = .idle
+    private struct FooterCounts: Equatable {
+        var allLoaded = true
+        var reported = 0
+        var photos = 0
+        var videos = 0
+    }
+    private var footerCounts = FooterCounts()
     /// Five columns by default; the Library tab remembers the user's choice.
     public var density: GridDensity = .five
     public var columnCount: Int { density.rawValue }
@@ -329,8 +336,21 @@ public final class LibraryGridModel {
         monthStarts = monthCellCounts.map { count in defer { start += count }; return start }
         gridItemCount = start
         var positions: [String: Int] = [:]
-        for assets in monthAssets { for (i, asset) in assets.enumerated() { positions[asset.id] = i } }
+        var assetCount = 0
+        var videoCount = 0
+        for assets in monthAssets {
+            assetCount += assets.count
+            for (i, asset) in assets.enumerated() {
+                positions[asset.id] = i
+                if asset.isVideo { videoCount += 1 }
+            }
+        }
         assetIndexInMonth = positions
+        // Reuse the index pass rather than flattening the library whenever the footer renders.
+        let counts = FooterCounts(allLoaded: months.allSatisfy(\.isLoaded),
+                                  reported: months.reduce(0) { $0 + $1.bucket.count },
+                                  photos: assetCount - videoCount, videos: videoCount)
+        if footerCounts != counts { footerCounts = counts }
     }
 
     // MARK: Years and months
@@ -672,11 +692,10 @@ public final class LibraryGridModel {
 
     /// "1,234 Photos, 56 Videos" for the footer, from the loaded assets (or "N Items" from counts).
     public var footerText: String {
-        let loaded = months.allSatisfy(\.isLoaded)
-        guard loaded else { return tr("%@ Items", totalCount.formatted(.number.locale(Localization.locale))) }
-        let assets = months.flatMap(\.assets)
-        let videos = assets.filter(\.isVideo).count
-        let photos = assets.count - videos
+        let counts = footerCounts
+        guard counts.allLoaded else { return tr("%@ Items", counts.reported.formatted(.number.locale(Localization.locale))) }
+        let photos = counts.photos
+        let videos = counts.videos
         var parts: [String] = []
         if photos > 0 || videos == 0 { parts.append(tr(photos == 1 ? "%@ Photo" : "%@ Photos", photos.formatted(.number.locale(Localization.locale)))) }
         if videos > 0 { parts.append(tr(videos == 1 ? "%@ Video" : "%@ Videos", videos.formatted(.number.locale(Localization.locale)))) }
