@@ -16,6 +16,7 @@ public struct LibraryGridView: View {
     @State private var densityRequest: DensityRequest?
     /// Years / Months / All (the Library tab only), when no `chrome` shares it with the tab bar.
     @State private var localScale: LibraryScale = .all
+    /// Set by a year card: the month Months opens at.
     @State private var monthsScrollTarget: String?
     /// Sort, filter and view options, remembered between launches (the Library tab only).
     @AppStorage("library.sortsByDateAdded") private var sortsByDateAdded = false
@@ -160,11 +161,9 @@ public struct LibraryGridView: View {
                 // The grid scrolls to the newest photos itself; this goes back to All.
                 if scale != .all { withAnimation(.snappy(duration: 0.25)) { scale = .all } }
             }
-            .onChange(of: scale) { old, new in
-                // From All to Months: open Months at the month you were looking at, like Photos.
-                if old == .all && new == .months {
-                    monthsScrollTarget = model.visibleCenterID.flatMap(model.monthID(ofAsset:))
-                }
+            .onChange(of: scale) { old, _ in
+                // A year card's month applies to that one visit to Months only.
+                if old == .months { monthsScrollTarget = nil }
             }
             .task(id: usesLargeTitle ? menuOptions : model.options) {
                 if usesLargeTitle && menuOptions != model.options { await model.setOptions(menuOptions) }
@@ -296,7 +295,11 @@ public struct LibraryGridView: View {
         switch scale {
         case .all: EmptyView()
         case .months:
-            MonthsOverview(model: model, scrollTarget: monthsScrollTarget, topMargin: 96) { asset in
+            // A year card's month, or else the month you were looking at in All, like Photos.
+            // Decided here, as Months is built: set later (onChange), Months had already
+            // opened at the newest months.
+            MonthsOverview(model: model, scrollTarget: monthsScrollTarget ?? model.visibleCenterID.flatMap(model.monthID(ofAsset:)),
+                           topMargin: 96) { asset in
                 model.pendingScrollAssetID = asset.id
                 withAnimation(.snappy(duration: 0.25)) { scale = .all }
             }

@@ -63,19 +63,26 @@ private struct SwitcherGlass: ViewModifier {
 /// Months like the Photos app: a title per month ("Oct 2026") above a mosaic of its days,
 /// one rounded tile per day with the date in the corner, the first one large.
 /// Tapping a day opens All centred on that photo.
+///
+/// Laid out exactly (`MonthsLayout`): only the months near the screen are built, and opening
+/// at a month scrolls straight to its position once, with nothing to correct afterwards.
 struct MonthsOverview: View {
     let model: LibraryGridModel
+    /// The month to open at (its title at the top); `nil` opens at the newest months.
     var scrollTarget: String?
     let topMargin: CGFloat
     let onSelect: (Asset) -> Void
-    @State private var didScroll = false
+    @ScaledMetric(relativeTo: .title2) private var titleHeight: CGFloat = 30
+    @State private var position = ScrollPosition()
+    @State private var window = MonthsWindow()
+    @State private var didOpen = false
 
     var body: some View {
         if model.allMonthsLoaded {
             mosaic
         } else {
-            // Every month is loaded before showing the mosaic: months loading while you look
-            // would change heights and move the month you jumped to.
+            // Every month is loaded before showing the mosaic, so no month changes height
+            // while you look at it.
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .task { await model.loadAllMonths() }
@@ -85,41 +92,46 @@ struct MonthsOverview: View {
     private var mosaic: some View {
         GeometryReader { geometry in
             let width = max(0, geometry.size.width - 2 * MonthMosaic.margin)
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 26) {
-                        ForEach(model.months) { month in
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text(MonthsOverview.title(for: month.bucket))
-                                    .font(.title2.weight(.bold))
-                                    .accessibilityAddTraits(.isHeader)
-                                MonthMosaic(plan: model.monthPlan(ofMonth: month.id), isLoaded: month.isLoaded,
-                                            width: width, loader: model.loader, onSelect: onSelect)
-                            }
-                            .padding(.horizontal, MonthMosaic.margin)
-                            .id(month.id)
-                            .task { await model.loadMonth(month.id) }
-                        }
-                    }
-                    .padding(.bottom, 90)
+            let layout = MonthsLayout(
+                months: model.months.map { .init(id: $0.id, plan: model.monthPlan(ofMonth: $0.id), isLoaded: $0.isLoaded,
+                                         title: Self.title(for: $0.bucket)) },
+                width: width, titleHeight: titleHeight)
+            ScrollView {
+                MonthRows(layout: layout, window: window, width: width, titleHeight: titleHeight,
+                          loader: model.loader, onSelect: onSelect)
+                    .frame(width: geometry.size.width, height: layout.contentHeight, alignment: .topLeading)
+            }
+            .contentMargins(.top, topMargin, for: .scrollContent)
+            .defaultScrollAnchor(model.newestFirst ? .top : .bottom, for: .initialOffset)
+            .scrollPosition($position)
+            .onScrollGeometryChange(for: ScrollGeometry.self, of: { $0 }) { _, geometry in
+                let top = geometry.contentOffset.y
+                if !didOpen {
+                    didOpen = true
+                    open(layout, geometry: geometry)
+                    return
                 }
-                .contentMargins(.top, topMargin, for: .scrollContent)
-                // Open at the newest months, unless jumping to a month: then nothing may
-                // re-anchor the view after the jump.
-                .defaultScrollAnchor(scrollTarget == nil ? (model.newestFirst ? .top : .bottom) : nil, for: .initialOffset)
-                // Scroll once the stack has laid out (earlier, the initial bottom anchor wins),
-                // and once more after neighbouring months have settled to their real height.
-                .onScrollGeometryChange(for: Bool.self, of: { $0.contentSize.height > 0 }) { _, laidOut in
-                    guard laidOut, !didScroll, let scrollTarget else { return }
-                    didScroll = true
-                    proxy.scrollTo(scrollTarget, anchor: .top)
-                    Task { @MainActor in
-                        try? await Task.sleep(for: .milliseconds(250))
-                        proxy.scrollTo(scrollTarget, anchor: .top)
-                    }
-                }
+                window.update(layout.visible(top: top, bottom: top + geometry.visibleRect.height,
+                                             margin: geometry.visibleRect.height))
             }
         }
+    }
+
+    /// The first layout: jump to the target month in one exact scroll (or stay at the newest).
+    private func open(_ layout: MonthsLayout, geometry: ScrollGeometry) {
+        let frame = geometry.visibleRect.height
+        var top = geometry.contentOffset.y
+        if let scrollTarget, let index = layout.index(of: scrollTarget) {
+            // `scrollTo(y:)` measures from below the top margin (as in the All grid); the scroll
+            // view clamps at the end of the content.
+            let y = layout.offsets[index]
+            top = min(y - geometry.contentInsets.top,
+                      geometry.contentSize.height + geometry.contentInsets.bottom - frame)
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { position.scrollTo(y: y) }
+        }
+        window.update(layout.visible(top: top, bottom: top + frame, margin: frame))
     }
 
     /// "Oct 2026", like the month titles in Photos.
@@ -127,6 +139,48 @@ struct MonthsOverview: View {
         var style = Date.FormatStyle(date: .omitted, time: .omitted, locale: locale, calendar: Asset.localCalendar, timeZone: .gmt)
         style = style.month(.abbreviated).year()
         return bucket.startDate.formatted(style)
+    }
+}
+
+/// The months currently built. Observed only by `MonthRows`, so scrolling doesn't re-render
+/// `MonthsOverview` (and recompute the layout).
+@MainActor
+@Observable
+private final class MonthsWindow {
+    private(set) var range: Range<Int> = 0..<0
+
+    func update(_ new: Range<Int>) {
+        if new != range { range = new }
+    }
+}
+
+/// The months in `window`, each placed at its exact offset.
+private struct MonthRows: View {
+    let layout: MonthsLayout
+    let window: MonthsWindow
+    let width: CGFloat
+    let titleHeight: CGFloat
+    let loader: ImageLoader
+    let onSelect: (Asset) -> Void
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(window.range.clamped(to: layout.months.indices), id: \.self) { index in
+                let month = layout.months[index]
+                VStack(alignment: .leading, spacing: MonthsLayout.titleSpacing) {
+                    Text(month.title)
+                        .font(.title2.weight(.bold))
+                        .lineLimit(1)
+                        .frame(height: titleHeight, alignment: .bottomLeading)
+                        .accessibilityAddTraits(.isHeader)
+                    MonthMosaic(plan: month.plan, isLoaded: month.isLoaded, width: width, loader: loader, onSelect: onSelect)
+                }
+                .frame(height: layout.heights[index], alignment: .topLeading)
+                .padding(.horizontal, MonthMosaic.margin)
+                .offset(y: layout.offsets[index])
+                .id(month.id)
+            }
+        }
     }
 }
 
@@ -145,6 +199,28 @@ struct MonthMosaic: View {
 
     private var cell: CGFloat { max(0, (width - 2 * Self.spacing) / 3) }
     private var big: CGFloat { 2 * cell + Self.spacing }
+
+    /// The mosaic's exact height, matching `body` (which is framed to it), so `MonthsLayout`
+    /// knows where every month is without building it.
+    static func height(plan: MonthHighlights.Plan, isLoaded: Bool, width: CGFloat) -> CGFloat {
+        let s = spacing
+        let cell = max(0, (width - 2 * s) / 3)
+        guard isLoaded else { return cell }
+        let count = plan.tiles.count
+        switch plan.layout {
+        case .row:
+            switch count {
+            case 0: return 0
+            case 1: return width * 0.66
+            case 2: return (width - s) / 2
+            default: return cell
+            }
+        case .wideTop:
+            return width * 0.66 + (count > 1 ? s + cell : 0)
+        case .feature:
+            return 2 * cell + s + (count > 3 ? s + cell : 0)
+        }
+    }
 
     var body: some View {
         let s = Self.spacing
@@ -167,7 +243,7 @@ struct MonthMosaic: View {
                     }
                 case .wideTop:
                     tile(tiles[0], width: width, height: width * 0.66, size: .preview)
-                    row(tiles.dropFirst().prefix(3))
+                    if tiles.count > 1 { row(tiles.dropFirst().prefix(3)) }
                 case .feature(let featuredOnLeft):
                     HStack(alignment: .top, spacing: s) {
                         if featuredOnLeft { tile(tiles[0], width: big, height: big, size: .preview) }
@@ -176,10 +252,11 @@ struct MonthMosaic: View {
                         }
                         if !featuredOnLeft { tile(tiles[0], width: big, height: big, size: .preview) }
                     }
-                    row(tiles.dropFirst(3).prefix(3))
+                    if tiles.count > 3 { row(tiles.dropFirst(3).prefix(3)) }
                 }
             }
         }
+        .frame(width: width, height: Self.height(plan: plan, isLoaded: isLoaded, width: width), alignment: .topLeading)
     }
 
     private func row(_ slice: ArraySlice<LibraryGridModel.DayTile>) -> some View {
