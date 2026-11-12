@@ -360,6 +360,18 @@ public final class LibraryGridModel {
         return monthAssets[month][offset]
     }
 
+    /// The first grid cell of month `id`.
+    public func firstGridIndex(ofMonth id: String) -> Int? {
+        guard let month = monthIndexByID[id], month < monthStarts.count else { return nil }
+        return monthStarts[month]
+    }
+
+    /// The month of grid cell `index` (loaded or not).
+    public func gridMonthID(atGridIndex index: Int) -> String? {
+        guard let (month, _) = cell(at: index) else { return nil }
+        return months[month].id
+    }
+
     /// The grid cell of a loaded asset.
     public func gridIndex(ofAsset assetID: String) -> Int? {
         guard let monthID = monthIDByAssetID[assetID], let month = monthIndexByID[monthID],
