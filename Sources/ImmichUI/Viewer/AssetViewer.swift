@@ -81,6 +81,9 @@ public struct AssetViewer: View {
             }
         }
         .preferredColorScheme(.dark)
+        .onChange(of: neighboursMayLoad, initial: true) { _, mayLoad in
+            if store.neighboursMayLoad != mayLoad { store.neighboursMayLoad = mayLoad }
+        }
         #if os(iOS)
         .statusBarHidden(!chromeVisible)
         .interactiveDismissDisabled(trashInteractionBlocked)
@@ -177,10 +180,20 @@ public struct AssetViewer: View {
     }
 
     private func page(_ asset: Asset) -> some View {
-        ViewerPage(model: store.model(for: asset), isActive: currentID == asset.id,
+        ViewerPage(model: store.model(for: asset), store: store, isActive: currentID == asset.id,
                    livePlaybackAllowed: scenePhase == .active && !showsInfo && !showsAccessibleMenu && !trashInteractionBlocked) {
             withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { chromeVisible.toggle() }
         }
+    }
+
+    /// Other pages load their previews once the current one has its own (or failed), so the
+    /// photo on screen gets the whole connection first. When the viewer opens, the lazy pager
+    /// briefly builds the window's first page before it scrolls to the photo, and that page used
+    /// to start downloading an unrelated preview (measured). Published through the store, which
+    /// pages observe themselves: values passed from here don't reach pages already built.
+    private var neighboursMayLoad: Bool {
+        guard let model = currentModel else { return true }
+        return model.image != nil || model.error != nil
     }
 
     private func recentrePageWindow() {
@@ -387,6 +400,8 @@ public struct AssetViewer: View {
 /// current page's loaded details (place, favorite) and swiping back doesn't reload.
 @MainActor @Observable
 final class ViewerStore {
+    /// Whether pages other than the current one may load (see `AssetViewer.neighboursMayLoad`).
+    var neighboursMayLoad = true
     @ObservationIgnored private var models: [String: ViewerAssetModel] = [:]
     @ObservationIgnored private let service: any ImmichService
     @ObservationIgnored private let loader: ImageLoader
@@ -415,6 +430,7 @@ final class ViewerStore {
 /// neighbours the lazy pager builds ahead are ready before you swipe to them.
 private struct ViewerPage: View {
     let model: ViewerAssetModel
+    let store: ViewerStore
     let isActive: Bool
     var livePlaybackAllowed = true
     let onTap: () -> Void
@@ -504,7 +520,9 @@ private struct ViewerPage: View {
             model.stopLivePhotoPlayback()
             model.setLivePhotoZoomed(false)
         }
-        .task { if !model.isLoaded { await model.load() } }
+        .task(id: isActive || store.neighboursMayLoad) {
+            if (isActive || store.neighboursMayLoad) && !model.isLoaded { await model.load() }
+        }
     }
 
     private func retryLivePhoto() {
@@ -524,8 +542,9 @@ private struct ViewerPage: View {
 
 #Preview("Viewer page") {
     let mock = MockImmichService.preview
-    ViewerPage(model: ViewerAssetModel(asset: MockLibrary.standard.assets[0], service: mock, loader: ImageLoader(service: mock, disk: nil)),
-               isActive: true, onTap: {})
+    let loader = ImageLoader(service: mock, disk: nil)
+    ViewerPage(model: ViewerAssetModel(asset: MockLibrary.standard.assets[0], service: mock, loader: loader),
+               store: ViewerStore(service: mock, loader: loader), isActive: true, onTap: {})
 }
 
 #Preview("Viewer with Trash") {
