@@ -87,7 +87,7 @@ struct LibraryGridScroll: View {
             }
             .onScrollPhaseChange { _, phase in
                 guard phase == .interacting, !scrollMetrics.isPinching else { return }
-                scrollMetrics.userScrolled = true
+                scrollMetrics.pinnedToNewest = false
                 // The finger takes over: what the scroll view reports is where it is.
                 scrollMetrics.pendingOffset = nil
             }
@@ -108,7 +108,16 @@ struct LibraryGridScroll: View {
             )
             #endif
             .onChange(of: viewerScrollTarget) { _, id in
-                if let id, let index = model.gridIndex(ofAsset: id) { scroll(toCell: index, anchor: 0.5) }
+                guard let id, let index = model.gridIndex(ofAsset: id) else { return }
+                scrollMetrics.pinnedToNewest = false
+                scroll(toCell: index, anchor: 0.5)
+            }
+            // Months near the newest can hold more or fewer photos than the server's first
+            // counts: while the grid is still at the newest photos as opened, keep it there.
+            .onChange(of: model.gridItemCount) { _, _ in
+                if scrollMetrics.pinnedToNewest, let newest = newestCell {
+                    scroll(toCell: newest.index, anchor: newest.anchor)
+                }
             }
             // Shown again later (e.g. after Months): treat the next layout as a first layout.
             .onDisappear {
@@ -208,16 +217,12 @@ struct LibraryGridScroll: View {
         return model.newestFirst ? (0, 0) : (count - 1, 1)
     }
 
-    /// Opens at the newest photos, and again once their months have loaded (real counts can differ
-    /// from the server's bucket counts), unless the user has started scrolling.
+    /// Opens at the newest photos and stays there while their months load (see
+    /// `ScrollMetrics.pinnedToNewest`), until the user or a jump moves the grid.
     private func openAtNewest() {
         guard let newest = newestCell else { return }
         scroll(toCell: newest.index, anchor: newest.anchor)
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(400))
-            guard scrollMetrics.geometry != nil, !scrollMetrics.userScrolled, let newest = newestCell else { return }
-            scroll(toCell: newest.index, anchor: newest.anchor)
-        }
+        scrollMetrics.pinnedToNewest = true
     }
 
     /// The Library tab was tapped again: back to the newest photos, like Photos.
@@ -228,12 +233,17 @@ struct LibraryGridScroll: View {
         Task { @MainActor in
             await Task.yield()
             scroll(toCell: newest.index, anchor: newest.anchor, animation: .smooth(duration: 0.45))
+            scrollMetrics.pinnedToNewest = true
         }
     }
 
     /// Months loaded with a slightly different number of items than their placeholders moved
     /// the photo in the middle of the screen to another cell: scroll so it stays where it was.
     private func keepInPlace(_ shift: LibraryGridModel.GridShift?) {
+        if scrollMetrics.pinnedToNewest, let newest = newestCell {
+            scroll(toCell: newest.index, anchor: newest.anchor)
+            return
+        }
         guard let shift, let geometry = scrollMetrics.geometry, pinch.liveScale == 1, pinch.settleScale == 1 else { return }
         let layout = gridLayout(width: geometry.containerSize.width)
         // Where the photo was on screen, from the layout before the change.
@@ -246,6 +256,7 @@ struct LibraryGridScroll: View {
     /// Opened from Months: a day centres that photo, a month card shows the month at the top.
     private func scrollToPendingMonth() {
         guard scrollMetrics.geometry != nil else { return }
+        if model.pendingScrollAssetID != nil || model.pendingScrollMonthID != nil { scrollMetrics.pinnedToNewest = false }
         if let assetID = model.pendingScrollAssetID {
             model.pendingScrollAssetID = nil
             if let index = model.gridIndex(ofAsset: assetID) { scroll(toCell: index, anchor: 0.5) }
@@ -293,6 +304,7 @@ struct LibraryGridScroll: View {
     /// cells had on screen and springs to its real size: one continuous motion.
     private func switchDensity(to density: GridDensity, fromVisualScale visual: CGFloat) {
         guard density != model.density else { return }
+        scrollMetrics.pinnedToNewest = false
         let ratio = CGFloat(density.rawValue) / CGFloat(model.density.rawValue)
         var transaction = Transaction()
         transaction.disablesAnimations = true
@@ -360,8 +372,9 @@ private final class ScrollMetrics {
     var isPinching = false
     /// The grid has been opened at the newest photos once.
     var didOpen = false
-    /// The user has touched the grid (then it is never scrolled for them on open).
-    var userScrolled = false
+    /// Opened at the newest photos and not moved since: the grid follows the newest photos
+    /// while their months load and change the number of cells.
+    var pinnedToNewest = false
 
     func setPending(_ offset: Double) {
         pendingOffset = offset

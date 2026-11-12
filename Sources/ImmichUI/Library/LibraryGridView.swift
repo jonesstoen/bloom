@@ -10,7 +10,6 @@ public struct LibraryGridView: View {
     @State private var model: LibraryGridModel
     @State private var selection: LibrarySelectionModel
     @State private var viewerItem: ViewerItem?
-    @State private var scrollSync: Task<Void, Never>?
     @State private var transitionSourceID: String?
     @State private var viewerScrollTarget: String?
     @State private var densityRequest: DensityRequest?
@@ -229,20 +228,15 @@ public struct LibraryGridView: View {
             guard transitionSourceID != id else { return }
             transitionSourceID = id
             model.assetShownInViewer(id)
+        }, onSettle: { id in
             // Keep the photo's cell on screen behind the viewer (so closing zooms back into it),
-            // but only once swiping pauses: scrolling the grid on every swipe loads thumbnails
-            // the user can't see and makes paging stutter.
-            scrollSync?.cancel()
-            scrollSync = Task {
-                try? await Task.sleep(for: .milliseconds(350))
-                if !Task.isCancelled { viewerScrollTarget = id }
-            }
+            // but only once paging has come to rest: scrolling the grid on every swipe loads
+            // thumbnails the user can't see and makes paging stutter.
+            viewerScrollTarget = id
         })
     }
 
     private func restore(_ asset: Asset) async throws {
-        scrollSync?.cancel()
-        scrollSync = nil
         viewerScrollTarget = nil
         let result = try await model.restoreFromTrash([asset], perform: onRestore)
         guard result.confirmedIDs.contains(asset.id) else { throw ImmichServiceError.invalidResponse }
@@ -250,8 +244,6 @@ public struct LibraryGridView: View {
     }
 
     private func moveToTrash(_ asset: Asset) async throws {
-        scrollSync?.cancel()
-        scrollSync = nil
         viewerScrollTarget = nil
         let result = try await model.moveToTrash([asset])
         guard result.confirmedIDs.contains(asset.id) else { throw ImmichServiceError.invalidResponse }

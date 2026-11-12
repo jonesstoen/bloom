@@ -14,6 +14,8 @@ public struct AssetViewer: View {
     let service: any ImmichService
     let loader: ImageLoader
     let onSelection: (String) -> Void
+    /// The photo on screen once paging has come to rest (or after a jump from the strip).
+    let onSettle: (String) -> Void
     private let initialID: String
     /// Position of each asset, built once: the bars look up the current item on every swipe.
     private let indexByID: [String: Int]
@@ -36,12 +38,13 @@ public struct AssetViewer: View {
     public init(assets: [Asset], selectedID: String, service: any ImmichService,
                 loader: ImageLoader? = nil, thumbnails: ThumbnailImageCache? = nil,
                 onMoveToTrash: (@MainActor (Asset) async throws -> Void)? = nil,
-                onRestore: (@MainActor (Asset) async throws -> Void)? = nil, onSelection: @escaping (String) -> Void = { _ in }) {
+                onRestore: (@MainActor (Asset) async throws -> Void)? = nil, onSelection: @escaping (String) -> Void = { _ in }, onSettle: @escaping (String) -> Void = { _ in }) {
         let loader = loader ?? ImageLoader(service: service)
         self.assets = assets
         self.service = service
         self.loader = loader
         self.onSelection = onSelection
+        self.onSettle = onSettle
         self.allowsTrash = onMoveToTrash != nil
         self.allowsRestore = onRestore != nil
         _trash = State(initialValue: ViewerTrashModel(mode: onRestore != nil ? .restore : .trash, action: onRestore ?? onMoveToTrash))
@@ -158,7 +161,9 @@ public struct AssetViewer: View {
             .scrollPosition(id: $selectedID)
             .onScrollPhaseChange { _, phase in
                 // Move the window once paging has settled, never mid-swipe.
-                if phase == .idle { recentrePageWindow() }
+                guard phase == .idle else { return }
+                recentrePageWindow()
+                onSettle(currentID)
             }
             .scrollIndicators(.hidden)
             .scrollDisabled(trashInteractionBlocked)
@@ -208,6 +213,7 @@ public struct AssetViewer: View {
             pageWindow = window
         }
         selectedID = id
+        onSettle(id)
     }
 
     private func step(_ delta: Int) {
