@@ -218,6 +218,8 @@
 "Couldn't add to the album. Please try again." = "Kunne ikke legge til i albumet. Prøv igjen.";
 "Couldn't create the album. Please try again." = "Kunne ikke opprette albumet. Prøv igjen.";
 "Created «%@» with %lld items." = "Opprettet «%@» med %lld objekter.";
+"Created «%@»." = "Opprettet «%@».";
+"Created «%@», but couldn't confirm the added items. Open the album before trying again." = "Opprettet «%@», men kunne ikke bekrefte at objektene ble lagt til. Åpne albumet før du prøver igjen.";
 "Added %lld items to «%@»." = "La til %lld objekter i «%@».";
 "%lld were already there." = "%lld var der allerede.";
 "%lld couldn't be added." = "%lld kunne ikke legges til.";

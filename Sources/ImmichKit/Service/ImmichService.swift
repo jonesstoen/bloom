@@ -27,6 +27,10 @@ public protocol ImmichService: Sendable {
     /// - Parameter shared: `true` only shared albums, `false` only unshared ones, `nil` all.
     func albums(shared: Bool?) async throws -> [Album]
 
+    /// Albums owned by this user or shared with them as an editor. This is a read;
+    /// actual additions still require Allow Changes and server authorization.
+    func albumsForAdding() async throws -> [Album]
+
     /// `GET /albums/{id}`: one album's metadata. Its assets come from the timeline with `.album(id)`.
     func album(id: String) async throws -> Album
 
@@ -87,7 +91,8 @@ public protocol ImmichService: Sendable {
     /// Restores only these specific assets from trash, after explicit confirmation.
     func restoreAssets(assetIDs: [String]) async throws -> RestoreResult
 
-    /// Creates an album (`POST /albums`) with these assets. Returns the new album's id.
+    /// Creates an album (`POST /albums`), requesting these initial assets. Returns only
+    /// the new album's id, not a receipt for inclusion of the requested assets.
     /// Requirements, not just extension methods: the UI holds `any ImmichService`, and an
     /// extension-only method would always dispatch to the refusing default.
     func createAlbum(name: String, assetIDs: [String]) async throws -> String

@@ -73,6 +73,7 @@ public struct EditGuardedService: ImmichService {
         try await base.thumbnail(assetID: assetID, size: size)
     }
     public func albums(shared: Bool?) async throws -> [Album] { try await base.albums(shared: shared) }
+    public func albumsForAdding() async throws -> [Album] { try await base.albumsForAdding() }
     public func album(id: String) async throws -> Album { try await base.album(id: id) }
     public func people(withHidden: Bool) async throws -> [Person] { try await base.people(withHidden: withHidden) }
     public func person(id: String) async throws -> Person { try await base.person(id: id) }

@@ -213,6 +213,11 @@ public actor MockImmichService: ImmichService {
         return allAlbums().filter { shared == nil || $0.isShared == shared }
     }
 
+    /// Mock albums belong to the current user, including the shared examples.
+    public func albumsForAdding() async throws -> [Album] {
+        try await albums(shared: nil)
+    }
+
     /// Throws HTTP 400 for an unknown id, as the server does for albums the user cannot access.
     public func album(id: String) async throws -> Album {
         try await begin(.album(id))

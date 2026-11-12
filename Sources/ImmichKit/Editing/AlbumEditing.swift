@@ -16,6 +16,11 @@ public struct AlbumAddResult: Sendable, Equatable {
 }
 
 extension ImmichService {
+    /// Custom services without role metadata cannot establish access to shared albums.
+    public func albumsForAdding() async throws -> [Album] {
+        try await albums().filter { !$0.isShared }
+    }
+
     /// Services that can't edit albums (test doubles) refuse; the live and mock services override.
     public func createAlbum(name: String, assetIDs: [String]) async throws -> String {
         throw ImmichServiceError.unexpectedStatus(501)
@@ -36,6 +41,34 @@ enum AlbumName {
 }
 
 extension LiveImmichService {
+    public func albumsForAdding() async throws -> [Album] {
+        var albums: [Album] = []
+        var seen = Set<String>()
+        // Ownership is independent of sharing. Two list requests also avoid requiring
+        // user-profile access or fetching each album separately just to find its role.
+        for owned in [true, false] {
+            let output = try await Self.mapErrors {
+                try await client.getAllAlbums(query: .init(isOwned: owned))
+            }
+            switch output {
+            case .ok(let ok):
+                guard case .json(let dtos) = ok.body else { throw ImmichServiceError.invalidResponse }
+                for dto in dtos {
+                    // For shared-with-me albums the spec puts the owner first and
+                    // the authenticated user second; later editors are other people.
+                    let canAdd = owned || (dto.albumUsers.first?.role == .owner
+                        && dto.albumUsers.count > 1 && dto.albumUsers[1].role == .editor)
+                    if canAdd, seen.insert(dto.id.lowercased()).inserted {
+                        albums.append(Album(dto: dto))
+                    }
+                }
+            case .undocumented(let status, _):
+                throw Self.error(forStatus: status)
+            }
+        }
+        return albums
+    }
+
     /// `POST /albums` (201 Created). Returns the new album's id.
     public func createAlbum(name: String, assetIDs: [String]) async throws -> String {
         let albumName = try AlbumName.validated(name)

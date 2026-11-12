@@ -27,7 +27,7 @@ final class AlbumPickerModel {
     func load() async {
         isLoading = true
         defer { isLoading = false }
-        do { albums = try await service.albums().filter { !$0.isShared } ; loadError = nil }
+        do { albums = try await service.albumsForAdding(); loadError = nil }
         catch { loadError = tr("Couldn't load albums. Please try again.") }
     }
 
@@ -45,15 +45,28 @@ final class AlbumPickerModel {
     }
 
     func createAlbum(named name: String) async {
-        guard !isWorking, !name.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isWorking, !name.isEmpty else { return }
         isWorking = true
         defer { isWorking = false }
+        let albumID: String
         do {
-            _ = try await service.createAlbum(name: name, assetIDs: assetIDs)
-            outcome = tr("Created «%@» with %lld items.", name.trimmingCharacters(in: .whitespaces), Int64(assetIDs.count))
-            NotificationCenter.default.post(name: .bloomAlbumsDidChange, object: nil)
+            albumID = try await service.createAlbum(name: name, assetIDs: [])
         } catch {
             outcome = tr("Couldn't create the album. Please try again.")
+            return
+        }
+        defer { NotificationCenter.default.post(name: .bloomAlbumsDidChange, object: nil) }
+        let createdMessage = tr("Created «%@».", name)
+        guard !assetIDs.isEmpty else {
+            outcome = createdMessage
+            return
+        }
+        do {
+            let result = try await service.addAssets(toAlbum: albumID, assetIDs: assetIDs)
+            outcome = createdMessage + " " + Self.message(for: result, albumName: name)
+        } catch {
+            outcome = tr("Created «%@», but couldn't confirm the added items. Open the album before trying again.", name)
         }
     }
 
@@ -65,7 +78,7 @@ final class AlbumPickerModel {
     }
 }
 
-/// The sheet behind "Add to Album": New Album… and the user's own albums.
+/// The sheet behind "Add to Album": New Album… and albums the user can edit.
 struct AlbumPickerSheet: View {
     @State private var model: AlbumPickerModel
     @State private var naming = false
@@ -97,7 +110,12 @@ struct AlbumPickerSheet: View {
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button(tr("Cancel")) { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(tr("Cancel")) { dismiss() }
+                        .disabled(model.isWorking)
+                }
+            }
             .alert(tr("New Album"), isPresented: $naming) {
                 TextField(tr("Title"), text: $newName)
                 Button(tr("Cancel"), role: .cancel) { newName = "" }
@@ -108,6 +126,9 @@ struct AlbumPickerSheet: View {
             }
             .task { await model.load() }
         }
+        #if os(iOS)
+        .interactiveDismissDisabled(model.isWorking)
+        #endif
     }
 }
 
