@@ -37,7 +37,7 @@ final class RestoreSelectionTests: XCTestCase {
     }
 
     func testRestoreCannotBeRequestedFromTheMainLibraryContext() async throws {
-        let assets = (1...2).map { month in
+        let assets = (1...2).map { (month: Int) in
             Asset(id: "active-\(month)", kind: .image,
                   takenAt: Asset.localCalendar.date(from: DateComponents(year: 2024, month: month, day: 4))!)
         }

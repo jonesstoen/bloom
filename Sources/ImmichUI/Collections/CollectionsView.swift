@@ -93,11 +93,18 @@ public struct CollectionsView: View {
     }
 
     private func loadAll(force: Bool = false) async {
-        async let memories: Void = (force || !model.loadedMemories) ? model.loadMemories() : ()
-        async let albums: Void = (force || !model.loadedAlbums) ? model.loadAlbums() : ()
-        async let people: Void = (force || !model.loadedPeople) ? model.loadPeople() : ()
-        async let places: Void = (force || !model.loadedPlaces) ? model.loadPlaces() : ()
-        async let pinned: Void = (force || !model.loadedPinnedCovers) ? model.loadPinnedCovers() : ()
+        let model = model
+        let shouldLoadMemories = force || !model.loadedMemories
+        let shouldLoadAlbums = force || !model.loadedAlbums
+        let shouldLoadPeople = force || !model.loadedPeople
+        let shouldLoadPlaces = force || !model.loadedPlaces
+        let shouldLoadPinnedCovers = force || !model.loadedPinnedCovers
+
+        async let memories: Void = shouldLoadMemories ? model.loadMemories() : ()
+        async let albums: Void = shouldLoadAlbums ? model.loadAlbums() : ()
+        async let people: Void = shouldLoadPeople ? model.loadPeople() : ()
+        async let places: Void = shouldLoadPlaces ? model.loadPlaces() : ()
+        async let pinned: Void = shouldLoadPinnedCovers ? model.loadPinnedCovers() : ()
         _ = await (memories, albums, people, places, pinned)
     }
 
