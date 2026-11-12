@@ -13,12 +13,9 @@ public struct LibraryGridView: View {
     @State private var scrollSync: Task<Void, Never>?
     @State private var transitionSourceID: String?
     @State private var viewerScrollTarget: String?
-    /// Follows the fingers while pinching (never animated), relative to the last density switch.
-    @State private var liveScale: CGFloat = 1
-    /// Bridges a density switch: the new layout starts at the old cell size and springs to 1.
-    @State private var settleScale: CGFloat = 1
-    /// Magnification at which the current density was reached during this pinch.
-    @State private var pinchBaseline: CGFloat = 1
+    /// The pinch's visual scale, read only by `PinchScaleEffect` so a pinch frame doesn't
+    /// re-render this whole view (header, menus, scroll view).
+    @State private var pinch = PinchScale()
     /// Latest scroll geometry, kept outside observation so scrolling doesn't re-render the view.
     @State private var scrollMetrics = ScrollMetrics()
     /// Years / Months / All (the Library tab only), when no `chrome` shares it with the tab bar.
@@ -443,7 +440,7 @@ public struct LibraryGridView: View {
             #if os(iOS)
             // Not clipped: the grid continues behind the tab bar and the Years/Months/All switcher,
             // like Photos (clipping cut it off above the tab bar).
-            .scaleEffect(liveScale * settleScale, anchor: .center)
+            .modifier(PinchScaleEffect(pinch: pinch))
             .simultaneousGesture(
                 MagnifyGesture()
                     .onChanged { value in pinchChanged(value) }
@@ -560,7 +557,7 @@ public struct LibraryGridView: View {
     /// Months loaded with a slightly different number of items than their placeholders moved
     /// the photo in the middle of the screen to another cell: scroll so it stays where it was.
     private func keepInPlace(_ shift: LibraryGridModel.GridShift?) {
-        guard let shift, let geometry = scrollMetrics.geometry, liveScale == 1, settleScale == 1 else { return }
+        guard let shift, let geometry = scrollMetrics.geometry, pinch.liveScale == 1, pinch.settleScale == 1 else { return }
         let layout = gridLayout(width: geometry.containerSize.width)
         // Where the photo was on screen, from the layout before the change.
         let screenY = Double(layout.origin(of: shift.oldIndex).y) - geometry.contentOffset.y
@@ -589,24 +586,24 @@ public struct LibraryGridView: View {
     /// through several densities.
     private func pinchChanged(_ value: MagnifyGesture.Value) {
         guard !mutationBlocked else { return }
-        let relative = value.magnification / pinchBaseline
+        let relative = value.magnification / pinch.baseline
         let next = model.density.pinched(by: relative)
         if next != model.density {
-            pinchBaseline = value.magnification
-            switchDensity(to: next, fromVisualScale: liveScale)
+            pinch.baseline = value.magnification
+            switchDensity(to: next, fromVisualScale: pinch.liveScale)
         } else {
             // Rubber-band at the ends (3 or 7 columns): the grid only gives a little.
             let atLimit = (relative > 1 && model.density == .three) || (relative < 1 && model.density == .seven)
             let resistance: CGFloat = atLimit ? 0.15 : 0.6
             var transaction = Transaction()
             transaction.disablesAnimations = true
-            withTransaction(transaction) { liveScale = 1 + (relative - 1) * resistance }
+            withTransaction(transaction) { pinch.liveScale = 1 + (relative - 1) * resistance }
         }
     }
 
     private func pinchEnded() {
-        pinchBaseline = 1
-        withAnimation(reduceMotion ? nil : .spring(duration: 0.3)) { liveScale = 1 }
+        pinch.baseline = 1
+        withAnimation(reduceMotion ? nil : .spring(duration: 0.3)) { pinch.liveScale = 1 }
     }
 
     private func changeDensity(_ density: GridDensity) {
@@ -642,10 +639,10 @@ public struct LibraryGridView: View {
                 scrollMetrics.pendingOffset = anchor.offset
                 scroll(toY: anchor.offset + geometry.contentInsets.top, layout: newLayout, geometry: geometry)
             }
-            liveScale = 1
-            settleScale = reduceMotion ? 1 : visual * ratio * settleScale
+            pinch.liveScale = 1
+            pinch.settleScale = reduceMotion ? 1 : visual * ratio * pinch.settleScale
         }
-        withAnimation(reduceMotion ? nil : .spring(duration: 0.35, bounce: 0)) { settleScale = 1 }
+        withAnimation(reduceMotion ? nil : .spring(duration: 0.35, bounce: 0)) { pinch.settleScale = 1 }
     }
 
     private var footer: some View {
@@ -708,6 +705,27 @@ private struct LibraryHeaderSubtitle: View {
 @Observable
 private final class GridWindow {
     var rows: Range<Int> = 0..<0
+}
+
+/// The pinch's visual scale. Changes on every gesture frame, so only `PinchScaleEffect` reads it.
+@MainActor
+@Observable
+private final class PinchScale {
+    /// Follows the fingers while pinching (never animated), relative to the last density switch.
+    var liveScale: CGFloat = 1
+    /// Bridges a density switch: the new layout starts at the old cell size and springs to 1.
+    var settleScale: CGFloat = 1
+    /// Magnification at which the current density was reached during this pinch.
+    @ObservationIgnored var baseline: CGFloat = 1
+}
+
+/// Scales the grid with the pinch. Its own view, so each gesture frame updates only this.
+private struct PinchScaleEffect: ViewModifier {
+    let pinch: PinchScale
+
+    func body(content: Content) -> some View {
+        content.scaleEffect(pinch.liveScale * pinch.settleScale, anchor: .center)
+    }
 }
 
 private final class ScrollMetrics {
