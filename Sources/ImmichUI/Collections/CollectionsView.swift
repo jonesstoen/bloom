@@ -8,6 +8,8 @@ import SwiftUI
 public struct CollectionsView: View {
     @State private var model: CollectionsModel
     @State private var openMemory: MemoryStorySelection?
+    /// Sections folded with their chevron button, remembered between launches.
+    @AppStorage("collections.collapsed") private var collapsedRaw = ""
     private let accessory: AnyView?
     private let onRestore: (@MainActor ([Asset]) async throws -> RestoreResult)?
     private let refreshRevision: Int
@@ -33,12 +35,13 @@ public struct CollectionsView: View {
             }
             .padding(.vertical, 8)
         }
+        // Still the back button's title in pushed screens.
         .navigationTitle(tr("Collections"))
         #if os(iOS)
-        .navigationBarTitleDisplayMode(.large)
-        .toolbar {
-            if let accessory { ToolbarItem(placement: .topBarTrailing) { accessory } }
-        }
+        // Photos' own header: the large title with its buttons on the same line, the content
+        // scrolling under it. Pushed screens keep their navigation bar.
+        .toolbar(.hidden, for: .navigationBar)
+        .safeAreaInset(edge: .top, spacing: 0) { header }
         .fullScreenCover(item: $openMemory) { selection in
             MemoryStoryView(years: selection.years, startingYear: selection.startingYear,
                             service: model.service, loader: model.loader)
@@ -54,6 +57,39 @@ public struct CollectionsView: View {
         .refreshable { await loadAll(force: true) }
     }
 
+    #if os(iOS)
+    private var header: some View {
+        HStack(alignment: .center) {
+            Text(tr("Collections"))
+                .font(.largeTitle.weight(.bold))
+                .accessibilityAddTraits(.isHeader)
+            Spacer()
+            if let accessory { accessory }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 4)
+        .padding(.bottom, 12)
+        .background {
+            // Same fade as the Library's header.
+            Rectangle()
+                .fill(.regularMaterial)
+                .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.55),
+                                             .init(color: .clear, location: 1)],
+                                     startPoint: .top, endPoint: .bottom))
+                .ignoresSafeArea(edges: .top)
+                .allowsHitTesting(false)
+        }
+    }
+    #endif
+
+    private func fold(_ section: CollectionSection) -> SectionFold {
+        SectionFold(isCollapsed: CollapsedSections(rawValue: collapsedRaw).contains(section)) {
+            var sections = CollapsedSections(rawValue: collapsedRaw)
+            sections.toggle(section)
+            withAnimation(.snappy(duration: 0.3)) { collapsedRaw = sections.rawValue }
+        }
+    }
+
     private func loadAll(force: Bool = false) async {
         async let memories: Void = (force || !model.loadedMemories) ? model.loadMemories() : ()
         async let albums: Void = (force || !model.loadedAlbums) ? model.loadAlbums() : ()
@@ -67,7 +103,7 @@ public struct CollectionsView: View {
 
     private var memoriesRow: some View {
         let years = MemoryStoryModel.groupedYears(from: model.memories)
-        return CollectionRow(title: tr("Memories")) {
+        return CollectionRow(title: tr("Memories"), fold: fold(.memories)) {
             ForEach(years) { year in
                 Button { openMemory = MemoryStorySelection(years: years, startingYear: year.year) } label: {
                     MemoryCard(year: year, loader: model.loader)
@@ -78,7 +114,7 @@ public struct CollectionsView: View {
     }
 
     private var pinnedRow: some View {
-        CollectionRow(title: tr("Pinned")) {
+        CollectionRow(title: tr("Pinned"), fold: fold(.pinned)) {
             NavigationLink {
                 FavoritesView(service: model.service, loader: model.loader)
             } label: {
@@ -108,7 +144,8 @@ public struct CollectionsView: View {
 
     @ViewBuilder
     private var albumsRow: some View {
-        CollectionRow(title: tr("Albums"), destination: AnyView(AlbumsView(service: model.service, loader: model.loader))) {
+        CollectionRow(title: tr("Albums"), destination: AnyView(AlbumsView(service: model.service, loader: model.loader)),
+                      fold: fold(.albums)) {
             if model.albums.isEmpty {
                 placeholderCards(loading: model.loadingAlbums || !model.loadedAlbums,
                                  failed: model.albumsError != nil, empty: tr("No albums yet"))
@@ -127,7 +164,8 @@ public struct CollectionsView: View {
 
     @ViewBuilder
     private var peopleRow: some View {
-        CollectionRow(title: tr("People"), destination: AnyView(PeopleView(service: model.service, loader: model.loader))) {
+        CollectionRow(title: tr("People"), destination: AnyView(PeopleView(service: model.service, loader: model.loader)),
+                      fold: fold(.people)) {
             if model.people.isEmpty {
                 placeholderCards(loading: model.loadingPeople || !model.loadedPeople,
                                  failed: model.peopleError != nil, empty: tr("No people yet"))
@@ -151,7 +189,7 @@ public struct CollectionsView: View {
     }
 
     private var placesRow: some View {
-        CollectionRow(title: tr("Places")) {
+        CollectionRow(title: tr("Places"), fold: fold(.places)) {
             ForEach(model.places.prefix(30), id: \.self) { city in
                 NavigationLink {
                     QueryGridView(title: city, query: Self.placeQuery(city), service: model.service, loader: model.loader)
@@ -169,7 +207,7 @@ public struct CollectionsView: View {
 
     /// Media Types, like Photos: two columns of rows with an icon.
     private var mediaTypesSection: some View {
-        CollectionListSection(title: tr("Media Types")) {
+        CollectionListSection(title: tr("Media Types"), fold: fold(.mediaTypes)) {
             NavigationLink {
                 QueryGridView(title: tr("Videos"), query: MetadataSearchQuery(filters: SearchFilters(kind: .video)),
                               service: model.service, loader: model.loader, emptyMessage: tr("Videos you upload appear here."))
@@ -183,7 +221,7 @@ public struct CollectionsView: View {
 
     /// Other collections backed by the timeline: recently added, archive and trash.
     private var otherSection: some View {
-        CollectionListSection(title: tr("Other")) {
+        CollectionListSection(title: tr("Other"), fold: fold(.other)) {
             NavigationLink {
                 TimelineCollectionView(title: tr("Recently Added"),
                                        options: TimelineOptions(newestFirst: false, sortsByDateAdded: true),
@@ -225,24 +263,30 @@ private struct MemoryStorySelection: Identifiable {
 private struct CollectionRow<Content: View>: View {
     let title: String
     var destination: AnyView?
+    var fold: SectionFold?
     @ViewBuilder let content: Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Group {
+            HStack {
                 if let destination {
                     NavigationLink { destination } label: { header(chevron: true) }
                         .buttonStyle(.plain)
                 } else {
                     header(chevron: false)
                 }
+                Spacer()
+                if let fold { SectionFoldButton(title: title, fold: fold) }
             }
             .padding(.horizontal, 20)
-            ScrollView(.horizontal) {
-                LazyHStack(alignment: .top, spacing: 12) { content }
-                    .padding(.horizontal, 20)
+            if fold?.isCollapsed != true {
+                ScrollView(.horizontal) {
+                    LazyHStack(alignment: .top, spacing: 12) { content }
+                        .padding(.horizontal, 20)
+                }
+                .scrollIndicators(.hidden)
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
-            .scrollIndicators(.hidden)
         }
     }
 
@@ -355,18 +399,53 @@ private struct MemoryCard: View {
 /// "Title ›" header above two columns of rounded rows, like Media Types in Photos.
 private struct CollectionListSection<Content: View>: View {
     let title: String
+    var fold: SectionFold?
     @ViewBuilder let content: Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(title).font(.title2.weight(.bold))
-                .accessibilityAddTraits(.isHeader)
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
-                content
+            HStack {
+                Text(title).font(.title2.weight(.bold))
+                    .accessibilityAddTraits(.isHeader)
+                Spacer()
+                if let fold { SectionFoldButton(title: title, fold: fold) }
             }
-            .buttonStyle(.plain)
+            if fold?.isCollapsed != true {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                    content
+                }
+                .buttonStyle(.plain)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
         .padding(.horizontal, 20)
+    }
+}
+
+/// Whether a section is folded, and how to fold or open it.
+private struct SectionFold {
+    let isCollapsed: Bool
+    let toggle: () -> Void
+}
+
+/// Photos' round chevron next to a section title: points down while open, right when folded.
+private struct SectionFoldButton: View {
+    let title: String
+    let fold: SectionFold
+
+    var body: some View {
+        Button(action: fold.toggle) {
+            Image(systemName: "chevron.down")
+                .font(.footnote.weight(.bold))
+                .foregroundStyle(.tint)
+                .rotationEffect(.degrees(fold.isCollapsed ? -90 : 0))
+                .frame(width: 30, height: 30)
+                .photosGlass(in: Circle())
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(CollectionSection.toggleLabel(title: title, isCollapsed: fold.isCollapsed))
     }
 }
 

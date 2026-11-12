@@ -201,3 +201,7 @@
 "Automatic follows your Home Screen setting for light, dark and tinted icons." = "Automatisk følger innstillingen på Hjem-skjermen for lyse, mørke og tonede symboler.";
 "Couldn't Change App Icon" = "Kunne ikke endre appsymbol";
 "Version %@ (%@)" = "Versjon %@ (%@)";
+
+/* Collections: fold a section */
+"Show %@" = "Vis %@";
+"Hide %@" = "Skjul %@";
