@@ -46,11 +46,9 @@ public struct LoginView: View {
     private var header: some View {
         Section {
             VStack(spacing: 12) {
-                Image(systemName: "photo.on.rectangle.angled")
-                    .font(.system(size: 56))
-                    .foregroundStyle(.tint)
-                    .accessibilityHidden(true)
-                Text(tr("Immich"))
+                BloomMark()
+                    .frame(width: 76, height: 76)
+                Text(tr("Bloom"))
                     .font(.largeTitle.bold())
                 Text(tr("Sign in to your Immich server to browse your photos and videos."))
                     .font(.subheadline)

@@ -187,3 +187,17 @@
 "Couldn't Restore" = "Kunne ikke gjenopprette";
 "Couldn't restore this item. Please try again." = "Kunne ikke gjenopprette dette objektet. Prøv igjen.";
 "Couldn't restore %@ items. Please try again." = "Kunne ikke gjenopprette %@ objekter. Prøv igjen.";
+
+/* About Bloom and the app icon */
+"Bloom" = "Bloom";
+"for Immich" = "for Immich";
+"About Bloom" = "Om Bloom";
+"Done" = "Ferdig";
+"App Icon" = "Appsymbol";
+"Automatic" = "Automatisk";
+"Light" = "Lys";
+"Dark" = "Mørk";
+"Tinted" = "Tonet";
+"Automatic follows your Home Screen setting for light, dark and tinted icons." = "Automatisk følger innstillingen på Hjem-skjermen for lyse, mørke og tonede symboler.";
+"Couldn't Change App Icon" = "Kunne ikke endre appsymbol";
+"Version %@ (%@)" = "Versjon %@ (%@)";

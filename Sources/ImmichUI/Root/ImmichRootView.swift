@@ -57,6 +57,7 @@ private struct ImmichTabs: View {
     @State private var selection: AppTab = .library
     /// Bumped when the Library tab is tapped while it is already open.
     @State private var libraryReselections = 0
+    @State private var showsAbout = false
 
     enum AppTab: Hashable { case library, collections, search }
 
@@ -101,10 +102,14 @@ private struct ImmichTabs: View {
             session.search.invalidateAfterLibraryMutation()
         }
         .modifier(MinimizeTabBarOnScroll())
+        .sheet(isPresented: $showsAbout) {
+            AboutBloomView(icons: AppIconModel(switcher: SystemAppIconSwitcher()))
+        }
     }
 
     private var accountMenu: some View {
         Menu {
+            Button(tr("About Bloom"), systemImage: "info.circle") { showsAbout = true }
             Button(tr("Sign Out"), systemImage: "rectangle.portrait.and.arrow.right", role: .destructive, action: signOut)
                 .disabled(isSigningOut || session.library.isMutating)
         } label: {
