@@ -86,6 +86,14 @@ public protocol ImmichService: Sendable {
 
     /// Restores only these specific assets from trash, after explicit confirmation.
     func restoreAssets(assetIDs: [String]) async throws -> RestoreResult
+
+    /// Creates an album (`POST /albums`) with these assets. Returns the new album's id.
+    /// Requirements, not just extension methods: the UI holds `any ImmichService`, and an
+    /// extension-only method would always dispatch to the refusing default.
+    func createAlbum(name: String, assetIDs: [String]) async throws -> String
+
+    /// Adds assets to an album (`PUT /albums/{id}/assets`).
+    func addAssets(toAlbum albumID: String, assetIDs: [String]) async throws -> AlbumAddResult
 }
 
 extension ImmichService {
