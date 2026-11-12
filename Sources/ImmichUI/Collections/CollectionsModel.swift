@@ -17,6 +17,11 @@ public final class CollectionsModel {
     /// Cities with photos, for the Places row.
     public private(set) var places: [String] = []
     public private(set) var loadedPlaces = false
+    /// The newest favorite photo, shown on the pinned Favorites card.
+    public private(set) var favoritesCoverID: String?
+    /// Where most photos were taken, shown on the pinned Map card.
+    public private(set) var mapCoverRegion: MapCoverRegion?
+    public private(set) var loadedPinnedCovers = false
     @ObservationIgnored public let service: any ImmichService
     @ObservationIgnored public let loader: ImageLoader
 
@@ -73,6 +78,27 @@ public final class CollectionsModel {
             places = result.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
         } catch {}
         loadedPlaces = true
+    }
+
+    /// Previews for the pinned cards. A bonus: a failure keeps the coloured cards.
+    public func loadPinnedCovers() async {
+        async let favorite = newestFavoriteID()
+        async let markers = try? service.mapMarkers()
+        let (favoriteID, mapMarkers) = await (favorite, markers)
+        guard !Task.isCancelled else { return }
+        favoritesCoverID = favoriteID
+        mapCoverRegion = mapMarkers.flatMap { MapCoverRegion(markers: $0) }
+        loadedPinnedCovers = true
+    }
+
+    /// The newest month with favorites, then its newest photo (same filter as the Favorites grid).
+    private func newestFavoriteID() async -> String? {
+        let options = TimelineOptions(isFavorite: true, newestFirst: true)
+        guard let buckets = try? await service.timeBuckets(options: options),
+              let newest = buckets.filter({ $0.count > 0 }).max(by: { ($0.year, $0.month) < ($1.year, $1.month) }),
+              let assets = try? await service.timeBucketAssets(bucketID: newest.id, options: options)
+        else { return nil }
+        return assets.max { $0.localDateTime < $1.localDateTime }?.id
     }
 
     static func sortedMemories(_ memories: [Memory]) -> [Memory] {

@@ -1,4 +1,5 @@
 import ImmichKit
+import MapKit
 import SwiftUI
 
 /// The Collections tab, laid out like the iOS 26 Photos app: horizontal rows of Memories,
@@ -58,7 +59,8 @@ public struct CollectionsView: View {
         async let albums: Void = (force || !model.loadedAlbums) ? model.loadAlbums() : ()
         async let people: Void = (force || !model.loadedPeople) ? model.loadPeople() : ()
         async let places: Void = (force || !model.loadedPlaces) ? model.loadPlaces() : ()
-        _ = await (memories, albums, people, places)
+        async let pinned: Void = (force || !model.loadedPinnedCovers) ? model.loadPinnedCovers() : ()
+        _ = await (memories, albums, people, places, pinned)
     }
 
     // MARK: Rows
@@ -81,15 +83,23 @@ public struct CollectionsView: View {
                 FavoritesView(service: model.service, loader: model.loader)
             } label: {
                 PinnedCard(title: tr("Favorites"), systemImage: "heart.fill") {
-                    LinearGradient(colors: [.pink.opacity(0.8), .orange.opacity(0.7)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                    if let id = model.favoritesCoverID {
+                        CollectionThumbnail(key: ImageKey(assetID: id, size: .thumbnail), loader: model.loader, symbol: "heart")
+                    } else {
+                        LinearGradient(colors: [.pink.opacity(0.8), .orange.opacity(0.7)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                    }
                 }
             }
             .buttonStyle(.plain)
             NavigationLink {
                 PhotoMapView(service: model.service, loader: model.loader)
             } label: {
-                PinnedCard(title: tr("Map"), systemImage: "map.fill") {
-                    LinearGradient(colors: [.teal.opacity(0.8), .blue.opacity(0.7)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                PinnedCard(title: tr("Map"), systemImage: model.mapCoverRegion == nil ? "map.fill" : nil) {
+                    if let region = model.mapCoverRegion {
+                        MapCoverView(region: region)
+                    } else {
+                        LinearGradient(colors: [.teal.opacity(0.8), .blue.opacity(0.7)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                    }
                 }
             }
             .buttonStyle(.plain)
@@ -274,17 +284,24 @@ private struct ImageCard: View {
     }
 }
 
-/// A pinned collection card: coloured background with a symbol and title.
+/// A pinned collection card: a preview (or a coloured background) with a symbol and title.
 private struct PinnedCard<Background: View>: View {
     let title: String
-    let systemImage: String
+    let systemImage: String?
     @ViewBuilder let background: Background
 
     var body: some View {
         background
             .frame(width: 160, height: 160)
+            .overlay {
+                // Keeps the white title readable on light photos and maps.
+                LinearGradient(colors: [.clear, .black.opacity(0.45)], startPoint: .center, endPoint: .bottom)
+            }
             .overlay(alignment: .topTrailing) {
-                Image(systemName: systemImage).font(.title2).foregroundStyle(.white).padding(12)
+                if let systemImage {
+                    Image(systemName: systemImage).font(.title2).foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.3), radius: 3).padding(12)
+                }
             }
             .overlay(alignment: .bottomLeading) {
                 Text(title).font(.headline).foregroundStyle(.white).padding(12)
@@ -427,4 +444,22 @@ public struct FavoritesView: View {
 
 #Preview("Favorites") {
     NavigationStack { FavoritesView(service: MockImmichService.preview) }
+}
+
+/// The pinned Map card's preview: a still map of where most photos were taken.
+private struct MapCoverView: View {
+    let region: MapCoverRegion
+
+    var body: some View {
+        Map(initialPosition: .region(MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: region.latitude, longitude: region.longitude),
+            span: MKCoordinateSpan(latitudeDelta: region.latitudeDelta, longitudeDelta: region.longitudeDelta))),
+            interactionModes: [])
+            .mapStyle(.standard(pointsOfInterest: .excludingAll))
+            // MapKit's required logo and Legal link sit at the bottom: lift them above the title.
+            .safeAreaPadding(.bottom, 34)
+            .allowsHitTesting(false)
+            // A new region (after a refresh) needs a new map: initialPosition is read once.
+            .id(region)
+    }
 }
