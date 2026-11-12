@@ -51,6 +51,23 @@ public enum GridPinchAnchor {
         return Result(offset: (newRow + fraction) * newPitch - focalY, index: index)
     }
 
+    /// Whether the item the offset maths found is among the cells SwiftUI reports on screen.
+    /// LazyVGrid only estimates the height of rows it hasn't built, so after a jump (opening at the
+    /// newest photos, a previous pinch) the maths can point far away; then it must not be used.
+    /// Without a report yet there is nothing to check against.
+    public static func isOnScreen(index: Int, visible: ClosedRange<Int>?) -> Bool {
+        visible?.contains(index) ?? true
+    }
+
+    /// The item in the middle of the cells on screen (middle row, middle column), the anchor when
+    /// the offset maths can't be trusted. Stays inside `visible` and before `itemCount`.
+    public static func centerIndex(of visible: ClosedRange<Int>, columns: Int, itemCount: Int) -> Int {
+        let columns = max(1, columns)
+        let middleRow = (visible.lowerBound / columns + visible.upperBound / columns) / 2
+        let index = middleRow * columns + columns / 2
+        return min(max(index, visible.lowerBound), visible.upperBound, max(0, itemCount - 1))
+    }
+
     /// The `UnitPoint.y` for `ScrollViewProxy.scrollTo(_:anchor:)` that puts an item's top edge at
     /// `itemTop` (measured from the top of the scroll view's frame). `scrollTo` aligns the anchor
     /// inside the area between the content insets: top = insetTop + y × (visibleHeight − itemHeight),

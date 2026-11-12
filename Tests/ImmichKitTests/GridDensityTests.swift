@@ -76,6 +76,23 @@ final class GridPinchAnchorTests: XCTestCase {
 final class GridScrollAnchorTests: XCTestCase {
     /// Values measured from SwiftUI's `scrollTo(_:anchor:)` with a 96 pt top and 40 pt bottom
     /// margin in a 600 pt tall scroll view (visible height 464) and a 50 pt item.
+    /// The offset maths is exact only when LazyVGrid has measured its rows. After a jump its
+    /// offsets are estimates: an anchor outside the cells on screen is not to be trusted (it moved
+    /// the centre photo ~80 items, about four weeks, on 7 → 3 columns in a simulator probe).
+    func testAnchorIsTrustedOnlyWhenItIsOnScreen() {
+        XCTAssertTrue(GridPinchAnchor.isOnScreen(index: 2880, visible: 2842...2918))
+        XCTAssertFalse(GridPinchAnchor.isOnScreen(index: 2097, visible: 2842...2918))
+        XCTAssertTrue(GridPinchAnchor.isOnScreen(index: 12, visible: nil), "No report yet: keep the maths")
+    }
+
+    func testFallbackAnchorIsTheMiddleOfTheCellsOnScreen() {
+        // Rows 568...583 of 5 columns on screen: the middle row is 575, middle column 2.
+        XCTAssertEqual(GridPinchAnchor.centerIndex(of: 2840...2919, columns: 5, itemCount: 2920), 2877)
+        // A last, partly filled row: never past the last item, never outside what is on screen.
+        XCTAssertEqual(GridPinchAnchor.centerIndex(of: 2915...2918, columns: 5, itemCount: 2919), 2917)
+        XCTAssertEqual(GridPinchAnchor.centerIndex(of: 0...0, columns: 7, itemCount: 1), 0)
+    }
+
     func testUnitAnchorMatchesHowScrollToPlacesItems() {
         for (top, expected) in [(96.0, 0.0), (199.5, 0.25), (303.0, 0.5), (510.0, 1.0)] {
             XCTAssertEqual(GridPinchAnchor.unitAnchorY(itemTop: top, itemHeight: 50, insetTop: 96, visibleHeight: 464),

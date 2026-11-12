@@ -475,11 +475,14 @@ public struct LibraryGridView: View {
     }
 
     @State private var densityProxy: ScrollViewProxy?
+    /// Re-checks that a pinch's anchor photo ended up on screen (see `confirmAnchor`).
+    @State private var anchorCheck: Task<Void, Never>?
 
     /// The loaded cells on screen changed: the header's date range, and whether the tab bar shows
     /// the Years / Months / All switcher. Only placeholders on screen: keep both as they were.
     private func screenCellsChanged(_ ids: [String]) {
         guard let range = model.gridRange(ofVisible: ids) else { return }
+        scrollMetrics.visibleRange = range
         model.screenRangeChanged(range)
         guard let chrome else { return }
         let away = LibraryChrome.isAway(visible: range, itemCount: model.gridItemCount,
@@ -591,48 +594,75 @@ public struct LibraryGridView: View {
     private func switchDensity(to density: GridDensity, proxy: ScrollViewProxy, fromVisualScale visual: CGFloat) {
         guard density != model.density else { return }
         let ratio = CGFloat(density.rawValue) / CGFloat(model.density.rawValue)
+        // The photo to keep in place: exact maths when the layout is measured, else the middle of
+        // the cells actually on screen (within half a row).
         let exact = exactAnchor(for: density)
-        let fallbackAnchor = exact == nil ? model.visibleCenterID : nil
+        if exact == nil { scrollMetrics.pendingOffset = nil }
+        // Kept in the middle of the screen: the photo is checked against the cells on screen, but
+        // its exact position on screen can't be (LazyVGrid's offsets are estimates after a jump).
+        let target = exact ?? centreAnchor()
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             model.density = density
             // Scrolled in the same transaction as the new column count: SwiftUI applies it after
             // the relayout, so the photo in the middle of the screen doesn't move.
-            if let exact {
-                proxy.scrollTo(exact.id, anchor: exact.anchor)
-            } else if let fallbackAnchor {
-                proxy.scrollTo(fallbackAnchor, anchor: .center)
-            }
+            if let target { proxy.scrollTo(target.id, anchor: target.anchor) }
             liveScale = 1
             settleScale = reduceMotion ? 1 : visual * ratio * settleScale
         }
         withAnimation(reduceMotion ? nil : .spring(duration: 0.35, bounce: 0)) { settleScale = 1 }
+        if let target { confirmAnchor(target, proxy: proxy) }
     }
 
-    /// The cell at the centre of the scroll view (the point the pinch scale is anchored on) and
-    /// the `scrollTo` anchor that keeps it exactly there after switching to `density`.
-    private func exactAnchor(for density: GridDensity) -> (id: AnyHashable, anchor: UnitPoint)? {
+    /// The middle of the cells SwiftUI reports on screen.
+    private func centreAnchor() -> PinchTarget? {
+        guard let visible = scrollMetrics.visibleRange else {
+            return model.visibleCenterID.flatMap { id in
+                model.gridIndex(ofAsset: id).map { PinchTarget(id: id, anchor: .center, index: $0) }
+            }
+        }
+        let index = GridPinchAnchor.centerIndex(of: visible, columns: model.columnCount, itemCount: model.gridItemCount)
+        return model.gridItemID(atGridIndex: index).map { PinchTarget(id: $0, anchor: .center, index: index) }
+    }
+
+    /// `scrollTo` in the relayout lands on LazyVGrid's estimated row positions, which after a jump
+    /// can be weeks away (measured on the simulator). Once the new layout has been built around
+    /// where it landed, scroll to the photo again (now on measured rows, so it lands where it
+    /// should), and keep trying a few times while it still isn't on screen.
+    private func confirmAnchor(_ target: PinchTarget, proxy: ScrollViewProxy) {
+        anchorCheck?.cancel()
+        anchorCheck = Task { @MainActor in
+            for attempt in 0..<4 {
+                try? await Task.sleep(for: .milliseconds(40))
+                guard !Task.isCancelled else { return }
+                if attempt > 0, scrollMetrics.visibleRange?.contains(target.index) == true { return }
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { proxy.scrollTo(target.id, anchor: target.anchor) }
+            }
+        }
+    }
+
+    /// The cell at the centre of the scroll view (the point the pinch scale is anchored on), from
+    /// the offset maths. Only used when that cell is among the cells SwiftUI reports on screen:
+    /// after a jump LazyVGrid's offsets are estimates and the maths points weeks away.
+    private func exactAnchor(for density: GridDensity) -> PinchTarget? {
         guard let geometry = scrollMetrics.geometry else { return nil }
         // A fast pinch can switch again before the grid reports its new offset; then the offset
         // this view scrolled to last time is the current one (a stale offset jumped to 2021).
         let currentOffset = scrollMetrics.pendingOffset ?? geometry.contentOffset.y
-        let frameHeight = geometry.visibleRect.height
         let width = geometry.containerSize.width
         guard let result = GridPinchAnchor.anchor(
-            offset: currentOffset, focalX: width / 2, focalY: frameHeight / 2,
+            offset: currentOffset, focalX: width / 2, focalY: geometry.visibleRect.height / 2,
             width: width, spacing: Self.spacing, from: model.density.rawValue, to: density.rawValue,
             itemCount: model.gridItemCount
-        ), let id = model.gridItemID(atGridIndex: result.index) else { return nil }
+        ), GridPinchAnchor.isOnScreen(index: result.index, visible: scrollMetrics.visibleRange),
+              let id = model.gridItemID(atGridIndex: result.index) else { return nil }
         scrollMetrics.pendingOffset = result.offset
-        let cell = GridPinchAnchor.cellSize(width: width, spacing: Self.spacing, columns: density.rawValue)
-        let row = Double(result.index / density.rawValue)
-        let itemTop = row * (cell + Self.spacing) - result.offset
-        let y = GridPinchAnchor.unitAnchorY(itemTop: itemTop, itemHeight: cell,
-                                            insetTop: geometry.contentInsets.top,
-                                            visibleHeight: geometry.containerSize.height)
-        return (id, UnitPoint(x: 0.5, y: y))
+        return PinchTarget(id: id, anchor: .center, index: result.index)
     }
+
 
     private var footer: some View {
         Text(model.footerText)
@@ -688,10 +718,19 @@ private struct LibraryHeaderSubtitle: View {
     }
 }
 
+/// The photo a density switch keeps in place, and where.
+private struct PinchTarget {
+    let id: AnyHashable
+    let anchor: UnitPoint
+    let index: Int
+}
+
 private final class ScrollMetrics {
     var geometry: ScrollGeometry?
     /// Offset of the last density switch until the grid reports geometry for the new layout.
     var pendingOffset: Double?
+    /// Grid indices of the loaded cells SwiftUI last reported on screen.
+    var visibleRange: ClosedRange<Int>?
     /// The grid has been opened at the newest photos once.
     var didOpen = false
     /// The user has touched the grid (then it is never scrolled for them on open).
