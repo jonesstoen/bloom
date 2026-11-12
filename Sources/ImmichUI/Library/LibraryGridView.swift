@@ -246,6 +246,8 @@ public struct LibraryGridView: View {
     }
 
     private func open(_ asset: Asset) {
+        viewerTapTime = ContinuousClock.now
+        viewerTiming.notice("tap")
         transitionSourceID = asset.id
         viewerItem = ViewerItem(assets: model.viewerAssets(around: asset.id), selectedID: asset.id)
         onSelect(asset)

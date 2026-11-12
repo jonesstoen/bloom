@@ -2,6 +2,11 @@ import CoreGraphics
 import Foundation
 import ImmichKit
 import Observation
+import OSLog
+
+// TEMPORARY open-speed diagnostics (times and sizes only). Remove once measured.
+let viewerTiming = Logger(subsystem: "Bloom", category: "viewer")
+nonisolated(unsafe) var viewerTapTime: ContinuousClock.Instant?
 
 @MainActor @Observable
 public final class ViewerAssetModel {
@@ -85,13 +90,24 @@ public final class ViewerAssetModel {
         isLoaded = false
         error = nil
         defer { if generation == started { isLoading = false } }
+        let loadStart = ContinuousClock.now
+        let sinceTap = viewerTapTime.map { loadStart - $0 }
+        let isOpened = sinceTap.map { $0 < .seconds(2) } ?? false
+        if isOpened {
+            viewerTiming.notice("load start \(String(describing: sinceTap!), privacy: .public) after tap, placeholder=\(self.placeholder != nil)")
+        }
         if displayImage == nil, let data = await loader.memoryData(for: ImageKey(assetID: asset.id, size: .thumbnail)) {
             let thumbnail = await ThumbnailDecoder.decode(data)
             if generation == started, image == nil { placeholder = thumbnail }
         }
         do {
+            let cached = await loader.memoryData(for: ImageKey(assetID: asset.id, size: .preview)) != nil
             let data = try await loader.data(for: ImageKey(assetID: asset.id, size: .preview))
+            let downloaded = ContinuousClock.now
             let decoded = await ThumbnailDecoder.decode(data, maxPixelSize: 2560)
+            if isOpened {
+                viewerTiming.notice("preview \(data.count / 1024) KB inMemory=\(cached) fetch \(String(describing: downloaded - loadStart), privacy: .public) decode \(String(describing: ContinuousClock.now - downloaded), privacy: .public) total since tap \(String(describing: ContinuousClock.now - viewerTapTime!), privacy: .public)")
+            }
             try Task.checkCancellation()
             guard generation == started else { return }
             image = decoded
