@@ -18,6 +18,9 @@ public struct LibraryGridView: View {
     @State private var localScale: LibraryScale = .all
     /// Set by a year card: the month Months opens at.
     @State private var monthsScrollTarget: String?
+    /// Months and Years are kept once built (see `content`).
+    @State private var monthsBuilt = false
+    @State private var yearsBuilt = false
     /// Sort, filter and view options, remembered between launches (the Library tab only).
     @AppStorage("library.sortsByDateAdded") private var sortsByDateAdded = false
     @AppStorage("library.favoritesOnly") private var favoritesOnly = false
@@ -164,11 +167,13 @@ public struct LibraryGridView: View {
             }
             .onChange(of: scrollToNewestTrigger) { _, _ in
                 // The grid scrolls to the newest photos itself; this goes back to All.
-                if scale != .all { withAnimation(.snappy(duration: 0.25)) { scale = .all } }
+                if scale != .all { withAnimation(LibraryScale.switchAnimation) { scale = .all } }
             }
-            .onChange(of: scale) { old, _ in
+            .onChange(of: scale) { old, new in
                 // A year card's month applies to that one visit to Months only.
                 if old == .months { monthsScrollTarget = nil }
+                if new == .months { monthsBuilt = true }
+                if new == .years { yearsBuilt = true }
             }
             .task(id: usesLargeTitle ? menuOptions : model.options) {
                 if usesLargeTitle && menuOptions != model.options { await model.setOptions(menuOptions) }
@@ -185,6 +190,11 @@ public struct LibraryGridView: View {
                 if usesLargeTitle && model.phase == .loaded {
                     try? await Task.sleep(for: .seconds(1.5))
                     if !Task.isCancelled { await model.loadAllMonths() }
+                    // Ready to zoom to on the first switch, not only from the second.
+                    if !Task.isCancelled && model.allMonthsLoaded {
+                        monthsBuilt = true
+                        yearsBuilt = true
+                    }
                 }
             }
             .modifier(LibrarySelectionPresentation(selection: selection))
@@ -280,14 +290,18 @@ public struct LibraryGridView: View {
             )
         case .loaded:
             if usesLargeTitle {
-                // The grid stays alive (hidden) under Years and Months: rebuilding 10 000+ cells
-                // made returning to All slow, and it keeps its scroll position.
+                // Every level stays alive while hidden: switching zooms between them like Photos
+                // (`LibraryScale.zoom`), and the grid keeps its position (rebuilding 10 000+ cells
+                // made returning to All slow). Years and Months are built on first use, or once
+                // every month has loaded in the background.
                 ZStack {
-                    grid
-                        .opacity(scale == .all ? 1 : 0)
-                        .allowsHitTesting(scale == .all)
-                        .accessibilityHidden(scale != .all)
-                    overview
+                    grid.modifier(LibraryZoomLayer(level: .all, shown: scale))
+                    if yearsBuilt || scale == .years {
+                        years.modifier(LibraryZoomLayer(level: .years, shown: scale))
+                    }
+                    if monthsBuilt || scale == .months {
+                        months.modifier(LibraryZoomLayer(level: .months, shown: scale))
+                    }
                 }
             } else {
                 grid
@@ -295,24 +309,20 @@ public struct LibraryGridView: View {
         }
     }
 
-    @ViewBuilder
-    private var overview: some View {
-        switch scale {
-        case .all: EmptyView()
-        case .months:
-            // A year card's month, or else the month you were looking at in All, like Photos.
-            // Decided here, as Months is built: set later (onChange), Months had already
-            // opened at the newest months.
-            MonthsOverview(model: model, scrollTarget: monthsScrollTarget ?? model.visibleCenterID.flatMap(model.monthID(ofAsset:)),
-                           topMargin: 8) { asset in
-                model.pendingScrollAssetID = asset.id
-                withAnimation(.snappy(duration: 0.25)) { scale = .all }
-            }
-        case .years:
-            YearsOverview(model: model, topMargin: 8) { _, coverMonth in
-                monthsScrollTarget = coverMonth
-                withAnimation(.snappy(duration: 0.25)) { scale = .months }
-            }
+    private var months: some View {
+        // A year card's month, or else the month you were looking at in All, like Photos.
+        // Decided as Months becomes active (in the same update), not afterwards.
+        MonthsOverview(model: model, scrollTarget: monthsScrollTarget ?? model.visibleCenterID.flatMap(model.monthID(ofAsset:)),
+                       isActive: scale == .months, topMargin: 8) { asset in
+            model.pendingScrollAssetID = asset.id
+            withAnimation(LibraryScale.switchAnimation) { scale = .all }
+        }
+    }
+
+    private var years: some View {
+        YearsOverview(model: model, topMargin: 8) { _, coverMonth in
+            monthsScrollTarget = coverMonth
+            withAnimation(LibraryScale.switchAnimation) { scale = .months }
         }
     }
 

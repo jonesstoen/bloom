@@ -13,6 +13,41 @@ public enum LibraryScale: String, CaseIterable, Identifiable, Sendable {
         case .all: tr("All")
         }
     }
+
+    /// Years 0, Months 1, All 2: higher is finer.
+    private var depth: Int {
+        switch self {
+        case .years: 0
+        case .months: 1
+        case .all: 2
+        }
+    }
+
+    /// How this level looks while `shown` is on screen. Like Photos, a level that isn't shown
+    /// waits faded out, smaller if it is coarser than the shown one and larger if finer, so a
+    /// switch zooms both levels in the same direction while they cross-fade.
+    func zoom(showing shown: LibraryScale) -> (scale: CGFloat, opacity: Double) {
+        if self == shown { return (1, 1) }
+        return (depth < shown.depth ? 0.85 : 1.15, 0)
+    }
+
+    /// The switch between levels (Photos takes about a third of a second).
+    static let switchAnimation = Animation.smooth(duration: 0.35)
+}
+
+/// Shows one Library level according to the level on screen (see `LibraryScale.zoom`).
+struct LibraryZoomLayer: ViewModifier {
+    let level: LibraryScale
+    let shown: LibraryScale
+
+    func body(content: Content) -> some View {
+        let zoom = level.zoom(showing: shown)
+        content
+            .scaleEffect(zoom.scale)
+            .opacity(zoom.opacity)
+            .allowsHitTesting(level == shown)
+            .accessibilityHidden(level != shown)
+    }
 }
 
 /// The Years / Months / All switcher: floating glass at the bottom of the Library, or (iOS 26.1+)
@@ -29,7 +64,7 @@ struct LibraryScaleSwitcher: View {
         HStack(spacing: 2) {
             ForEach(LibraryScale.allCases) { option in
                 Button {
-                    withAnimation(.snappy(duration: 0.25)) { scale = option }
+                    withAnimation(LibraryScale.switchAnimation) { scale = option }
                 } label: {
                     Text(option.title)
                         .font((isCompact ? Font.footnote : .subheadline).weight(.semibold))
@@ -66,16 +101,21 @@ private struct SwitcherGlass: ViewModifier {
 ///
 /// Laid out exactly (`MonthsLayout`): only the months near the screen are built, and opening
 /// at a month scrolls straight to its position once, with nothing to correct afterwards.
+///
+/// It stays alive while hidden (so switching levels can zoom between them) and jumps to
+/// `scrollTarget` each time it becomes active.
 struct MonthsOverview: View {
     let model: LibraryGridModel
-    /// The month to open at (its title at the top); `nil` opens at the newest months.
+    /// The month to open at (its title at the top); `nil` keeps the position.
     var scrollTarget: String?
+    /// Months is the level on screen.
+    var isActive = true
     let topMargin: CGFloat
     let onSelect: (Asset) -> Void
     @ScaledMetric(relativeTo: .title2) private var titleHeight: CGFloat = 30
     @State private var position = ScrollPosition()
     @State private var window = MonthsWindow()
-    @State private var didOpen = false
+    @State private var metrics = MonthsMetrics()
 
     var body: some View {
         if model.allMonthsLoaded {
@@ -105,19 +145,26 @@ struct MonthsOverview: View {
             .defaultScrollAnchor(model.newestFirst ? .top : .bottom, for: .initialOffset)
             .scrollPosition($position)
             .onScrollGeometryChange(for: ScrollGeometry.self, of: { $0 }) { _, geometry in
+                let first = metrics.geometry == nil
+                metrics.geometry = geometry
+                metrics.layout = layout
                 let top = geometry.contentOffset.y
-                if !didOpen {
-                    didOpen = true
+                if first && isActive {
                     open(layout, geometry: geometry)
                     return
                 }
                 window.update(layout.visible(top: top, bottom: top + geometry.visibleRect.height,
                                              margin: geometry.visibleRect.height))
             }
+            .onChange(of: isActive) { _, active in
+                if active, let layout = metrics.layout, let geometry = metrics.geometry {
+                    open(layout, geometry: geometry)
+                }
+            }
         }
     }
 
-    /// The first layout: jump to the target month in one exact scroll (or stay at the newest).
+    /// Jumps to the target month in one exact scroll (or keeps the position).
     private func open(_ layout: MonthsLayout, geometry: ScrollGeometry) {
         let frame = geometry.visibleRect.height
         var top = geometry.contentOffset.y
@@ -140,6 +187,13 @@ struct MonthsOverview: View {
         style = style.month(.abbreviated).year()
         return bucket.startDate.formatted(style)
     }
+}
+
+/// The last layout and scroll geometry, for jumping when Months becomes active. Not observed:
+/// it changes on every scroll frame.
+private final class MonthsMetrics {
+    var geometry: ScrollGeometry?
+    var layout: MonthsLayout?
 }
 
 /// The months currently built. Observed only by `MonthRows`, so scrolling doesn't re-render
