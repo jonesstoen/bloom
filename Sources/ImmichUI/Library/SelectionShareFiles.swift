@@ -14,8 +14,10 @@ public struct OriginalFileDownloader: Sendable {
         try await downloadFile(request, destination)
     }
 
+    /// Downloads with the API key on `ImmichNetwork.session`, which never follows a redirect to
+    /// another server (URLSession.shared would, and send the key along).
     public static let live = OriginalFileDownloader { request, destination in
-        let (temporary, response) = try await URLSession.shared.download(for: request.urlRequest)
+        let (temporary, response) = try await ImmichNetwork.session.download(for: request.urlRequest)
         defer { try? FileManager.default.removeItem(at: temporary) }
         try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {

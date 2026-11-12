@@ -27,3 +27,11 @@ final class RedirectPolicyTests: XCTestCase {
         XCTAssertFalse(allows("https://photos.example.com/api/a", "file:///etc/passwd"))
     }
 }
+
+extension RedirectPolicyTests {
+    /// Code that sends the key outside the generated client (share downloads) uses this session.
+    func testTheSharedImmichSessionRefusesForeignRedirects() {
+        XCTAssertTrue(SameOriginRedirects.guards(ImmichNetwork.session))
+        XCTAssertFalse(SameOriginRedirects.guards(URLSession.shared))
+    }
+}
