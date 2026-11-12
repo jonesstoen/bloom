@@ -8,10 +8,15 @@ public struct CollectionsView: View {
     @State private var model: CollectionsModel
     @State private var openMemory: MemoryStorySelection?
     private let accessory: AnyView?
+    private let onRestore: (@MainActor ([Asset]) async throws -> RestoreResult)?
+    private let refreshRevision: Int
 
-    public init(service: any ImmichService, loader: ImageLoader? = nil, accessory: AnyView? = nil) {
+    public init(service: any ImmichService, loader: ImageLoader? = nil, accessory: AnyView? = nil,
+                onRestore: (@MainActor ([Asset]) async throws -> RestoreResult)? = nil, refreshRevision: Int = 0) {
         _model = State(initialValue: CollectionsModel(service: service, loader: loader))
         self.accessory = accessory
+        self.onRestore = onRestore
+        self.refreshRevision = refreshRevision
     }
 
     public var body: some View {
@@ -44,7 +49,7 @@ public struct CollectionsView: View {
                 .frame(minWidth: 700, minHeight: 500)
         }
         #endif
-        .task { await loadAll() }
+        .task(id: refreshRevision) { await loadAll(force: refreshRevision > 0) }
         .refreshable { await loadAll(force: true) }
     }
 
@@ -181,7 +186,7 @@ public struct CollectionsView: View {
             NavigationLink {
                 TimelineCollectionView(title: tr("Recently Deleted"),
                                        options: TimelineOptions(isTrashed: true, visibility: nil, newestFirst: false),
-                                       service: model.service, loader: model.loader)
+                                       service: model.service, loader: model.loader, allowsRestore: true, onRestore: onRestore)
             } label: { CollectionListRow(title: tr("Recently Deleted"), systemImage: "trash") }
         }
     }
@@ -390,12 +395,18 @@ public struct TimelineCollectionView: View {
     @State private var model: LibraryGridModel
     private let title: String
 
-    public init(title: String, options: TimelineOptions, service: any ImmichService, loader: ImageLoader? = nil) {
+    private let allowsRestore: Bool
+    private let onRestore: (@MainActor ([Asset]) async throws -> RestoreResult)?
+
+    public init(title: String, options: TimelineOptions, service: any ImmichService, loader: ImageLoader? = nil,
+                allowsRestore: Bool = false, onRestore: (@MainActor ([Asset]) async throws -> RestoreResult)? = nil) {
         _model = State(initialValue: LibraryGridModel(service: service, options: options, loader: loader))
         self.title = title
+        self.allowsRestore = allowsRestore
+        self.onRestore = onRestore
     }
 
-    public var body: some View { LibraryGridView(model: model, title: title) }
+    public var body: some View { LibraryGridView(model: model, title: title, allowsRestore: allowsRestore, onRestore: onRestore) }
 }
 
 /// All favorite photos and videos in the library grid.

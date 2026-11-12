@@ -25,6 +25,7 @@ public struct AssetViewer: View {
     @State private var trashConfirmationSubmitted = false
     @State private var trash: ViewerTrashModel
     private let allowsTrash: Bool
+    private let allowsRestore: Bool
     @State private var store: ViewerStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -32,14 +33,16 @@ public struct AssetViewer: View {
 
     public init(assets: [Asset], selectedID: String, service: any ImmichService,
                 loader: ImageLoader? = nil,
-                onMoveToTrash: (@MainActor (Asset) async throws -> Void)? = nil, onSelection: @escaping (String) -> Void = { _ in }) {
+                onMoveToTrash: (@MainActor (Asset) async throws -> Void)? = nil,
+                onRestore: (@MainActor (Asset) async throws -> Void)? = nil, onSelection: @escaping (String) -> Void = { _ in }) {
         let loader = loader ?? ImageLoader(service: service)
         self.assets = assets
         self.service = service
         self.loader = loader
         self.onSelection = onSelection
         self.allowsTrash = onMoveToTrash != nil
-        _trash = State(initialValue: ViewerTrashModel(action: onMoveToTrash))
+        self.allowsRestore = onRestore != nil
+        _trash = State(initialValue: ViewerTrashModel(mode: onRestore != nil ? .restore : .trash, action: onRestore ?? onMoveToTrash))
         self.initialID = selectedID
         self.indexByID = Dictionary(assets.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
         _selectedID = State(initialValue: selectedID)
@@ -69,7 +72,7 @@ public struct AssetViewer: View {
         }
         .overlay {
             if trash.isBusy {
-                ProgressView(tr("Moving to Trash…"))
+                ProgressView(allowsRestore ? tr("Restoring…") : tr("Moving to Trash…"))
                     .padding(24)
                     .photosGlass(in: RoundedRectangle(cornerRadius: 20), interactive: false)
             }
@@ -91,11 +94,11 @@ public struct AssetViewer: View {
             if phase != .active { store.stopLivePhotos() }
         }
         .onDisappear { store.stopLivePhotos() }
-        .confirmationDialog(tr("Move to Recently Deleted?"), isPresented: Binding(
+        .confirmationDialog(allowsRestore ? tr("Restore this item?") : tr("Move to Recently Deleted?"), isPresented: Binding(
             get: { trash.pendingAsset != nil },
             set: { if !$0 && !trashConfirmationSubmitted { trash.cancelConfirmation() } }
         ), titleVisibility: .visible) {
-            Button(tr("Move to Trash"), role: .destructive) {
+            Button(allowsRestore ? tr("Restore") : tr("Move to Trash"), role: allowsRestore ? nil : .destructive) {
                 trashConfirmationSubmitted = true
                 Task {
                     let succeeded = await trash.confirm()
@@ -105,9 +108,9 @@ public struct AssetViewer: View {
             }
             Button(tr("Cancel"), role: .cancel) { trash.cancelConfirmation() }
         } message: {
-            Text(tr("You can recover these items from Recently Deleted in Immich until your server removes them."))
+            Text(allowsRestore ? tr("These items will return to your library.") : tr("You can recover these items from Recently Deleted in Immich until your server removes them."))
         }
-        .alert(tr("Couldn't Move to Trash"), isPresented: Binding(
+        .alert(allowsRestore ? tr("Couldn't Restore") : tr("Couldn't Move to Trash"), isPresented: Binding(
             get: { trash.error != nil },
             set: { if !$0 { trash.dismissError() } }
         )) {
@@ -224,10 +227,12 @@ public struct AssetViewer: View {
     @ViewBuilder
     private func menuActions(_ model: ViewerAssetModel) -> some View {
         Button(tr("Photo information"), systemImage: "info.circle") { showsInfo = true }
-        Button(model.asset.isFavorite ? tr("Remove from Favorites") : tr("Add to Favorites"),
-               systemImage: model.asset.isFavorite ? "heart.slash" : "heart") {
-            model.stopLivePhotoPlayback()
-            Task { await model.toggleFavorite() }
+        if !allowsRestore && !model.asset.isTrashed {
+            Button(model.asset.isFavorite ? tr("Remove from Favorites") : tr("Add to Favorites"),
+                   systemImage: model.asset.isFavorite ? "heart.slash" : "heart") {
+                model.stopLivePhotoPlayback()
+                Task { await model.toggleFavorite() }
+            }
         }
         #if os(iOS)
         if model.asset.isLivePhoto && !model.asset.isVideo {
@@ -305,18 +310,27 @@ public struct AssetViewer: View {
                 Spacer()
                 if let model = currentModel {
                     HStack(spacing: 4) {
-                        capsuleButton(model.asset.isFavorite ? "heart.fill" : "heart",
-                                      label: model.asset.isFavorite ? tr("Remove from Favorites") : tr("Add to Favorites")) {
-                            Task { await model.toggleFavorite() }
+                        if !allowsRestore && !model.asset.isTrashed {
+                            capsuleButton(model.asset.isFavorite ? "heart.fill" : "heart",
+                                          label: model.asset.isFavorite ? tr("Remove from Favorites") : tr("Add to Favorites")) {
+                                Task { await model.toggleFavorite() }
+                            }
+                            .sensoryFeedback(.impact(weight: .light), trigger: model.asset.isFavorite)
                         }
-                        .sensoryFeedback(.impact(weight: .light), trigger: model.asset.isFavorite)
                         capsuleButton("info.circle", label: tr("Photo information")) { showsInfo = true }
                     }
                     .padding(.horizontal, 6)
                     .photosGlass(in: Capsule())
                 }
                 Spacer()
-                if allowsTrash, let model = currentModel, !model.asset.isTrashed {
+                if allowsRestore, let model = currentModel, model.asset.isTrashed {
+                    capsuleButton("arrow.uturn.backward", label: tr("Restore")) {
+                        store.stopLivePhotos()
+                        trash.request(model.asset)
+                    }
+                    .photosGlass(in: Circle())
+                    .disabled(shareActive)
+                } else if allowsTrash, let model = currentModel, !model.asset.isTrashed {
                     capsuleButton("trash", label: tr("Move to Trash")) {
                         store.stopLivePhotos()
                         trash.request(model.asset)
@@ -477,4 +491,14 @@ private struct ViewerPage: View {
 #Preview("Viewer with Trash") {
     AssetViewer(assets: MockLibrary.standard.assets, selectedID: MockLibrary.standard.assets[0].id,
                 service: MockImmichService.preview, onMoveToTrash: { _ in })
+}
+
+#Preview("Viewer with Restore") {
+    let assets = MockLibrary.standard.assets.prefix(3).map { item in
+        var asset = item
+        asset.isTrashed = true
+        return asset
+    }
+    AssetViewer(assets: assets, selectedID: assets[0].id,
+                service: MockImmichService(assets: assets), onRestore: { _ in })
 }

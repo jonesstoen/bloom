@@ -36,6 +36,8 @@ public struct LibraryGridView: View {
     private let accessory: AnyView?
     private let scrollToNewestTrigger: Int
     private let allowsTrash: Bool
+    private let allowsRestore: Bool
+    private let onRestore: (@MainActor ([Asset]) async throws -> RestoreResult)?
     private let onSelect: (Asset) -> Void
 
     public enum HeaderStyle: Sendable {
@@ -52,10 +54,13 @@ public struct LibraryGridView: View {
     ///   - onSelect: called when an asset is tapped (opens the viewer).
     ///   - scrollToNewestTrigger: changing it scrolls to the newest photos (the tab was tapped again).
     public init(model: LibraryGridModel, title: String = tr("Library"), headerStyle: HeaderStyle = .navigationBar,
-                accessory: AnyView? = nil, scrollToNewestTrigger: Int = 0, allowsTrash: Bool = false, onSelect: @escaping (Asset) -> Void = { _ in }) {
+                accessory: AnyView? = nil, scrollToNewestTrigger: Int = 0, allowsTrash: Bool = false, allowsRestore: Bool = false,
+                onRestore: (@MainActor ([Asset]) async throws -> RestoreResult)? = nil, onSelect: @escaping (Asset) -> Void = { _ in }) {
         _model = State(initialValue: model)
-        _selection = State(initialValue: LibrarySelectionModel(library: model))
+        _selection = State(initialValue: LibrarySelectionModel(library: model, onRestore: onRestore))
         self.allowsTrash = allowsTrash
+        self.allowsRestore = allowsRestore
+        self.onRestore = onRestore
         self.title = title
         self.headerStyle = headerStyle
         self.accessory = accessory
@@ -63,9 +68,9 @@ public struct LibraryGridView: View {
         self.onSelect = onSelect
     }
 
-    public init(service: any ImmichService, title: String = tr("Library"), headerStyle: HeaderStyle = .navigationBar, allowsTrash: Bool = false,
-                onSelect: @escaping (Asset) -> Void = { _ in }) {
-        self.init(model: LibraryGridModel(service: service), title: title, headerStyle: headerStyle, allowsTrash: allowsTrash, onSelect: onSelect)
+    public init(service: any ImmichService, title: String = tr("Library"), headerStyle: HeaderStyle = .navigationBar, allowsTrash: Bool = false, allowsRestore: Bool = false,
+                onRestore: (@MainActor ([Asset]) async throws -> RestoreResult)? = nil, onSelect: @escaping (Asset) -> Void = { _ in }) {
+        self.init(model: LibraryGridModel(service: service), title: title, headerStyle: headerStyle, allowsTrash: allowsTrash, allowsRestore: allowsRestore, onRestore: onRestore, onSelect: onSelect)
     }
 
     private static let spacing: CGFloat = 1.5
@@ -78,28 +83,41 @@ public struct LibraryGridView: View {
     }
 
     private var canMoveToTrash: Bool { allowsTrash && model.options.isTrashed != true }
-    private var mutationBlocked: Bool { selection.isBusy || selection.pendingTrashAssets != nil || model.isTrashing }
+    private var canRestore: Bool { allowsRestore && model.options.isTrashed == true }
+    private var mutationBlocked: Bool { selection.isBusy || selection.pendingTrashAssets != nil || selection.pendingRestoreAssets != nil || model.isMutating }
 
     public var body: some View {
         content
             .navigationTitle(title)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            .navigationBarBackButtonHidden(canRestore && mutationBlocked)
             .toolbar(usesLargeTitle ? .hidden : .automatic, for: .navigationBar)
             .toolbar {
+                if canRestore && selection.isSelecting {
+                    ToolbarItem(placement: .principal) { LibrarySelectionCount(selection: selection) }
+                }
                 if !usesLargeTitle {
-                    ToolbarItem(placement: .topBarTrailing) { densityMenu }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        if canRestore {
+                            if selection.isSelecting { LibrarySelectionCancelButton(selection: selection) }
+                            else {
+                                Button(tr("Select")) { selection.start() }
+                                    .disabled(model.phase != .loaded || model.isEmpty || mutationBlocked)
+                            }
+                        } else { densityMenu }
+                    }
                 }
             }
             .overlay(alignment: .top) {
                 if usesLargeTitle { largeHeader }
             }
             .overlay(alignment: .bottom) {
-                if usesLargeTitle && (selection.isSelecting || (model.phase == .loaded && !model.isEmpty)) {
+                if (usesLargeTitle || canRestore) && (selection.isSelecting || (model.phase == .loaded && !model.isEmpty)) {
                     Group {
                         if selection.isSelecting {
-                            LibrarySelectionToolbar(selection: selection, allowsTrash: canMoveToTrash)
-                        } else {
+                            LibrarySelectionToolbar(selection: selection, allowsTrash: canMoveToTrash, allowsRestore: canRestore)
+                        } else if usesLargeTitle {
                             LibraryScaleSwitcher(scale: $scale).disabled(mutationBlocked)
                         }
                     }
@@ -124,7 +142,7 @@ public struct LibraryGridView: View {
                 // Resolve saved sort/filter choices before a fast disk restore can expose
                 // the default library partition. The separate task still handles later changes.
                 if usesLargeTitle && menuOptions != model.options { await model.setOptions(menuOptions) }
-                if model.phase == .idle { await model.load() }
+                if model.phase == .idle || model.needsMutationRefresh { await model.load() }
                 // The Library tab: load every month in the background once the newest ones are
                 // on screen, so Years and Months open instantly later.
                 if usesLargeTitle && model.phase == .loaded {
@@ -156,8 +174,11 @@ public struct LibraryGridView: View {
         let trashAction: (@MainActor (Asset) async throws -> Void)?
         if canMoveToTrash { trashAction = { asset in try await moveToTrash(asset) } }
         else { trashAction = nil }
+        let restoreAction: (@MainActor (Asset) async throws -> Void)?
+        if canRestore { restoreAction = { asset in try await restore(asset) } }
+        else { restoreAction = nil }
         return AssetViewer(assets: item.assets, selectedID: item.selectedID,
-                    service: model.service, loader: model.loader, onMoveToTrash: trashAction) { id in
+                    service: model.service, loader: model.loader, onMoveToTrash: trashAction, onRestore: restoreAction, onSelection: { id in
             guard transitionSourceID != id else { return }
             transitionSourceID = id
             model.assetShownInViewer(id)
@@ -169,7 +190,16 @@ public struct LibraryGridView: View {
                 try? await Task.sleep(for: .milliseconds(350))
                 if !Task.isCancelled { viewerScrollTarget = id }
             }
-        }
+        })
+    }
+
+    private func restore(_ asset: Asset) async throws {
+        scrollSync?.cancel()
+        scrollSync = nil
+        viewerScrollTarget = nil
+        let result = try await model.restoreFromTrash([asset], perform: onRestore)
+        guard result.confirmedIDs.contains(asset.id) else { throw ImmichServiceError.invalidResponse }
+        if transitionSourceID == asset.id { transitionSourceID = nil }
     }
 
     private func moveToTrash(_ asset: Asset) async throws {

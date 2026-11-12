@@ -83,9 +83,17 @@ public protocol ImmichService: Sendable {
     /// Moves only these assets to Immich trash. Never performs permanent deletion.
     /// Call only after an explicit user confirmation; partial/uncertain failures are returned.
     func moveToTrash(assetIDs: [String]) async throws -> TrashResult
+
+    /// Restores only these specific assets from trash, after explicit confirmation.
+    func restoreAssets(assetIDs: [String]) async throws -> RestoreResult
 }
 
 extension ImmichService {
+    /// Existing custom/read-only services do not acquire write access implicitly.
+    public func restoreAssets(assetIDs: [String]) async throws -> RestoreResult {
+        throw ImmichServiceError.invalidResponse
+    }
+
     /// Custom read-only services fail closed unless they explicitly implement trash support.
     public func moveToTrash(assetIDs: [String]) async throws -> TrashResult {
         throw TrashError.unavailable

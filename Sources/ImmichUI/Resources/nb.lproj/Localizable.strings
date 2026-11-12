@@ -179,3 +179,11 @@
 "Couldn't Move to Trash" = "Kunne ikke flytte til papirkurven";
 "Couldn't move this item to Trash. Please try again." = "Kunne ikke flytte dette objektet til papirkurven. Prøv igjen.";
 "Couldn't move %@ items to Trash. Please try again." = "Kunne ikke flytte %@ objekter til papirkurven. Prøv igjen.";
+"Restore" = "Gjenopprett";
+"Restore this item?" = "Gjenopprette dette objektet?";
+"Restore %@ items?" = "Gjenopprette %@ objekter?";
+"These items will return to your library." = "Disse objektene blir lagt tilbake i biblioteket ditt.";
+"Restoring…" = "Gjenoppretter …";
+"Couldn't Restore" = "Kunne ikke gjenopprette";
+"Couldn't restore this item. Please try again." = "Kunne ikke gjenopprette dette objektet. Prøv igjen.";
+"Couldn't restore %@ items. Please try again." = "Kunne ikke gjenopprette %@ objekter. Prøv igjen.";

@@ -2,20 +2,23 @@ import Foundation
 import ImmichKit
 import Observation
 
-/// Captures an explicit confirmation target before starting a single trash request.
+/// Captures an explicit confirmation target before starting a single trash or restore request.
 @MainActor @Observable
 public final class ViewerTrashModel {
+    public enum Mode { case trash, restore }
+    public let mode: Mode
     public private(set) var pendingAsset: Asset?
     public private(set) var isBusy = false
     public private(set) var error: String?
     @ObservationIgnored private let action: (@MainActor (Asset) async throws -> Void)?
 
-    public init(action: (@MainActor (Asset) async throws -> Void)? = nil) {
+    public init(mode: Mode = .trash, action: (@MainActor (Asset) async throws -> Void)? = nil) {
+        self.mode = mode
         self.action = action
     }
 
     public func request(_ asset: Asset) {
-        guard action != nil, !asset.isTrashed, !isBusy, pendingAsset == nil else { return }
+        guard action != nil, (mode == .restore ? asset.isTrashed : !asset.isTrashed), !isBusy, pendingAsset == nil else { return }
         error = nil
         pendingAsset = asset
     }
@@ -36,10 +39,14 @@ public final class ViewerTrashModel {
         do {
             try await action(asset)
             return true
-        } catch let policyError as TrashError {
-            error = policyError.localizedDescription
         } catch {
-            self.error = tr("Couldn't move this item to Trash. Please try again.")
+            if mode == .trash, let policyError = error as? TrashError {
+                self.error = policyError.localizedDescription
+            } else {
+                self.error = mode == .restore
+                    ? tr("Couldn't restore this item. Please try again.")
+                    : tr("Couldn't move this item to Trash. Please try again.")
+            }
         }
         return false
     }

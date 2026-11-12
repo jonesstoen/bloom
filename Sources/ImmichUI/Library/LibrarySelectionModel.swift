@@ -15,18 +15,23 @@ public final class LibrarySelectionModel {
     public private(set) var error: String?
     public private(set) var sharedFiles: PreparedShare?
     public private(set) var pendingTrashAssets: [Asset]?
+    public private(set) var pendingRestoreAssets: [Asset]?
     public var selectedCount: Int { selectedIDs.count }
+    private var hasPendingConfirmation: Bool { pendingTrashAssets != nil || pendingRestoreAssets != nil }
 
     @ObservationIgnored private let library: LibraryGridModel
     @ObservationIgnored private let downloader: OriginalFileDownloader
+    @ObservationIgnored private let onRestore: (@MainActor ([Asset]) async throws -> RestoreResult)?
     @ObservationIgnored private var shareTask: Task<PreparedShare, any Error>?
     @ObservationIgnored private var preparedDirectory: URL?
     /// A failed follow-up GET leaves the server's flag unknown, even if the snapshot matches.
     @ObservationIgnored private var uncertainFavoriteIDs: Set<String> = []
 
-    public init(library: LibraryGridModel, downloader: OriginalFileDownloader = .live) {
+    public init(library: LibraryGridModel, downloader: OriginalFileDownloader = .live,
+                onRestore: (@MainActor ([Asset]) async throws -> RestoreResult)? = nil) {
         self.library = library
         self.downloader = downloader
+        self.onRestore = onRestore
     }
 
     deinit {
@@ -35,13 +40,13 @@ public final class LibrarySelectionModel {
     }
 
     public func start() {
-        guard !isBusy, pendingTrashAssets == nil else { return }
+        guard !isBusy, !hasPendingConfirmation else { return }
         isSelecting = true
         error = nil
     }
 
     public func cancel() {
-        guard !isBusy, pendingTrashAssets == nil else { return }
+        guard !isBusy, !hasPendingConfirmation else { return }
         isSelecting = false
         selectedIDs = []
         selectedAssets = []
@@ -51,7 +56,7 @@ public final class LibrarySelectionModel {
     }
 
     public func toggle(_ asset: Asset) {
-        guard isSelecting, !isBusy, pendingTrashAssets == nil,
+        guard isSelecting, !isBusy, !hasPendingConfirmation,
               let index = library.gridIndex(ofAsset: asset.id),
               let loaded = library.gridAsset(atGridIndex: index) else { return }
         if selectedIDs.remove(loaded.id) != nil {
@@ -66,7 +71,7 @@ public final class LibrarySelectionModel {
 
     /// Capture the exact selection; no service operation occurs until confirmation.
     public func requestTrash() {
-        guard isSelecting, !isBusy, pendingTrashAssets == nil, !library.isTrashing,
+        guard isSelecting, !isBusy, !hasPendingConfirmation, !library.isMutating,
               library.options.isTrashed != true, !selectedAssets.isEmpty,
               selectedAssets.allSatisfy({ !$0.isTrashed }) else { return }
         error = nil
@@ -107,9 +112,49 @@ public final class LibrarySelectionModel {
                    count.formatted(.number.locale(Localization.locale)))
     }
 
+    public func requestRestore() {
+        guard isSelecting, !isBusy, !hasPendingConfirmation, !library.isMutating,
+              library.options.isTrashed == true, !selectedAssets.isEmpty,
+              selectedAssets.allSatisfy(\.isTrashed) else { return }
+        error = nil
+        pendingRestoreAssets = selectedAssets
+    }
+
+    public func cancelRestoreConfirmation() {
+        guard !isBusy else { return }
+        pendingRestoreAssets = nil
+    }
+
+    public func confirmRestore() async {
+        guard !isBusy, let assets = pendingRestoreAssets else { return }
+        pendingRestoreAssets = nil
+        isBusy = true
+        error = nil
+        completedCount = 0
+        totalCount = assets.count
+        defer { isBusy = false }
+        do {
+            let result = try await library.restoreFromTrash(assets, perform: onRestore)
+            let confirmed = Set(result.confirmedIDs)
+            selectedAssets = assets.filter { !confirmed.contains($0.id) }
+            selectedIDs = Set(selectedAssets.map(\.id))
+            completedCount = confirmed.count
+            if !selectedAssets.isEmpty { reportRestoreFailure(selectedAssets.count) }
+        } catch {
+            selectedAssets = assets
+            selectedIDs = Set(assets.map(\.id))
+            reportRestoreFailure(assets.count)
+        }
+    }
+
+    private func reportRestoreFailure(_ count: Int) {
+        error = tr("Couldn't restore %@ items. Please try again.",
+                   count.formatted(.number.locale(Localization.locale)))
+    }
+
     /// One explicit, idempotent target for the whole batch, including mixed selections.
     public func setFavorites(_ target: Bool) async {
-        guard isSelecting, !isBusy, pendingTrashAssets == nil, !selectedAssets.isEmpty else { return }
+        guard isSelecting, !isBusy, !hasPendingConfirmation, !selectedAssets.isEmpty else { return }
         isBusy = true
         error = nil
         completedCount = 0
@@ -152,7 +197,7 @@ public final class LibrarySelectionModel {
     }
 
     public func prepareShare() async {
-        guard isSelecting, !isBusy, pendingTrashAssets == nil, !selectedAssets.isEmpty else { return }
+        guard isSelecting, !isBusy, !hasPendingConfirmation, !selectedAssets.isEmpty else { return }
         isBusy = true
         isPreparingShare = true
         error = nil

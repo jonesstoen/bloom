@@ -27,6 +27,7 @@ public actor MockImmichService: ImmichService {
         case memories
         case setFavorite(String, Bool)
         case moveToTrash(String)
+        case restoreAssets(String)
     }
 
     /// Base URL of the media requests the mock hands out. Nothing answers there.
@@ -84,6 +85,36 @@ public actor MockImmichService: ImmichService {
 
     private var trashFailures: Set<String> = []
     public func setTrashFailures(_ ids: Set<String>) { trashFailures = ids }
+
+    private var restoreFailures: Set<String> = []
+    public func setRestoreFailures(_ ids: Set<String>) { restoreFailures = ids }
+
+    public func restoreAssets(assetIDs: [String]) async throws -> RestoreResult {
+        let ids = try TrashRequestIDs.validated(assetIDs)
+        var confirmed: [String] = []
+        var failed: [String] = []
+        for (offset, id) in ids.enumerated() {
+            if Task.isCancelled {
+                failed.append(contentsOf: ids[offset...])
+                break
+            }
+            if assetsByID[id]?.isTrashed == false {
+                confirmed.append(id)
+                continue
+            }
+            do {
+                try await begin(.restoreAssets(id))
+                guard !restoreFailures.contains(id), let index = assets.firstIndex(where: { $0.id == id }) else {
+                    throw ImmichServiceError.invalidResponse
+                }
+                assets[index].isTrashed = false
+                confirmed.append(id)
+            } catch {
+                failed.append(id)
+            }
+        }
+        return RestoreResult(confirmedIDs: confirmed, failedIDs: failed)
+    }
 
     public func moveToTrash(assetIDs: [String]) async throws -> TrashResult {
         let ids = try TrashRequestIDs.validated(assetIDs)

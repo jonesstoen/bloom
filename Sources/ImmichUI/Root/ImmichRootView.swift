@@ -64,7 +64,7 @@ private struct ImmichTabs: View {
     /// Library to its top, which is the oldest photo; Photos goes to the newest, so we do too.
     private var tabSelection: Binding<AppTab> {
         Binding(get: { selection }, set: { tab in
-            guard !session.library.isTrashing else { return }
+            guard !session.library.isMutating else { return }
             if tab == selection && tab == .library { libraryReselections += 1 }
             selection = tab
         })
@@ -80,7 +80,9 @@ private struct ImmichTabs: View {
             }
             Tab(tr("Collections"), systemImage: "rectangle.stack", value: AppTab.collections) {
                 NavigationStack {
-                    CollectionsView(service: session.service, loader: session.loader, accessory: AnyView(accountMenu))
+                    CollectionsView(service: session.service, loader: session.loader, accessory: AnyView(accountMenu),
+                                    onRestore: { assets in try await session.library.restoreToLibrary(assets) },
+                                    refreshRevision: session.library.restoreRevision)
                 }
                 // These hidden stacks own cached searches/collections. Recreate them after a
                 // library mutation so old snapshots cannot offer an item moved to trash.
@@ -89,10 +91,13 @@ private struct ImmichTabs: View {
             // Search sits apart from the other tabs at the trailing edge, like Photos.
             Tab(tr("Search"), systemImage: "magnifyingglass", value: AppTab.search, role: .search) {
                 NavigationStack { SearchView(model: session.search) }
-                    .id(session.library.trashRevision)
+                    .id([session.library.trashRevision, session.library.restoreRevision])
             }
         }
         .onChange(of: session.library.trashRevision) { _, _ in
+            session.search.invalidateAfterLibraryMutation()
+        }
+        .onChange(of: session.library.restoreRevision) { _, _ in
             session.search.invalidateAfterLibraryMutation()
         }
         .modifier(MinimizeTabBarOnScroll())
@@ -101,7 +106,7 @@ private struct ImmichTabs: View {
     private var accountMenu: some View {
         Menu {
             Button(tr("Sign Out"), systemImage: "rectangle.portrait.and.arrow.right", role: .destructive, action: signOut)
-                .disabled(isSigningOut || session.library.isTrashing)
+                .disabled(isSigningOut || session.library.isMutating)
         } label: {
             Label(tr("Account"), systemImage: "person.crop.circle")
                 .labelStyle(.iconOnly)

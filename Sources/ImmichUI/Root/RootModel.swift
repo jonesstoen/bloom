@@ -80,7 +80,7 @@ public final class RootModel {
     }
 
     public func signOut() async {
-        guard !isSigningOut, session?.library.isTrashing != true else { return }
+        guard !isSigningOut, session?.library.isMutating != true else { return }
         isSigningOut = true
         defer { isSigningOut = false }
         do {

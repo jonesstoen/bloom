@@ -34,7 +34,7 @@ struct LibrarySelectableCell: View {
                 }
         }
         .buttonStyle(.plain)
-        .disabled(selection.isBusy || selection.pendingTrashAssets != nil)
+        .disabled(selection.isBusy || selection.pendingTrashAssets != nil || selection.pendingRestoreAssets != nil)
         .accessibilityAddTraits(selection.isSelecting && isSelected ? .isSelected : [])
         .accessibilityValue(selection.isSelecting ? (isSelected ? tr("Selected") : tr("Not Selected")) : "")
     }
@@ -59,25 +59,27 @@ struct LibrarySelectionCancelButton: View {
             .padding(.horizontal, 14)
             .frame(minHeight: 44)
             .photosGlass(in: Capsule())
-            .disabled(selection.isBusy || selection.pendingTrashAssets != nil)
+            .disabled(selection.isBusy || selection.pendingTrashAssets != nil || selection.pendingRestoreAssets != nil)
     }
 }
 
 struct LibrarySelectionToolbar: View {
     let selection: LibrarySelectionModel
     var allowsTrash = false
+    var allowsRestore = false
 
     var body: some View {
         VStack(spacing: 8) {
             HStack(spacing: 12) {
-                Button { Task { await selection.prepareShare() } } label: {
-                    Image(systemName: "square.and.arrow.up")
-                        .font(.system(size: 20, weight: .medium))
-                        .frame(width: 44, height: 44)
+                if !allowsRestore {
+                    Button { Task { await selection.prepareShare() } } label: {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 20, weight: .medium))
+                            .frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel(tr("Share"))
+                    .disabled(selection.selectedCount == 0 || selection.isBusy || selection.pendingTrashAssets != nil || selection.pendingRestoreAssets != nil)
                 }
-                .accessibilityLabel(tr("Share"))
-                .disabled(selection.selectedCount == 0 || selection.isBusy || selection.pendingTrashAssets != nil)
-
                 VStack(spacing: 3) {
                     if selection.isPreparingShare {
                         Text(tr("Preparing to Share…"))
@@ -96,29 +98,38 @@ struct LibrarySelectionToolbar: View {
                 .multilineTextAlignment(.center)
                 .accessibilityElement(children: .combine)
 
-                Menu {
-                    Button(tr("Add to Favorites"), systemImage: "heart") {
-                        Task { await selection.setFavorites(true) }
+                if !allowsRestore {
+                    Menu {
+                        Button(tr("Add to Favorites"), systemImage: "heart") {
+                            Task { await selection.setFavorites(true) }
+                        }
+                        Button(tr("Remove from Favorites"), systemImage: "heart.slash") {
+                            Task { await selection.setFavorites(false) }
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 20, weight: .medium))
+                            .frame(width: 44, height: 44)
                     }
-                    Button(tr("Remove from Favorites"), systemImage: "heart.slash") {
-                        Task { await selection.setFavorites(false) }
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 20, weight: .medium))
-                        .frame(width: 44, height: 44)
+                    .accessibilityLabel(tr("Favorite Actions"))
+                    .disabled(selection.selectedCount == 0 || selection.isBusy || selection.pendingTrashAssets != nil || selection.pendingRestoreAssets != nil)
                 }
-                .accessibilityLabel(tr("Favorite Actions"))
-                .disabled(selection.selectedCount == 0 || selection.isBusy || selection.pendingTrashAssets != nil)
-
-                if allowsTrash {
+                if allowsRestore {
+                    Button { selection.requestRestore() } label: {
+                        Label(tr("Restore"), systemImage: "arrow.uturn.backward")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(minHeight: 44)
+                    }
+                    .disabled(selection.selectedCount == 0 || selection.isBusy || selection.pendingRestoreAssets != nil)
+                }
+                if allowsTrash && !allowsRestore {
                     Button(role: .destructive) { selection.requestTrash() } label: {
                         Image(systemName: "trash")
                             .font(.system(size: 20, weight: .medium))
                             .frame(width: 44, height: 44)
                     }
                     .accessibilityLabel(tr("Move to Trash"))
-                    .disabled(selection.selectedCount == 0 || selection.isBusy || selection.pendingTrashAssets != nil)
+                    .disabled(selection.selectedCount == 0 || selection.isBusy || selection.pendingTrashAssets != nil || selection.pendingRestoreAssets != nil)
                 }
             }
             if selection.isPreparingShare {
@@ -139,6 +150,7 @@ struct LibrarySelectionToolbar: View {
 struct LibrarySelectionPresentation: ViewModifier {
     let selection: LibrarySelectionModel
     @State private var trashConfirmationSubmitted = false
+    @State private var restoreConfirmationSubmitted = false
     @State private var presentedShare: SelectionShareItems?
 
     func body(content: Content) -> some View {
@@ -177,6 +189,23 @@ struct LibrarySelectionPresentation: ViewModifier {
                 Button(tr("Cancel"), role: .cancel) { selection.cancelTrashConfirmation() }
             } message: {
                 Text(tr("You can recover these items from Recently Deleted in Immich until your server removes them."))
+            }
+            .confirmationDialog(tr("Restore %@ items?",
+                                   (selection.pendingRestoreAssets?.count ?? 0).formatted(.number.locale(Localization.locale))),
+                                isPresented: Binding(
+                                    get: { selection.pendingRestoreAssets != nil },
+                                    set: { if !$0 && !restoreConfirmationSubmitted { selection.cancelRestoreConfirmation() } }
+                                ), titleVisibility: .visible) {
+                Button(tr("Restore")) {
+                    restoreConfirmationSubmitted = true
+                    Task {
+                        await selection.confirmRestore()
+                        restoreConfirmationSubmitted = false
+                    }
+                }
+                Button(tr("Cancel"), role: .cancel) { selection.cancelRestoreConfirmation() }
+            } message: {
+                Text(tr("These items will return to your library."))
             }
             .alert(tr("Couldn't Update Selection"), isPresented: Binding(
                 get: { selection.error != nil },
@@ -229,4 +258,18 @@ private struct LibraryActivityView: UIViewControllerRepresentable {
         selection.start()
         selection.toggle(MockLibrary.standard.assets[0])
     }
+}
+
+#Preview("Restore selection controls") {
+    let mock = MockImmichService.preview
+    let model = LibraryGridModel(service: mock, options: TimelineOptions(isTrashed: true, visibility: nil),
+                                 loader: ImageLoader(service: mock, disk: nil))
+    let selection = LibrarySelectionModel(library: model)
+    LibrarySelectionToolbar(selection: selection, allowsRestore: true)
+        .padding()
+        .task {
+            await model.load()
+            selection.start()
+            if let asset = model.months.flatMap(\.assets).first { selection.toggle(asset) }
+        }
 }
