@@ -6,7 +6,7 @@ import SwiftUI
 /// opens the full list.
 public struct CollectionsView: View {
     @State private var model: CollectionsModel
-    @State private var openMemory: Memory?
+    @State private var openMemory: MemoryStorySelection?
     private let accessory: AnyView?
 
     public init(service: any ImmichService, loader: ImageLoader? = nil, accessory: AnyView? = nil) {
@@ -33,14 +33,14 @@ public struct CollectionsView: View {
         .toolbar {
             if let accessory { ToolbarItem(placement: .topBarTrailing) { accessory } }
         }
-        .fullScreenCover(item: $openMemory) { memory in
-            AssetViewer(assets: memory.assets, selectedID: memory.assets[0].id,
-                        service: model.service, loader: model.loader)
+        .fullScreenCover(item: $openMemory) { selection in
+            MemoryStoryView(years: selection.years, startingYear: selection.startingYear,
+                            service: model.service, loader: model.loader)
         }
         #else
-        .sheet(item: $openMemory) { memory in
-            AssetViewer(assets: memory.assets, selectedID: memory.assets[0].id,
-                        service: model.service, loader: model.loader)
+        .sheet(item: $openMemory) { selection in
+            MemoryStoryView(years: selection.years, startingYear: selection.startingYear,
+                            service: model.service, loader: model.loader)
                 .frame(minWidth: 700, minHeight: 500)
         }
         #endif
@@ -59,10 +59,11 @@ public struct CollectionsView: View {
     // MARK: Rows
 
     private var memoriesRow: some View {
-        CollectionRow(title: tr("Memories")) {
-            ForEach(model.memories) { memory in
-                Button { openMemory = memory } label: {
-                    MemoryCard(memory: memory, loader: model.loader)
+        let years = MemoryStoryModel.groupedYears(from: model.memories)
+        return CollectionRow(title: tr("Memories")) {
+            ForEach(years) { year in
+                Button { openMemory = MemoryStorySelection(years: years, startingYear: year.year) } label: {
+                    MemoryCard(year: year, loader: model.loader)
                 }
                 .buttonStyle(.plain)
             }
@@ -198,6 +199,13 @@ public struct CollectionsView: View {
 
 // MARK: - Building blocks
 
+/// Capture the whole sequence at opening so refreshes cannot change story positions.
+private struct MemoryStorySelection: Identifiable {
+    let id = UUID()
+    let years: [MemoryStoryYear]
+    let startingYear: Int
+}
+
 /// "Title ›" header (opening `destination` when given) above a horizontally scrolling row.
 private struct CollectionRow<Content: View>: View {
     let title: String
@@ -284,7 +292,7 @@ private struct PinnedCard<Background: View>: View {
 
 /// A tall memory card with its cover photo, title and year, like Photos' Memories row.
 private struct MemoryCard: View {
-    let memory: Memory
+    let year: MemoryStoryYear
     let loader: ImageLoader
     @State private var image: CGImage?
 
@@ -296,8 +304,8 @@ private struct MemoryCard: View {
             }
             .overlay(alignment: .bottomLeading) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(memory.title()).font(.title2.weight(.bold))
-                    Text(memory.memoryAt.formatted(.dateTime.month(.wide).year().locale(Localization.locale)).uppercased())
+                    Text(String(year.year)).font(.title2.weight(.bold))
+                    Text(tr("%lld items", Int64(year.assets.count)))
                         .font(.caption.weight(.semibold))
                 }
                 .foregroundStyle(.white)
@@ -310,9 +318,10 @@ private struct MemoryCard: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(tr("%@, %lld items", memory.title(), Int64(memory.assets.count)))
-            .task(id: memory.id) {
-                guard let cover = memory.assets.first,
+            .accessibilityLabel(tr("%@, %lld items", String(year.year), Int64(year.assets.count)))
+            .task(id: year.assets.first?.id) {
+                image = nil
+                guard let cover = year.assets.first,
                       let data = try? await loader.data(for: ImageKey(assetID: cover.id, size: .preview)),
                       !Task.isCancelled else { return }
                 let decoded = await ThumbnailDecoder.decode(data, maxPixelSize: 900)

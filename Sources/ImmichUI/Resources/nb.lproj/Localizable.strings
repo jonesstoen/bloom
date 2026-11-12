@@ -54,6 +54,13 @@
 "Map" = "Kart";
 "Media Types" = "Medietyper";
 "Memories" = "Minner";
+"Choose year" = "Velg år";
+"Open in Photo Viewer" = "Åpne i bildevisning";
+"Previous item" = "Forrige element";
+"Next item" = "Neste element";
+"End of memories" = "Slutt på minnene";
+"Play Again" = "Spill av på nytt";
+"%lld items" = "%lld objekter";
 "No Albums" = "Ingen album";
 "No albums yet" = "Ingen album ennå";
 "No People" = "Ingen personer";
