@@ -221,6 +221,17 @@ final class LibraryScaleTests: XCTestCase {
         XCTAssertEqual(model.visibleDateRangeTitle, expected)
     }
 
+    /// The header follows the cells SwiftUI reports on screen. After a pinch LazyVGrid's content
+    /// height is an estimate, so the scroll offset pointed at months-old photos (a real bug).
+    func testScreenRangeComesFromTheVisibleCells() async throws {
+        let model = await loadedModel()
+        let last = model.gridItemCount - 1
+        let ids = try (last - 8...last).reversed().map { try XCTUnwrap(model.gridAsset(atGridIndex: $0)?.id) }
+        XCTAssertEqual(model.gridRange(ofVisible: ids), (last - 8)...last, "Order of the reported IDs doesn't matter")
+        XCTAssertNil(model.gridRange(ofVisible: []))
+        XCTAssertNil(model.gridRange(ofVisible: ["not-in-the-library"]))
+    }
+
     func testCellLookupsMatchMonthsIncludingEmptyOnes() async throws {
         let mock = MockImmichService(library: .standard)
         let model = await loadedModel(mock)

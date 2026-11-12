@@ -6,8 +6,7 @@ import Observation
 /// from them, between the minimized tab button and Search.
 ///
 /// The grid writes `isAvailable`, `isAwayFromNewest` and `newestFirst`; the tab view reads them.
-/// `isAwayFromNewest` changes only when it crosses a threshold, so scrolling doesn't re-render the
-/// tab view.
+/// `isAwayFromNewest` is only written when it changes, so scrolling doesn't re-render the tab view.
 @MainActor
 @Observable
 public final class LibraryChrome {
@@ -32,19 +31,14 @@ public final class LibraryChrome {
 
     // MARK: Scroll position
 
-    /// Points between the visible area and the newest edge of the content, insets included (at
-    /// the edge it is 0 even though the content continues under the tab bar).
-    static func distanceFromNewest(contentHeight: CGFloat, insetTop: CGFloat, insetBottom: CGFloat,
-                                   visibleMinY: CGFloat, visibleMaxY: CGFloat, newestFirst: Bool) -> CGFloat {
-        newestFirst
-            ? max(0, visibleMinY + insetTop)
-            : max(0, contentHeight + insetBottom - visibleMaxY)
-    }
-
-    /// On after a clear scroll, off only near the edge again: the tab bar's own inset changes when it
-    /// minimizes or the switcher appears, which must not toggle the switcher back and forth.
-    static func isAway(distance: CGFloat, wasAway: Bool) -> Bool {
-        wasAway ? distance > 24 : distance > 80
+    /// More than one row of newer photos is off screen. Decided from the cells SwiftUI reports on
+    /// screen rather than the scroll offset: LazyVGrid only estimates the height of rows it hasn't
+    /// built, so after a jump (opening at the newest photos, a pinch) offsets don't map to rows.
+    /// The tab bar's inset changing when the switcher appears can't flip it back: a taller bar only
+    /// hides more of the newest row.
+    static func isAway(visible: ClosedRange<Int>, itemCount: Int, columns: Int, newestFirst: Bool) -> Bool {
+        let hiddenNewer = newestFirst ? visible.lowerBound : (itemCount - 1) - visible.upperBound
+        return hiddenNewer > max(1, columns)
     }
 
     // MARK: Tab bar

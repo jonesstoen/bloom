@@ -7,33 +7,22 @@ import ImmichKit
 @MainActor
 final class LibraryChromeTests: XCTestCase {
 
-    // MARK: Distance from the newest photos
+    // MARK: Away from the newest photos
 
-    func testDistanceIsZeroAtTheBottomIncludingTheBottomInset() {
-        // Oldest first: the newest photos are at the bottom, under the tab bar's inset.
-        let atBottom = LibraryChrome.distanceFromNewest(contentHeight: 5000, insetTop: 96, insetBottom: 90,
-                                                         visibleMinY: 4090 - 800, visibleMaxY: 5090, newestFirst: false)
-        XCTAssertEqual(atBottom, 0, accuracy: 0.001)
-        let scrolledUp = LibraryChrome.distanceFromNewest(contentHeight: 5000, insetTop: 96, insetBottom: 90,
-                                                           visibleMinY: 2000, visibleMaxY: 2800, newestFirst: false)
-        XCTAssertEqual(scrolledUp, 2290, accuracy: 0.001)
+    /// From the cells SwiftUI reports on screen, not from the scroll offset: LazyVGrid only
+    /// estimates the height of rows it hasn't built, so offsets don't map to rows after a jump.
+    func testAwayWhenMoreThanARowOfNewerPhotosIsOffScreen() {
+        // 100 photos, 5 columns, oldest first: the newest is index 99.
+        XCTAssertFalse(LibraryChrome.isAway(visible: 50...99, itemCount: 100, columns: 5, newestFirst: false))
+        XCTAssertFalse(LibraryChrome.isAway(visible: 45...94, itemCount: 100, columns: 5, newestFirst: false),
+                       "One row under the tab bar is still at the newest photos")
+        XCTAssertTrue(LibraryChrome.isAway(visible: 40...89, itemCount: 100, columns: 5, newestFirst: false))
     }
 
-    func testNewestFirstMeasuresFromTheTop() {
-        let atTop = LibraryChrome.distanceFromNewest(contentHeight: 5000, insetTop: 96, insetBottom: 90,
-                                                      visibleMinY: -96, visibleMaxY: 700, newestFirst: true)
-        XCTAssertEqual(atTop, 0, accuracy: 0.001)
-        let scrolledDown = LibraryChrome.distanceFromNewest(contentHeight: 5000, insetTop: 96, insetBottom: 90,
-                                                             visibleMinY: 404, visibleMaxY: 1200, newestFirst: true)
-        XCTAssertEqual(scrolledDown, 500, accuracy: 0.001)
-    }
-
-    func testAwayUsesHysteresisSoTheSwitcherDoesNotFlicker() {
-        // Turning on needs a clear scroll; turning off needs a return almost to the edge.
-        XCTAssertFalse(LibraryChrome.isAway(distance: 50, wasAway: false))
-        XCTAssertTrue(LibraryChrome.isAway(distance: 120, wasAway: false))
-        XCTAssertTrue(LibraryChrome.isAway(distance: 50, wasAway: true))
-        XCTAssertFalse(LibraryChrome.isAway(distance: 10, wasAway: true))
+    func testNewestFirstIsAwayFromTheTop() {
+        XCTAssertFalse(LibraryChrome.isAway(visible: 0...49, itemCount: 100, columns: 5, newestFirst: true))
+        XCTAssertFalse(LibraryChrome.isAway(visible: 5...54, itemCount: 100, columns: 5, newestFirst: true))
+        XCTAssertTrue(LibraryChrome.isAway(visible: 10...59, itemCount: 100, columns: 5, newestFirst: true))
     }
 
     // MARK: When the switcher shows

@@ -602,7 +602,19 @@ public final class LibraryGridModel {
         updates.yield(.visible(range))
     }
 
-    /// The grid cells on screen changed (computed by the grid from its scroll position).
+    /// Grid indices spanned by the loaded cells SwiftUI reports on screen, in any order.
+    /// `nil` when none of them is a loaded photo (only placeholders on screen).
+    public func gridRange(ofVisible ids: [String]) -> ClosedRange<Int>? {
+        var lower = Int.max, upper = Int.min
+        for id in ids {
+            guard let index = gridIndex(ofAsset: id) else { continue }
+            lower = min(lower, index)
+            upper = max(upper, index)
+        }
+        return lower <= upper ? lower...upper : nil
+    }
+
+    /// The grid cells on screen changed (reported by the grid from the cells SwiftUI shows).
     public func screenRangeChanged(_ range: ClosedRange<Int>) {
         guard range != screenRange else { return }
         screenRange = range

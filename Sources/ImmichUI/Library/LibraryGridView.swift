@@ -430,7 +430,6 @@ public struct LibraryGridView: View {
             let firstLayout = scrollMetrics.geometry == nil
             scrollMetrics.geometry = geometry
             scrollMetrics.pendingOffset = nil
-            reportScreenRange(geometry)
             if firstLayout && !scrollMetrics.didOpen && model.pendingScrollAssetID == nil && model.pendingScrollMonthID == nil {
                 scrollMetrics.didOpen = true
                 openAtNewest(proxy)
@@ -439,17 +438,11 @@ public struct LibraryGridView: View {
             // initial bottom anchor would override it.
             if firstLayout { scrollToPendingMonth(proxy) }
         }
-        // Coarse on purpose: only crossing the threshold reaches the tab bar.
-        .onScrollGeometryChange(for: Bool.self, of: { geometry in
-            guard let chrome else { return false }
-            let distance = LibraryChrome.distanceFromNewest(
-                contentHeight: geometry.contentSize.height,
-                insetTop: geometry.contentInsets.top, insetBottom: geometry.contentInsets.bottom,
-                visibleMinY: geometry.visibleRect.minY, visibleMaxY: geometry.visibleRect.maxY,
-                newestFirst: model.newestFirst)
-            return LibraryChrome.isAway(distance: distance, wasAway: chrome.isAwayFromNewest)
-        }) { _, away in
-            if chrome?.isAwayFromNewest != away { chrome?.isAwayFromNewest = away }
+        // The cells actually on screen (at least half visible, between the large title and the
+        // tab bar). Not computed from the scroll offset: LazyVGrid estimates the height of rows it
+        // hasn't built, so after a pinch the offset pointed at photos months away.
+        .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.5) { ids in
+            screenCellsChanged(ids)
         }
         .onScrollPhaseChange { _, phase in
             if phase == .interacting { scrollMetrics.userScrolled = true }
@@ -483,21 +476,15 @@ public struct LibraryGridView: View {
 
     @State private var densityProxy: ScrollViewProxy?
 
-    /// Tells the model which cells are on screen (between the large title and the tab bar),
-    /// for the date range in the header. Computed from the uniform grid, so it excludes the
-    /// rows SwiftUI builds just outside the screen.
-    private func reportScreenRange(_ geometry: ScrollGeometry) {
-        let columns = model.columnCount
-        let pitch = GridPinchAnchor.cellSize(width: geometry.containerSize.width, spacing: Self.spacing,
-                                             columns: columns) + Self.spacing
-        guard pitch > 0, model.gridItemCount > 0 else { return }
-        let top = geometry.contentOffset.y + geometry.contentInsets.top
-        let bottom = top + geometry.containerSize.height
-        let firstRow = max(0, Int((top / pitch).rounded(.down)))
-        let lastRow = max(firstRow, Int(((bottom - 1) / pitch).rounded(.down)))
-        let lower = min(firstRow * columns, model.gridItemCount - 1)
-        let upper = min(lastRow * columns + columns - 1, model.gridItemCount - 1)
-        model.screenRangeChanged(lower...upper)
+    /// The loaded cells on screen changed: the header's date range, and whether the tab bar shows
+    /// the Years / Months / All switcher. Only placeholders on screen: keep both as they were.
+    private func screenCellsChanged(_ ids: [String]) {
+        guard let range = model.gridRange(ofVisible: ids) else { return }
+        model.screenRangeChanged(range)
+        guard let chrome else { return }
+        let away = LibraryChrome.isAway(visible: range, itemCount: model.gridItemCount,
+                                        columns: model.columnCount, newestFirst: model.newestFirst)
+        if chrome.isAwayFromNewest != away { chrome.isAwayFromNewest = away }
     }
 
     /// Opens at the newest photos. `defaultScrollAnchor` alone left a real 13 000-photo library
@@ -742,6 +729,8 @@ private struct GridCells: View, Equatable {
                 cells(for: month)
             }
         }
+        // Lets the scroll view report which cells are on screen (the header's date range).
+        .scrollTargetLayout()
     }
 
     @ViewBuilder
