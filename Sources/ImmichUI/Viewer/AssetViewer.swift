@@ -2,7 +2,7 @@ import ImmichKit
 import SwiftUI
 
 /// Full-screen media pager, laid out like viewing a photo in the iOS 26 Photos app:
-/// a glass back button and a glass title capsule (place, weekday and time) at the top,
+/// a glass back button and a glass title capsule (place, day and time) at the top,
 /// a thumbnail strip and a toolbar (share, favorite, info) at the bottom.
 ///
 /// On iOS: swipe left and right between items (a lazy paging scroll view, so it handles
@@ -279,7 +279,7 @@ public struct AssetViewer: View {
         let title = model.placeTitle ?? date.formatted(Self.dayStyle)
         let subtitle = model.placeTitle == nil
             ? date.formatted(Self.timeStyle)
-            : "\(date.formatted(Self.weekdayStyle))  \(date.formatted(Self.timeStyle))"
+            : "\(ViewerDateText.day(of: date))  \(date.formatted(Self.timeStyle))"
         return VStack(spacing: 0) {
             Text(title).font(.headline).lineLimit(1)
             Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -359,7 +359,6 @@ public struct AssetViewer: View {
     }
 
     private static let dayStyle = Date.FormatStyle(locale: Localization.locale, calendar: Asset.localCalendar, timeZone: .gmt).day().month(.wide).year()
-    private static let weekdayStyle = Date.FormatStyle(locale: Localization.locale, calendar: Asset.localCalendar, timeZone: .gmt).weekday(.wide)
     private static let timeStyle = Date.FormatStyle(locale: Localization.locale, calendar: Asset.localCalendar, timeZone: .gmt).hour().minute()
 }
 

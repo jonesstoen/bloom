@@ -222,3 +222,5 @@
 "Added %lld items to «%@»." = "La til %lld objekter i «%@».";
 "%lld were already there." = "%lld var der allerede.";
 "%lld couldn't be added." = "%lld kunne ikke legges til.";
+"Today" = "I dag";
+"Yesterday" = "I går";
