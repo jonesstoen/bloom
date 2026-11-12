@@ -253,8 +253,9 @@ public struct LiveImmichService: ImmichService {
         guard response.status.code == 204 else { throw Self.error(forStatus: response.status.code) }
     }
 
-    private func rawRequest(
-        method: HTTPRequest.Method, path: String, json: Data?, operationID: String, maxBytes: Int
+    func rawRequest(
+        method: HTTPRequest.Method, path: String, json: Data?, operationID: String, maxBytes: Int,
+        acceptedStatuses: Set<Int> = [200]
     ) async throws -> Data {
         var request = HTTPRequest(method: method, scheme: nil, authority: nil, path: path)
         request.headerFields[.accept] = "application/json"
@@ -265,7 +266,7 @@ public struct LiveImmichService: ImmichService {
                 request, body: json.map { HTTPBody($0) }, baseURL: credentials.apiBaseURL, operationID: operationID
             )
         }
-        guard response.status.code == 200 else { throw Self.error(forStatus: response.status.code) }
+        guard acceptedStatuses.contains(response.status.code) else { throw Self.error(forStatus: response.status.code) }
         guard let body else { throw ImmichServiceError.invalidResponse }
         return try await Self.mapErrors { try await Data(collecting: body, upTo: maxBytes) }
     }

@@ -55,6 +55,9 @@ public struct CollectionsView: View {
         #endif
         .task(id: refreshRevision) { await loadAll(force: refreshRevision > 0) }
         .refreshable { await loadAll(force: true) }
+        .onReceive(NotificationCenter.default.publisher(for: .bloomAlbumsDidChange)) { _ in
+            Task { await model.loadAlbums() }
+        }
     }
 
     #if os(iOS)

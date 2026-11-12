@@ -17,6 +17,8 @@ public final class LibrarySelectionModel {
     public private(set) var pendingTrashAssets: [Asset]?
     public private(set) var pendingRestoreAssets: [Asset]?
     public var selectedCount: Int { selectedIDs.count }
+    /// For "Add to Album": the service of the library the photos come from.
+    var service: any ImmichService { library.service }
     private var hasPendingConfirmation: Bool { pendingTrashAssets != nil || pendingRestoreAssets != nil }
 
     @ObservationIgnored private let library: LibraryGridModel

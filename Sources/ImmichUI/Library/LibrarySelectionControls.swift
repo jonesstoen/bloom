@@ -67,8 +67,16 @@ struct LibrarySelectionToolbar: View {
     let selection: LibrarySelectionModel
     var allowsTrash = false
     var allowsRestore = false
+    @State private var addingToAlbum: [String]?
 
     var body: some View {
+        content
+            .sheet(isPresented: Binding(get: { addingToAlbum != nil }, set: { if !$0 { addingToAlbum = nil } })) {
+                AlbumPickerSheet(service: selection.service, assetIDs: addingToAlbum ?? [])
+            }
+    }
+
+    private var content: some View {
         VStack(spacing: 8) {
             HStack(spacing: 12) {
                 if !allowsRestore {
@@ -100,6 +108,9 @@ struct LibrarySelectionToolbar: View {
 
                 if !allowsRestore {
                     Menu {
+                        Button(tr("Add to Album"), systemImage: "rectangle.stack.badge.plus") {
+                            addingToAlbum = Array(selection.selectedIDs)
+                        }
                         Button(tr("Add to Favorites"), systemImage: "heart") {
                             Task { await selection.setFavorites(true) }
                         }

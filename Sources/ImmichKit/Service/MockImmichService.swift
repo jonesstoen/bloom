@@ -28,6 +28,8 @@ public actor MockImmichService: ImmichService {
         case setFavorite(String, Bool)
         case moveToTrash(String)
         case restoreAssets(String)
+        case createAlbum(String)
+        case addToAlbum(String)
     }
 
     /// Base URL of the media requests the mock hands out. Nothing answers there.
@@ -205,20 +207,61 @@ public actor MockImmichService: ImmichService {
 
     // MARK: Albums
 
-    /// The library's albums in library order (empty without a library).
+    /// The library's albums in library order, then albums created here (empty without a library).
     public func albums(shared: Bool?) async throws -> [Album] {
         try await begin(.albums)
-        return (library?.albums ?? [])
-            .filter { shared == nil || $0.isShared == shared }
+        return allAlbums().filter { shared == nil || $0.isShared == shared }
     }
 
     /// Throws HTTP 400 for an unknown id, as the server does for albums the user cannot access.
     public func album(id: String) async throws -> Album {
         try await begin(.album(id))
-        guard let album = library?.albums.first(where: { $0.id == id }) else {
+        guard let album = allAlbums().first(where: { $0.id == id }) else {
             throw ImmichServiceError.unexpectedStatus(400)
         }
         return album
+    }
+
+    public func createAlbum(name: String, assetIDs: [String]) async throws -> String {
+        let albumName = try AlbumName.validated(name)
+        try await begin(.createAlbum(albumName))
+        let id = UUID().uuidString.lowercased()
+        let now = Date()
+        createdAlbums.append(Album(id: id, name: albumName, description: "", assetCount: 0, thumbnailAssetId: nil,
+                                   startDate: nil, endDate: nil, createdAt: now, updatedAt: now,
+                                   isShared: false, isNewestFirst: true))
+        albumAdditions[id] = assetIDs.filter { assetsByID[$0] != nil }
+        return id
+    }
+
+    public func addAssets(toAlbum albumID: String, assetIDs: [String]) async throws -> AlbumAddResult {
+        try await begin(.addToAlbum(albumID))
+        guard allAlbums().contains(where: { $0.id == albumID }) else { throw ImmichServiceError.unexpectedStatus(400) }
+        var inAlbum = Set(albumAssetIDs(albumID))
+        var result = AlbumAddResult(addedIDs: [], alreadyInAlbumIDs: [], failedIDs: [])
+        for id in assetIDs {
+            if assetsByID[id] == nil { result.failedIDs.append(id) }
+            else if inAlbum.contains(id) { result.alreadyInAlbumIDs.append(id) }
+            else { inAlbum.insert(id); albumAdditions[albumID, default: []].append(id); result.addedIDs.append(id) }
+        }
+        return result
+    }
+
+    /// Albums created here and photos added here, on top of the library's.
+    private var createdAlbums: [Album] = []
+    private var albumAdditions: [String: [String]] = [:]
+
+    private func albumAssetIDs(_ albumID: String) -> [String] {
+        (library?.albumAssetIDs[albumID] ?? []) + (albumAdditions[albumID] ?? [])
+    }
+
+    private func allAlbums() -> [Album] {
+        ((library?.albums ?? []) + createdAlbums).map { album in
+            var album = album
+            album.assetCount = Set(albumAssetIDs(album.id)).count
+            if album.thumbnailAssetId == nil { album.thumbnailAssetId = albumAssetIDs(album.id).first }
+            return album
+        }
     }
 
     // MARK: People
@@ -461,7 +504,7 @@ public actor MockImmichService: ImmichService {
 
     /// Mirrors the server filters. Album/person filters use `library` and match nothing without one.
     private func filtered(_ options: TimelineOptions) -> [Asset] {
-        let albumIDs = options.albumId.map { Set(library?.albumAssetIDs[$0] ?? []) }
+        let albumIDs = options.albumId.map { Set(albumAssetIDs($0)) }
         let personIDs = options.personId.map { Set(library?.personAssetIDs[$0] ?? []) }
         return assets.filter { asset in
             if let albumIDs, !albumIDs.contains(asset.id) { return false }

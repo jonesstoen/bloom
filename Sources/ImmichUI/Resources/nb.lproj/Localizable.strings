@@ -209,3 +209,16 @@
 /* All memories */
 "No Memories" = "Ingen minner";
 "Photos from this day in earlier years appear here." = "Bilder fra denne dagen tidligere år vises her.";
+
+/* Albums: create and add */
+"Add to Album" = "Legg til i album";
+"New Album…" = "Nytt album …";
+"New Album" = "Nytt album";
+"Title" = "Tittel";
+"Save" = "Arkiver";
+"Couldn't add to the album. Please try again." = "Kunne ikke legge til i albumet. Prøv igjen.";
+"Couldn't create the album. Please try again." = "Kunne ikke opprette albumet. Prøv igjen.";
+"Created «%@» with %lld items." = "Opprettet «%@» med %lld objekter.";
+"Added %lld items to «%@»." = "La til %lld objekter i «%@».";
+"%lld were already there." = "%lld var der allerede.";
+"%lld couldn't be added." = "%lld kunne ikke legges til.";

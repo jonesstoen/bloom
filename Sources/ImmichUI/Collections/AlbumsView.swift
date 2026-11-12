@@ -9,6 +9,10 @@ public struct AlbumsView: View {
         _model = State(initialValue: CollectionsModel(service: service, loader: loader))
     }
 
+    @State private var naming = false
+    @State private var newName = ""
+    @State private var createError: String?
+
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
@@ -55,6 +59,31 @@ public struct AlbumsView: View {
         #endif
         .task { if !model.loadedAlbums { await model.loadAlbums() } }
         .refreshable { await model.loadAlbums() }
+        .onReceive(NotificationCenter.default.publisher(for: .bloomAlbumsDidChange)) { _ in
+            Task { await model.loadAlbums() }
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button(tr("New Album"), systemImage: "plus") { naming = true }
+            }
+        }
+        .alert(tr("New Album"), isPresented: $naming) {
+            TextField(tr("Title"), text: $newName)
+            Button(tr("Cancel"), role: .cancel) { newName = "" }
+            Button(tr("Save")) {
+                let name = newName
+                newName = ""
+                Task {
+                    do {
+                        _ = try await model.service.createAlbum(name: name, assetIDs: [])
+                        NotificationCenter.default.post(name: .bloomAlbumsDidChange, object: nil)
+                    } catch { createError = tr("Couldn't create the album. Please try again.") }
+                }
+            }
+        }
+        .alert(createError ?? "", isPresented: Binding(get: { createError != nil }, set: { if !$0 { createError = nil } })) {
+            Button(tr("OK")) { createError = nil }
+        }
     }
 
     private var columns: [GridItem] {
