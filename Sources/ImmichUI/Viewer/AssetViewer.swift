@@ -449,7 +449,9 @@ private struct ViewerPage: View {
                 VideoPlaybackView(request: request, isActive: isActive && livePlaybackAllowed)
             } else if let image = model.displayImage {
                 #if os(iOS)
-                ZoomableImage(image: image, isActive: isActive, onSingleTap: onTap,
+                ZoomableImage(image: image, isActive: isActive,
+                              accessibilityText: ViewerAccessibility.label(for: model.asset, place: model.placeTitle),
+                              onSingleTap: onTap,
                               livePhotoEnabled: livePlaybackAllowed && model.asset.isLivePhoto && model.playback != nil,
                               onLivePhotoHold: { held in
                                   if held && playbackAllowed { model.startLivePhotoPlayback() }
@@ -466,7 +468,6 @@ private struct ViewerPage: View {
                             .accessibilityHidden(true)
                         }
                     }
-                    .accessibilityLabel(model.asset.isVideo ? tr("Video preview") : tr("Photo"))
                 #else
                 Image(decorative: image, scale: 1).resizable().scaledToFit()
                     .onTapGesture(perform: onTap)

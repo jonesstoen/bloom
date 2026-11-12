@@ -19,6 +19,9 @@ struct LibraryLargeHeader<Options: View>: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text(title)
                     .font(.largeTitle.weight(.bold))
+                    // Shrinks at the largest text sizes rather than pushing the buttons off screen.
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
                 // Its own view: the date range changes while scrolling, and reading it here
                 // would re-render the header, menus and scroll view each time.
                 if selection.isSelecting {

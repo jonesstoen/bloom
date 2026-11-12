@@ -26,9 +26,10 @@ public enum LibraryScale: String, CaseIterable, Identifiable, Sendable {
     /// How this level looks while `shown` is on screen. Like Photos, a level that isn't shown
     /// waits faded out, smaller if it is coarser than the shown one and larger if finer, so a
     /// switch zooms both levels in the same direction while they cross-fade.
-    func zoom(showing shown: LibraryScale) -> (scale: CGFloat, opacity: Double) {
+    /// With Reduce Motion the levels only cross-fade.
+    func zoom(showing shown: LibraryScale, reduceMotion: Bool = false) -> (scale: CGFloat, opacity: Double) {
         if self == shown { return (1, 1) }
-        return (depth < shown.depth ? 0.85 : 1.15, 0)
+        return (reduceMotion ? 1 : (depth < shown.depth ? 0.85 : 1.15), 0)
     }
 
     /// The switch between levels (Photos takes about a third of a second).
@@ -39,9 +40,10 @@ public enum LibraryScale: String, CaseIterable, Identifiable, Sendable {
 struct LibraryZoomLayer: ViewModifier {
     let level: LibraryScale
     let shown: LibraryScale
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
-        let zoom = level.zoom(showing: shown)
+        let zoom = level.zoom(showing: shown, reduceMotion: reduceMotion)
         content
             .scaleEffect(zoom.scale)
             .opacity(zoom.opacity)
@@ -84,8 +86,11 @@ struct LibraryScaleSwitcher: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(scale == option ? .isSelected : [])
+                // Capped like the tab bar it sits in; a long press shows it large instead.
+                .accessibilityShowsLargeContentViewer()
             }
         }
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .padding(showsGlass ? 4 : 2)
         .modifier(SwitcherGlass(isOn: showsGlass))
     }
@@ -337,7 +342,13 @@ struct MonthMosaic: View {
                 .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(tr("Day %lld", Int64(tile.day)))
+        .accessibilityLabel(Self.accessibilityLabel(for: tile.cover))
+    }
+
+    /// "8 October 2026": the tile's date, so a day reads on its own.
+    static func accessibilityLabel(for cover: Asset, locale: Locale = Localization.locale) -> String {
+        cover.localDateTime.formatted(Date.FormatStyle(date: .long, time: .omitted, locale: locale,
+                                                       calendar: Asset.localCalendar, timeZone: .gmt))
     }
 }
 
@@ -407,6 +418,7 @@ private struct CoverImage: View {
 
 /// A rounded card with a cover photo and a title in its top-left corner.
 private struct OverviewCard: View {
+    @ScaledMetric(relativeTo: .largeTitle) private var titleSize: CGFloat = 30
     let title: String
     let subtitle: String?
     let cover: Asset?
@@ -419,7 +431,7 @@ private struct OverviewCard: View {
             .frame(maxWidth: .infinity)
             .overlay(alignment: .topLeading) {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(title).font(.system(size: 30, weight: .bold))
+                    Text(title).font(.system(size: titleSize, weight: .bold))
                     if let subtitle { Text(subtitle).font(.headline).opacity(0.9) }
                 }
                 .foregroundStyle(.white)

@@ -10,6 +10,8 @@ import UIKit
 struct ZoomableImage: UIViewRepresentable {
     let image: CGImage
     let isActive: Bool
+    /// What VoiceOver reads for the image.
+    var accessibilityText = tr("Photo")
     var onSingleTap: () -> Void = {}
     var livePhotoEnabled = false
     var onLivePhotoHold: (Bool) -> Void = { _ in }
@@ -18,6 +20,7 @@ struct ZoomableImage: UIViewRepresentable {
     func makeUIView(context: Context) -> ZoomingScrollView {
         let view = ZoomingScrollView()
         view.setImage(image)
+        view.setAccessibilityText(accessibilityText)
         view.onSingleTap = onSingleTap
         view.onLivePhotoHold = onLivePhotoHold
         view.onZoomChanged = onZoomChanged
@@ -27,6 +30,7 @@ struct ZoomableImage: UIViewRepresentable {
 
     func updateUIView(_ view: ZoomingScrollView, context: Context) {
         view.setImage(image)
+        view.setAccessibilityText(accessibilityText)
         view.onSingleTap = onSingleTap
         view.onLivePhotoHold = onLivePhotoHold
         view.onZoomChanged = onZoomChanged
@@ -81,6 +85,10 @@ final class ZoomingScrollView: UIScrollView, UIScrollViewDelegate, UIGestureReco
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    func setAccessibilityText(_ text: String) {
+        if imageView.accessibilityLabel != text { imageView.accessibilityLabel = text }
+    }
 
     func setImage(_ cgImage: CGImage) {
         guard imageView.image?.cgImage !== cgImage else { return }
