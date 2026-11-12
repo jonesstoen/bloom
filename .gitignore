@@ -32,3 +32,6 @@ run-overnight.sh
 .idea/
 *.swp
 *.orig
+
+# Local backups (history cleanup)
+.git-backup/
