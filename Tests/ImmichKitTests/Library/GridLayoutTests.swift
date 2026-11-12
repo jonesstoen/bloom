@@ -59,7 +59,6 @@ final class GridLayoutTests: XCTestCase {
         let month = try XCTUnwrap(model.months.dropFirst(2).first)
         let first = try XCTUnwrap(model.firstGridIndex(ofMonth: month.id))
         XCTAssertEqual(model.gridMonthID(atGridIndex: first), month.id)
-        XCTAssertEqual(model.gridItemID(atGridIndex: first), model.firstGridID(ofMonth: month.id))
         if first > 0 { XCTAssertNotEqual(model.gridMonthID(atGridIndex: first - 1), month.id) }
         XCTAssertNil(model.firstGridIndex(ofMonth: "no-such-month"))
     }

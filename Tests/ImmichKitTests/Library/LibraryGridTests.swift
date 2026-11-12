@@ -27,7 +27,6 @@ final class LibraryGridTests: XCTestCase {
         // Appear out of order: the anchor follows grid order, not appearance order.
         for asset in [assets[4], assets[0], assets[2], assets[1], assets[3]] { model.assetAppeared(asset.id) }
         XCTAssertEqual(model.visibleCenterID, assets[2].id)
-        XCTAssertEqual(model.visibleAnchorID, assets[0].id)
         model.assetDisappeared(assets[0].id)
         model.assetDisappeared(assets[1].id)
         XCTAssertEqual(model.visibleCenterID, assets[3].id)

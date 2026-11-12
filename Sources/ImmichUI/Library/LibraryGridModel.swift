@@ -39,9 +39,6 @@ public final class LibraryGridModel {
     /// Five columns by default; the Library tab remembers the user's choice.
     public var density: GridDensity = .five
     public var columnCount: Int { density.rawValue }
-    public var visibleAnchorID: String? {
-        visibleIDs.min { (assetIndexByID[$0] ?? .max) < (assetIndexByID[$1] ?? .max) }
-    }
     /// The visible asset in the middle of the visible range: the anchor that stays in place
     /// when the grid density changes, so a pinch keeps what you are looking at on screen.
     public var visibleCenterID: String? {
@@ -348,11 +345,8 @@ public final class LibraryGridModel {
     public func gridItemID(atGridIndex index: Int) -> AnyHashable? {
         guard let (month, offset) = cell(at: index) else { return nil }
         if months[month].isLoaded { return AnyHashable(monthAssets[month][offset].id) }
-        return AnyHashable(PlaceholderSlots.Slot(monthID: months[month].id, index: offset))
+        return AnyHashable(PlaceholderSlot(monthID: months[month].id, index: offset))
     }
-
-    /// The asset in grid cell `index`, or `nil` when that cell is a placeholder.
-    public func assetID(atGridIndex index: Int) -> String? { gridAsset(atGridIndex: index)?.id }
 
     /// The loaded asset in grid cell `index` (`nil` for placeholders).
     public func gridAsset(atGridIndex index: Int) -> Asset? {
@@ -480,15 +474,6 @@ public final class LibraryGridModel {
     /// Set by a day tile in Months; the grid centres this asset and clears it.
     public var pendingScrollAssetID: String?
 
-    /// The scroll ID of the first cell of month `id` (an asset, or a placeholder slot).
-    public func firstGridID(ofMonth id: String) -> AnyHashable? {
-        guard let month = month(id: id) else { return nil }
-        if month.isLoaded, let first = month.assets.first { return AnyHashable(first.id) }
-        return month.bucket.count > 0 ? AnyHashable(PlaceholderSlots.Slot(monthID: id, index: 0)) : nil
-    }
-
-
-
     /// Whether every month's assets are loaded (the Months view needs their final heights).
     public var allMonthsLoaded: Bool { !months.isEmpty && months.allSatisfy(\.isLoaded) }
 
@@ -612,18 +597,6 @@ public final class LibraryGridModel {
         guard range != lastVisibleRange else { return }
         lastVisibleRange = range
         updates.yield(.visible(range))
-    }
-
-    /// Grid indices spanned by the loaded cells SwiftUI reports on screen, in any order.
-    /// `nil` when none of them is a loaded photo (only placeholders on screen).
-    public func gridRange(ofVisible ids: [String]) -> ClosedRange<Int>? {
-        var lower = Int.max, upper = Int.min
-        for id in ids {
-            guard let index = gridIndex(ofAsset: id) else { continue }
-            lower = min(lower, index)
-            upper = max(upper, index)
-        }
-        return lower <= upper ? lower...upper : nil
     }
 
     /// The grid cells on screen changed (reported by the grid from the cells SwiftUI shows).

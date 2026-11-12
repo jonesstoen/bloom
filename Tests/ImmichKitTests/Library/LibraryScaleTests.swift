@@ -75,15 +75,6 @@ final class LibraryScaleTests: XCTestCase {
         XCTAssertGreaterThan(seen.count, 1, "the cover takes turns between days")
     }
 
-    func testFirstGridIDOfAMonth() async throws {
-        let model = await loadedModel()
-        let loaded = try XCTUnwrap(model.months.last)
-        XCTAssertEqual(model.firstGridID(ofMonth: loaded.id), AnyHashable(loaded.assets[0].id))
-        let unloaded = model.months[0]
-        XCTAssertEqual(model.firstGridID(ofMonth: unloaded.id), AnyHashable(PlaceholderSlots.Slot(monthID: unloaded.id, index: 0)))
-        XCTAssertNil(model.firstGridID(ofMonth: "missing"))
-    }
-
     func testFavoritesFilterReloadsWithOnlyFavorites() async throws {
         let model = await loadedModel(MockImmichService(library: .standard))
         let allCount = model.totalCount
@@ -219,17 +210,6 @@ final class LibraryScaleTests: XCTestCase {
         // Only placeholders on screen: keep the last title rather than showing nothing.
         model.screenRangeChanged(0...5)
         XCTAssertEqual(model.visibleDateRangeTitle, expected)
-    }
-
-    /// The header follows the cells SwiftUI reports on screen. After a pinch LazyVGrid's content
-    /// height is an estimate, so the scroll offset pointed at months-old photos (a real bug).
-    func testScreenRangeComesFromTheVisibleCells() async throws {
-        let model = await loadedModel()
-        let last = model.gridItemCount - 1
-        let ids = try (last - 8...last).reversed().map { try XCTUnwrap(model.gridAsset(atGridIndex: $0)?.id) }
-        XCTAssertEqual(model.gridRange(ofVisible: ids), (last - 8)...last, "Order of the reported IDs doesn't matter")
-        XCTAssertNil(model.gridRange(ofVisible: []))
-        XCTAssertNil(model.gridRange(ofVisible: ["not-in-the-library"]))
     }
 
     func testCellLookupsMatchMonthsIncludingEmptyOnes() async throws {

@@ -50,14 +50,4 @@ public enum GridPinchAnchor {
         let newRow = Double(index / new)
         return Result(offset: (newRow + fraction) * newPitch - focalY, index: index)
     }
-
-    /// The `UnitPoint.y` for `ScrollViewProxy.scrollTo(_:anchor:)` that puts an item's top edge at
-    /// `itemTop` (measured from the top of the scroll view's frame). `scrollTo` aligns the anchor
-    /// inside the area between the content insets: top = insetTop + y × (visibleHeight − itemHeight),
-    /// where `visibleHeight` excludes the insets (`ScrollGeometry.containerSize.height`).
-    public static func unitAnchorY(itemTop: Double, itemHeight: Double, insetTop: Double, visibleHeight: Double) -> Double {
-        let range = visibleHeight - itemHeight
-        guard range > 0, itemTop.isFinite else { return 0.5 }
-        return min(1, max(0, (itemTop - insetTop) / range))
-    }
 }
