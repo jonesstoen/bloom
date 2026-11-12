@@ -17,3 +17,18 @@ HANDOFF.md
 xcuserdata/
 *.xcuserstate
 DerivedData/
+
+# Coding agent instructions, history and tooling (kept locally, not published)
+CLAUDE.md
+TASKS.md
+PROGRESS.md
+CODEX-WORKFLOW.md
+run-overnight.sh
+.claude/
+.codex/
+
+# Editors and local scratch
+.vscode/
+.idea/
+*.swp
+*.orig

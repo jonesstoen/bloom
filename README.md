@@ -119,7 +119,7 @@ Known harmless warnings are the unhandled OpenAPI spec/config files in SwiftPM a
 
 ## API generation and compatibility
 
-The checked-in spec is **Immich v3.4.0**. **Re-check it against the real server's `/api/server/version` before relying on live compatibility.** See `PROGRESS.md` for date decoding, older-server response fallbacks, timeline shape and media content-type handling.
+The checked-in spec is **Immich v3.4.0**. **Re-check it against the real server's `/api/server/version` before relying on live compatibility.** Responses from older servers are decoded leniently where fields were added later (for example `featureLevel`).
 
 The OpenAPI generator build plugin is intentionally not enabled: unattended Xcode builds otherwise require plugin approval. Generated sources live in `Sources/ImmichAPI/GeneratedSources/`. Only regenerate after changing the spec or operation filter:
 
@@ -136,3 +136,7 @@ Commit the generated changes and rerun all three checks.
 - Check authenticated video playback, large libraries, offline/reconnect behavior and Dynamic Type/VoiceOver on a physical iPhone.
 
 The root shares one loader across tabs and namespaces its disk cache by a digest of the connection identity, so different server/account connections do not reuse each other's thumbnails. Custom service integrations that create loaders directly should likewise supply a separate `DiskImageCache` directory per connection.
+
+## License
+
+MIT, see [LICENSE](LICENSE). `Sources/ImmichAPI/openapi.json` is the Immich API specification, published by the Immich project under AGPL-3.0. Bloom is an independent client and is not affiliated with Immich.

@@ -34,6 +34,4 @@ integration tests skip unless `IMMICH_URL` and `IMMICH_API_KEY` are set.
 
 - `Branding/` — the logo kit and its generator.
 - `docs/` — this file and the README screenshots.
-- `CLAUDE.md`, `TASKS.md`, `PROGRESS.md`, `CODEX-WORKFLOW.md`, `run-overnight.sh`, `.claude/`, `.codex/` —
-  instructions and history for the coding agents that built the app. They stay at the top level
-  because the tools look for them there.
+- Notes for the coding agents that helped build the app are kept locally and are not part of the repository.
