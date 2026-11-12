@@ -46,6 +46,7 @@ extension LiveImmichService {
 
     public func mediaRequest(_ kind: MediaRequest.Kind, assetID: String) async throws -> MediaRequest {
         guard !assetID.isEmpty else { throw ImmichServiceError.invalidResponse }
+        guard credentials.protectsAPIKey else { throw ImmichServiceError.insecureConnection }
         let base = credentials.apiBaseURL.appendingPathComponent("assets").appendingPathComponent(assetID)
         let url = switch kind {
         case .original: base.appendingPathComponent("original")

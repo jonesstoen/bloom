@@ -87,7 +87,7 @@ each part lives: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). The logo kit (S
 
    The generated `ContentView` is no longer needed. No API key, server URL or extra service wiring belongs in the app source.
 5. Select an iPhone simulator or your signed-in physical device and run. On first launch, enter the server URL and API key in the login screen. The connection test checks an authenticated endpoint before saving to the Keychain. Subsequent launches restore that connection; **Library → Account → Sign Out** clears it and the session's image cache.
-6. For a server on your local network, add **Privacy - Local Network Usage Description** (`NSLocalNetworkUsageDescription`) to the app target's Info settings, explaining that the app connects to the user's photo server. Prefer a server with trusted HTTPS. If you deliberately use plain HTTP, configure a narrowly scoped App Transport Security exception in the app target for that server; the package does not disable ATS globally.
+6. For a server on your local network, add **Privacy - Local Network Usage Description** (`NSLocalNetworkUsageDescription`) to the app target's Info settings, explaining that the app connects to the user's photo server. Prefer a server with trusted HTTPS. Bloom refuses plain HTTP except for servers on your own network (private addresses, `.local` names) or on Tailscale, which encrypts the traffic itself; for those, configure a narrowly scoped App Transport Security exception in the app target. The package does not disable ATS globally, and it never follows a redirect to another server.
 
 Browsing does not require permission to the iPhone's Photos library: images come from Immich. Uploading and saving to the device's photo library are not implemented.
 

@@ -86,10 +86,12 @@ public struct LoginView: View {
             Text(tr("Server"))
         } footer: {
             VStack(alignment: .leading, spacing: 8) {
-                if model.isUnencrypted {
-                    Label(tr("This address isn't encrypted, so your API key is sent as plain text. Use https unless the server is only on your own network."),
+                if model.isRefusedHTTP {
+                    Label(tr("Bloom only uses http on your own network or Tailscale. Use https for this server."),
                           systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
+                } else if model.isUnencrypted {
+                    Label(tr("Unencrypted, so only for a server on your own network or Tailscale."), systemImage: "lock.open")
                 }
                 Text(tr("Create an API key in the Immich web app under Account Settings › API Keys. It is stored in the Keychain on this device."))
             }

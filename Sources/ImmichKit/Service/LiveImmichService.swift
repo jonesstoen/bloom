@@ -249,6 +249,7 @@ public struct LiveImmichService: ImmichService {
 
     /// The trash endpoint documents only 204. Do not broaden this to arbitrary success codes.
     func sendTrashRequest(json: Data) async throws {
+        guard credentials.protectsAPIKey else { throw ImmichServiceError.insecureConnection }
         var request = HTTPRequest(method: .delete, scheme: nil, authority: nil, path: "/assets")
         request.headerFields[.accept] = "application/json"
         request.headerFields[.contentType] = "application/json; charset=utf-8"
@@ -264,6 +265,7 @@ public struct LiveImmichService: ImmichService {
         method: HTTPRequest.Method, path: String, json: Data?, operationID: String, maxBytes: Int,
         acceptedStatuses: Set<Int> = [200]
     ) async throws -> Data {
+        guard credentials.protectsAPIKey else { throw ImmichServiceError.insecureConnection }
         var request = HTTPRequest(method: method, scheme: nil, authority: nil, path: path)
         request.headerFields[.accept] = "application/json"
         if json != nil { request.headerFields[.contentType] = "application/json; charset=utf-8" }

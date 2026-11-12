@@ -34,3 +34,5 @@
 "Bloom is set to view only. Turn on Allow Changes in the account menu to change your library." = "Bloom er satt til bare visning. Slå på Tillat endringer i kontomenyen for å endre biblioteket.";
 "Server Redirected" = "Serveren videresendte";
 "The server sent Bloom to a different address. Bloom doesn't follow it, so your API key stays with this server. Enter the address the server uses, for example with https://." = "Serveren sendte Bloom videre til en annen adresse. Bloom følger ikke etter, så API-nøkkelen blir hos denne serveren. Skriv inn adressen serveren bruker, for eksempel med https://.";
+"Unencrypted Address" = "Ukryptert adresse";
+"Bloom only uses http on your own network or Tailscale. Use https for this server." = "Bloom bruker bare http på ditt eget nettverk eller Tailscale. Bruk https for denne serveren.";

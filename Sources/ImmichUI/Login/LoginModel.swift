@@ -56,6 +56,12 @@ public final class LoginModel {
         ServerCredentials.normalizedServerURL(from: server)?.scheme == "http"
     }
 
+    /// Plain http to a host outside the user's own network or Tailscale, which Bloom refuses.
+    public var isRefusedHTTP: Bool {
+        guard let url = ServerCredentials.normalizedServerURL(from: server) else { return false }
+        return !ServerCredentials.protectsAPIKey(url)
+    }
+
     public var canConnect: Bool {
         !isConnecting
             && !server.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

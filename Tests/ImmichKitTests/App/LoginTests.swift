@@ -80,6 +80,9 @@ final class ConnectionTesterTests: XCTestCase {
             .makeLoginModel()
         login.server = "http://192.168.1.10:2283"
         XCTAssertTrue(login.isUnencrypted)
+        XCTAssertFalse(login.isRefusedHTTP, "own network")
+        login.server = "http://photos.example.com"
+        XCTAssertTrue(login.isRefusedHTTP)
         login.server = "https://photos.example.com"
         XCTAssertFalse(login.isUnencrypted)
         login.server = "photos.example.com"
@@ -89,7 +92,7 @@ final class ConnectionTesterTests: XCTestCase {
     func testMessagesNeverContainKey() {
         let errors: [LoginError] = [
             .missingServer, .missingAPIKey, .invalidServerURL, .serverUnreachable("x"),
-            .notImmichServer, .invalidAPIKey, .serverError(500), .saveFailed, .redirected,
+            .notImmichServer, .invalidAPIKey, .serverError(500), .saveFailed, .redirected, .insecureServer,
         ]
         for error in errors {
             XCTAssertFalse(error.title.isEmpty)

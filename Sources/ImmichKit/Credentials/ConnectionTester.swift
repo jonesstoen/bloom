@@ -18,6 +18,8 @@ public enum LoginError: Error, Sendable, Equatable, LocalizedError {
     case serverError(Int)
     /// The server redirected to another address, which Bloom doesn't follow (the API key would go along).
     case redirected
+    /// Plain http to a host outside the user's own network or Tailscale: the key would travel unencrypted.
+    case insecureServer
     /// The connection worked, but the credentials could not be saved to the Keychain.
     case saveFailed
 
@@ -31,6 +33,7 @@ public enum LoginError: Error, Sendable, Equatable, LocalizedError {
         case .invalidAPIKey: return tr("Wrong API Key")
         case .serverError: return tr("Server Error")
         case .redirected: return tr("Server Redirected")
+        case .insecureServer: return tr("Unencrypted Address")
         case .saveFailed: return tr("Could Not Save Login")
         }
     }
@@ -53,6 +56,8 @@ public enum LoginError: Error, Sendable, Equatable, LocalizedError {
             return tr("The server answered with HTTP status %lld. Try again later.", Int64(status))
         case .saveFailed:
             return tr("The connection works, but the login could not be saved to the Keychain.")
+        case .insecureServer:
+            return tr("Bloom only uses http on your own network or Tailscale. Use https for this server.")
         case .redirected:
             return tr("The server sent Bloom to a different address. Bloom doesn't follow it, so your API key stays with this server. Enter the address the server uses, for example with https://.")
         }
@@ -67,6 +72,8 @@ public enum LoginError: Error, Sendable, Equatable, LocalizedError {
             return .invalidServerURL
         case ImmichServiceError.network(let detail):
             return .serverUnreachable(detail)
+        case ImmichServiceError.insecureConnection:
+            return .insecureServer
         case ImmichServiceError.unexpectedStatus(let status) where (300..<400).contains(status):
             return .redirected
         case ImmichServiceError.unexpectedStatus(let status) where status >= 500:
@@ -135,6 +142,8 @@ public struct ConnectionTester: Sendable {
 
     /// Tests the connection with already-built credentials. Throws `LoginError`.
     public func test(_ credentials: ServerCredentials) async throws -> ConnectionInfo {
+        // Checked before anything is sent: the first request already carries the key.
+        guard credentials.protectsAPIKey else { throw LoginError.insecureServer }
         let service = makeService(credentials)
         let version: ServerVersion
         do {

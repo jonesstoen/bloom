@@ -19,6 +19,8 @@ public struct APIKeyMiddleware: ClientMiddleware {
         operationID: String,
         next: @Sendable (HTTPRequest, HTTPBody?, URL) async throws -> (HTTPResponse, HTTPBody?)
     ) async throws -> (HTTPResponse, HTTPBody?) {
+        // Never put the key on the wire as plain text across the internet.
+        guard ServerCredentials.protectsAPIKey(baseURL) else { throw ImmichServiceError.insecureConnection }
         var request = request
         request.headerFields[Self.headerName] = apiKey
         return try await next(request, body, baseURL)
