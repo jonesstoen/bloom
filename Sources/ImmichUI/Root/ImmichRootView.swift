@@ -32,7 +32,7 @@ public struct ImmichRootView: View {
                 LoginView(model: model.makeLoginModel())
             case .signedIn:
                 if let session = model.session {
-                    ImmichTabs(session: session, isSigningOut: model.isSigningOut) {
+                    ImmichTabs(session: session, editing: model.editing, isSigningOut: model.isSigningOut) {
                         Task { await model.signOut() }
                     }
                     .id(session.id)
@@ -61,8 +61,10 @@ public struct ImmichRootView: View {
 
 private struct ImmichTabs: View {
     let session: ImmichSession
+    let editing: EditingPermission
     let isSigningOut: Bool
     let signOut: () -> Void
+    @AppStorage(LibraryChanges.storageKey) private var allowsChanges = false
     @State private var selection: AppTab = Self.initialTab
     /// Bumped when the Library tab is tapped while it is already open.
     @State private var libraryReselections = 0
@@ -133,10 +135,14 @@ private struct ImmichTabs: View {
         .sheet(isPresented: $showsAbout) {
             AboutBloomView(icons: AppIconModel(switcher: SystemAppIconSwitcher()))
         }
+        .environment(\.allowsLibraryChanges, allowsChanges)
+        .onChange(of: allowsChanges, initial: true) { _, allowed in editing.isAllowed = allowed }
     }
 
     private var accountMenu: some View {
         Menu {
+            Toggle(tr("Allow Changes"), systemImage: "pencil", isOn: $allowsChanges)
+                .disabled(session.library.isMutating)
             Button(tr("About Bloom"), systemImage: "info.circle") { showsAbout = true }
             Button(tr("Sign Out"), systemImage: "rectangle.portrait.and.arrow.right", role: .destructive, action: signOut)
                 .disabled(isSigningOut || session.library.isMutating)
@@ -207,5 +213,6 @@ private struct MinimizeTabBarOnScroll: ViewModifier {
     ImmichRootView(model: RootModel(store: CredentialStore(storage: InMemorySecureStorage()), makeService: { _ in MockImmichService.preview }))
 }
 #Preview("Tabs") {
-    ImmichTabs(session: ImmichSession(service: MockImmichService.preview, disk: nil), isSigningOut: false, signOut: {})
+    ImmichTabs(session: ImmichSession(service: MockImmichService.preview, disk: nil),
+               editing: EditingPermission(isAllowed: true), isSigningOut: false, signOut: {})
 }

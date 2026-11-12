@@ -239,6 +239,8 @@ public enum ImmichServiceError: Error, Sendable, Equatable, LocalizedError {
     case invalidResponse
     /// The request did not reach the server (offline, DNS, TLS, timeout, ...).
     case network(String)
+    /// A change to the library was refused because Allow Changes is off (`EditingPermission`).
+    case editingOff
 
     public var errorDescription: String? {
         switch self {
@@ -252,6 +254,8 @@ public enum ImmichServiceError: Error, Sendable, Equatable, LocalizedError {
             return tr("The server sent a response that is not an Immich API response. Check the server URL.")
         case .network(let message):
             return tr("Could not reach the server: %@", message)
+        case .editingOff:
+            return tr("Bloom is set to view only. Turn on Allow Changes in the account menu to change your library.")
         }
     }
 }

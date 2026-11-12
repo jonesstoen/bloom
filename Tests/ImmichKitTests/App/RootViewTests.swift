@@ -24,6 +24,29 @@ final class RootViewTests: XCTestCase {
         XCTAssertNil(try store.load())
     }
 
+    /// A signed-in session only views the library until Allow Changes is turned on.
+    func testSessionsAreViewOnlyUntilChangesAreAllowed() async throws {
+        let store = CredentialStore(storage: InMemorySecureStorage())
+        try store.save(ServerCredentials(server: "https://example.invalid", apiKey: "unit-test-placeholder"))
+        let mock = MockImmichService(library: .standard)
+        let editing = EditingPermission(isAllowed: false)
+        let root = RootModel(store: store, makeService: { _ in mock }, editing: editing)
+        await root.restore()
+        let session = try XCTUnwrap(root.session)
+        let asset = MockLibrary.standard.assets[0]
+        do {
+            _ = try await session.service.moveToTrash(assetIDs: [asset.id])
+            XCTFail("A view-only session must not move anything to trash")
+        } catch {
+            XCTAssertEqual(error as? ImmichServiceError, .editingOff)
+        }
+        let unchanged = try await mock.asset(id: asset.id)
+        XCTAssertFalse(unchanged.isTrashed)
+        editing.isAllowed = true
+        let result = try await session.service.moveToTrash(assetIDs: [asset.id])
+        XCTAssertEqual(result.confirmedIDs, [asset.id])
+    }
+
     func testStoredCredentialsRestoreWithoutNetworkValidation() async throws {
         let store = CredentialStore(storage: InMemorySecureStorage())
         try store.save(ServerCredentials(server: "https://example.invalid", apiKey: "unit-test-placeholder"))

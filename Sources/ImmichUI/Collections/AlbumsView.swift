@@ -3,6 +3,7 @@ import SwiftUI
 
 public struct AlbumsView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.allowsLibraryChanges) private var allowsChanges
     @State private var model: CollectionsModel
 
     public init(service: any ImmichService, loader: ImageLoader? = nil) {
@@ -63,8 +64,10 @@ public struct AlbumsView: View {
             Task { await model.loadAlbums() }
         }
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button(tr("New Album"), systemImage: "plus") { naming = true }
+            if allowsChanges {
+                ToolbarItem(placement: .primaryAction) {
+                    Button(tr("New Album"), systemImage: "plus") { naming = true }
+                }
             }
         }
         .alert(tr("New Album"), isPresented: $naming) {

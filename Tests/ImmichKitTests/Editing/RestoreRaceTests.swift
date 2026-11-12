@@ -169,7 +169,7 @@ final class RestoreRaceTests: XCTestCase {
         let service = RestoreRaceService(assets: input)
         let credentials = CredentialStore(storage: InMemorySecureStorage())
         try credentials.save(ServerCredentials(server: "https://example.invalid", apiKey: "test-placeholder"))
-        let root = RootModel(store: credentials, makeService: { _ in service })
+        let root = RootModel(store: credentials, makeService: { _ in service }, editing: EditingPermission(isAllowed: true))
         await root.restore()
         let main = try XCTUnwrap(root.session?.library)
         await main.load()

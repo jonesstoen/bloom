@@ -27,6 +27,7 @@ public struct LibraryGridView: View {
     @AppStorage("library.columns") private var storedColumns = GridDensity.five.rawValue
     @Namespace private var photoTransition
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.allowsLibraryChanges) private var allowsChanges
     private let title: String
     private let headerStyle: HeaderStyle
     private let accessory: AnyView?
@@ -107,8 +108,8 @@ public struct LibraryGridView: View {
         usesLargeTitle && model.phase == .loaded && !model.isEmpty && !selection.isSelecting
     }
 
-    private var canMoveToTrash: Bool { allowsTrash && model.options.isTrashed != true }
-    private var canRestore: Bool { allowsRestore && model.options.isTrashed == true }
+    private var canMoveToTrash: Bool { allowsTrash && allowsChanges && model.options.isTrashed != true }
+    private var canRestore: Bool { allowsRestore && allowsChanges && model.options.isTrashed == true }
     private var mutationBlocked: Bool { selection.isBusy || selection.pendingTrashAssets != nil || selection.pendingRestoreAssets != nil || model.isMutating }
 
     public var body: some View {

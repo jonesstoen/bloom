@@ -31,3 +31,4 @@
 "The server rejected the API key." = "Serveren avviste API-nøkkelen.";
 "The server sent a response that is not an Immich API response. Check the server URL." = "Serveren sendte et svar som ikke er fra Immich. Sjekk serveradressen.";
 "The server URL is not valid." = "Serveradressen er ikke gyldig.";
+"Bloom is set to view only. Turn on Allow Changes in the account menu to change your library." = "Bloom er satt til bare visning. Slå på Tillat endringer i kontomenyen for å endre biblioteket.";

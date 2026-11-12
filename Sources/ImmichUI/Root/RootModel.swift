@@ -34,16 +34,22 @@ public final class RootModel {
     @ObservationIgnored private let makeService: ConnectionTester.ServiceFactory
     @ObservationIgnored private var restoring = false
     @ObservationIgnored private var persistsImages = true
+    /// Allow Changes, shared with every session's service (see `LibraryChanges`).
+    @ObservationIgnored public let editing: EditingPermission
 
+    /// - Parameter editing: defaults to the saved Allow Changes setting (off unless turned on).
     public init(store: CredentialStore = CredentialStore(),
-                makeService: @escaping ConnectionTester.ServiceFactory = { LiveImmichService(credentials: $0) }) {
+                makeService: @escaping ConnectionTester.ServiceFactory = { LiveImmichService(credentials: $0) },
+                editing: EditingPermission? = nil) {
         self.store = store
         self.makeService = makeService
+        self.editing = editing ?? EditingPermission(isAllowed: LibraryChanges.storedValue)
     }
 
     init(previewService: any ImmichService) {
         store = CredentialStore(storage: InMemorySecureStorage())
         makeService = { _ in previewService }
+        editing = EditingPermission(isAllowed: true)
         session = ImmichSession(service: previewService, disk: nil)
         persistsImages = false
         phase = .signedIn
@@ -100,7 +106,7 @@ public final class RootModel {
     public func dismissError() { error = nil }
 
     private func connected(_ credentials: ServerCredentials) {
-        let service = makeService(credentials)
+        let service = EditGuardedService(base: makeService(credentials), permission: editing)
         let disk = persistsImages ? DiskImageCache(directory: Self.cacheDirectory(for: credentials)) : nil
         let snapshots = persistsImages ? TimelineSnapshotStore(
             directory: Self.cacheDirectory(for: credentials).appendingPathComponent("Timeline", isDirectory: true)

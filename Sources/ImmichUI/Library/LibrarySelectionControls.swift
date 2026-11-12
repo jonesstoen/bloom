@@ -67,6 +67,7 @@ struct LibrarySelectionToolbar: View {
     let selection: LibrarySelectionModel
     var allowsTrash = false
     var allowsRestore = false
+    @Environment(\.allowsLibraryChanges) private var allowsChanges
     @State private var addingToAlbum: [String]?
 
     var body: some View {
@@ -106,7 +107,7 @@ struct LibrarySelectionToolbar: View {
                 .multilineTextAlignment(.center)
                 .accessibilityElement(children: .combine)
 
-                if !allowsRestore {
+                if !allowsRestore && allowsChanges {
                     Menu {
                         Button(tr("Add to Album"), systemImage: "rectangle.stack.badge.plus") {
                             addingToAlbum = Array(selection.selectedIDs)

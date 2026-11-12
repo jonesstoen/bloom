@@ -208,7 +208,7 @@ final class TrashCacheTests: XCTestCase {
         let store = CredentialStore(storage: InMemorySecureStorage())
         try store.save(ServerCredentials(server: "https://example.invalid", apiKey: "test-placeholder"))
         let mock = MockImmichService.preview
-        let root = RootModel(store: store, makeService: { _ in mock })
+        let root = RootModel(store: store, makeService: { _ in mock }, editing: EditingPermission(isAllowed: true))
         await root.restore()
         let library = try XCTUnwrap(root.session?.library)
         await library.load()

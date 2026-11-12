@@ -32,6 +32,7 @@ public struct AssetViewer: View {
     private let allowsRestore: Bool
     @State private var store: ViewerStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.allowsLibraryChanges) private var allowsChanges
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -267,7 +268,7 @@ public struct AssetViewer: View {
     @ViewBuilder
     private func menuActions(_ model: ViewerAssetModel) -> some View {
         Button(tr("Photo information"), systemImage: "info.circle") { showsInfo = true }
-        if !allowsRestore && !model.asset.isTrashed {
+        if allowsChanges && !allowsRestore && !model.asset.isTrashed {
             Button(model.asset.isFavorite ? tr("Remove from Favorites") : tr("Add to Favorites"),
                    systemImage: model.asset.isFavorite ? "heart.slash" : "heart") {
                 model.stopLivePhotoPlayback()
@@ -350,7 +351,7 @@ public struct AssetViewer: View {
                 Spacer()
                 if let model = currentModel {
                     HStack(spacing: 4) {
-                        if !allowsRestore && !model.asset.isTrashed {
+                        if allowsChanges && !allowsRestore && !model.asset.isTrashed {
                             capsuleButton(model.asset.isFavorite ? "heart.fill" : "heart",
                                           label: model.asset.isFavorite ? tr("Remove from Favorites") : tr("Add to Favorites")) {
                                 Task { await model.toggleFavorite() }
