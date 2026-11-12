@@ -1,5 +1,9 @@
 import ImmichKit
+import OSLog
 import SwiftUI
+
+// TEMPORARY pinch diagnostics (positions and column counts only). Remove once the jump is found.
+private let pinchLog = Logger(subsystem: "Bloom", category: "pinch")
 
 /// Asks the grid to switch columns (from the options menu). A new `id` makes a repeated choice
 /// a new request.
@@ -80,7 +84,10 @@ struct LibraryGridScroll: View {
             .onScrollGeometryChange(for: ScrollGeometry.self, of: { $0 }) { _, geometry in
                 scrollGeometryChanged(geometry)
             }
-            .onScrollPhaseChange { _, phase in
+            .onScrollPhaseChange { old, phase in
+                if scrollMetrics.logging {
+                    pinchLog.notice("phase \(String(describing: old), privacy: .public) -> \(String(describing: phase), privacy: .public) pinching=\(scrollMetrics.isPinching)")
+                }
                 guard phase == .interacting, !scrollMetrics.isPinching else { return }
                 scrollMetrics.userScrolled = true
                 // The finger takes over: what the scroll view reports is where it is.
@@ -138,7 +145,11 @@ struct LibraryGridScroll: View {
     private func scrollGeometryChanged(_ geometry: ScrollGeometry) {
         let firstLayout = scrollMetrics.geometry == nil
         scrollMetrics.geometry = geometry
+        let pendingBefore = scrollMetrics.pendingOffset
         let offset = scrollMetrics.resolve(geometry)
+        if scrollMetrics.logging {
+            pinchLog.notice("geom cols=\(model.columnCount) contentH=\(Int(geometry.contentSize.height)) reported=\(Int(geometry.contentOffset.y)) pending=\(pendingBefore.map { Int($0) } ?? -1) used=\(Int(offset)) items=\(model.gridItemCount)")
+        }
         let layout = gridLayout(width: geometry.containerSize.width)
         buildRows(layout, contentOffset: offset, frameHeight: geometry.visibleRect.height)
         reportScreen(layout, geometry: geometry, offset: offset)
@@ -233,6 +244,9 @@ struct LibraryGridScroll: View {
         let screenY = Double(layout.origin(of: shift.oldIndex).y) - scrollMetrics.offset(geometry)
         guard screenY > -layout.cell, screenY < geometry.visibleRect.height else { return }
         let offset = Double(layout.origin(of: shift.newIndex).y) - screenY
+        if scrollMetrics.logging {
+            pinchLog.notice("keepInPlace old=\(shift.oldIndex) new=\(shift.newIndex) to=\(Int(offset))")
+        }
         scroll(toY: offset + geometry.contentInsets.top, layout: layout, geometry: geometry)
     }
 
@@ -258,7 +272,9 @@ struct LibraryGridScroll: View {
     /// through several densities.
     private func pinchChanged(_ value: MagnifyGesture.Value) {
         guard !mutationBlocked else { return }
+        if !scrollMetrics.isPinching { pinchLog.notice("pinch start cols=\(model.columnCount)") }
         scrollMetrics.isPinching = true
+        scrollMetrics.logUntil = Date().addingTimeInterval(2)
         let relative = value.magnification / pinch.baseline
         let next = model.density.pinched(by: relative)
         if next != model.density {
@@ -276,6 +292,8 @@ struct LibraryGridScroll: View {
 
     private func pinchEnded() {
         scrollMetrics.isPinching = false
+        scrollMetrics.logUntil = Date().addingTimeInterval(2)
+        pinchLog.notice("pinch end cols=\(model.columnCount)")
         pinch.baseline = 1
         withAnimation(reduceMotion ? nil : .spring(duration: 0.3)) { pinch.liveScale = 1 }
     }
@@ -302,6 +320,7 @@ struct LibraryGridScroll: View {
             width: width, spacing: Self.spacing, from: model.density.rawValue, to: density.rawValue,
             itemCount: model.gridItemCount)
         let newLayout = gridLayout(width: width, columns: density.rawValue)
+        pinchLog.notice("switch \(model.columnCount)->\(density.rawValue) reported=\(Int(geometry.contentOffset.y)) pending=\(scrollMetrics.pendingOffset.map { Int($0) } ?? -1) used=\(Int(currentOffset)) anchorIndex=\(anchor?.index ?? -1) of \(model.gridItemCount) to=\(anchor.map { Int($0.offset) } ?? -1)")
         withTransaction(transaction) {
             model.density = density
             if let anchor {
@@ -351,6 +370,9 @@ private final class ScrollMetrics {
     private var staleReports = 0
     /// A pinch is in progress (its fingers can make the scroll view report interaction).
     var isPinching = false
+    /// TEMPORARY: log scroll reports until this time (around pinches).
+    var logUntil = Date.distantPast
+    var logging: Bool { isPinching || Date() < logUntil }
     /// The grid has been opened at the newest photos once.
     var didOpen = false
     /// The user has touched the grid (then it is never scrolled for them on open).
