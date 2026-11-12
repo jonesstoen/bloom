@@ -246,8 +246,6 @@ public struct LibraryGridView: View {
     }
 
     private func open(_ asset: Asset) {
-        viewerTapTime = ContinuousClock.now
-        viewerTiming.notice("tap")
         // Start downloading the preview now; the viewer's page joins this request when it appears.
         let loader = model.loader
         Task { _ = try? await loader.data(for: ImageKey(assetID: asset.id, size: .preview)) }

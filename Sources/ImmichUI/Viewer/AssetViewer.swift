@@ -500,9 +500,6 @@ private struct ViewerPage: View {
         }
         .onAppear {
             playbackAllowed = isActive && livePlaybackAllowed
-            if isActive, let tap = viewerTapTime, ContinuousClock.now - tap < .seconds(2) {
-                viewerTiming.notice("page visible \(String(describing: ContinuousClock.now - tap), privacy: .public) after tap, showing=\(model.displayImage != nil)")
-            }
         }
         .onChange(of: livePlaybackAllowed) { _, allowed in
             playbackAllowed = isActive && allowed
