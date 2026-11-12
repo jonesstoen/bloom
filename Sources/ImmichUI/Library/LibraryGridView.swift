@@ -1,8 +1,5 @@
 import ImmichKit
-import OSLog
 import SwiftUI
-
-private let gridLog = Logger(subsystem: "ImmichKit", category: "LibraryGrid")
 
 /// The Library tab: every photo in one continuous square grid, like the Photos app's library.
 /// Oldest at the top, opening scrolled to the newest at the bottom.
@@ -354,7 +351,7 @@ public struct LibraryGridView: View {
             reportScreenRange(geometry)
             if firstLayout && !scrollMetrics.didOpen && model.pendingScrollAssetID == nil && model.pendingScrollMonthID == nil {
                 scrollMetrics.didOpen = true
-                openAtNewest(proxy, geometry: geometry)
+                openAtNewest(proxy)
             }
             // A pending jump from Months runs once the grid has laid out; before that the
             // initial bottom anchor would override it.
@@ -411,18 +408,8 @@ public struct LibraryGridView: View {
 
     /// Opens at the newest photos. `defaultScrollAnchor` alone left a real 13 000-photo library
     /// in May 2024 on an iPhone, so the grid also scrolls to its newest cell explicitly.
-    private func openAtNewest(_ proxy: ScrollViewProxy, geometry: ScrollGeometry) {
+    private func openAtNewest(_ proxy: ScrollViewProxy) {
         let count = model.gridItemCount
-        #if DEBUG
-        gridLog.debug("""
-            [ImmichGrid] open: months=\(model.months.count) first=\(model.months.first?.id ?? "-") \
-            last=\(model.months.last?.id ?? "-") cells=\(count) bucketTotal=\(model.totalCount) \
-            newestFirst=\(model.newestFirst) columns=\(model.columnCount) \
-            offset=\(Int(geometry.contentOffset.y)) content=\(Int(geometry.contentSize.height)) \
-            container=\(Int(geometry.containerSize.width))x\(Int(geometry.containerSize.height)) \
-            insets=\(Int(geometry.contentInsets.top))/\(Int(geometry.contentInsets.bottom))
-            """)
-        #endif
         guard count > 0, let target = model.gridItemID(atGridIndex: model.newestFirst ? 0 : count - 1) else { return }
         proxy.scrollTo(target, anchor: model.newestFirst ? .top : .bottom)
         Task { @MainActor in
@@ -430,11 +417,6 @@ public struct LibraryGridView: View {
             try? await Task.sleep(for: .milliseconds(400))
             guard scrollMetrics.geometry != nil, let last = model.gridItemID(
                 atGridIndex: model.newestFirst ? 0 : model.gridItemCount - 1) else { return }
-            #if DEBUG
-            if let g = scrollMetrics.geometry {
-                gridLog.debug("[ImmichGrid] after open: offset=\(Int(g.contentOffset.y)) content=\(Int(g.contentSize.height)) month=\(model.visibleMonthTitle ?? "-")")
-            }
-            #endif
             if !scrollMetrics.userScrolled { proxy.scrollTo(last, anchor: model.newestFirst ? .top : .bottom) }
         }
     }
