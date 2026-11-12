@@ -1,6 +1,35 @@
-# ImmichKit
+<p align="center">
+  <img src="Branding/bloom-logo/ios/AppIcon-light-1024.png" alt="Bloom" width="120">
+</p>
 
-A Swift package for a native iPhone Immich client, using iOS 18 Photos as its design target. The package provides the UI and supporting services; the small iOS app target is created separately in Xcode.
+<h1 align="center">Bloom</h1>
+
+<p align="center">
+  A native iPhone client for <a href="https://immich.app">Immich</a> that looks and feels like Apple's Photos app on iOS 26.<br>
+  This repository is the Swift package <code>ImmichKit</code>: API client, models, caching and all SwiftUI screens.
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/library.png" alt="Library" width="230">
+  <img src="docs/screenshots/collections.png" alt="Collections" width="230">
+  <img src="docs/screenshots/search.png" alt="Search" width="230">
+</p>
+
+## Features
+
+- **Library**: one continuous grid opening at the newest photos, pinch between 3, 5 and 7 columns
+  around the photo under your fingers, the dates on screen in the header, Years / Months / All in
+  the tab bar (iOS 26.1+), sort, favorites filter and aspect-ratio grid.
+- **Viewer**: paging, zoom, swipe down to close with a zoom transition back into the grid, info with
+  EXIF, video and Live Photos, share originals, favorite.
+- **Collections**: Memories (on this day, by year), pinned Favorites and Map with previews, Albums,
+  People, Places, Media Types and Recently Added / Archive / Recently Deleted; sections fold away.
+- **Search**: CLIP smart search, suggestions, people, places and recent searches.
+- **Editing** (with confirmation where it matters): favorites, move to Immich trash, restore from
+  Recently Deleted, create albums and add photos to them.
+- Norwegian Bokmål and English, Liquid Glass with fallbacks, a Home Screen icon picker (About Bloom).
+
+Uploading from the iPhone (backup) is not implemented yet: Bloom shows what is on your server.
 
 ## Package structure
 
@@ -8,10 +37,13 @@ A Swift package for a native iPhone Immich client, using iOS 18 Photos as its de
 | --- | --- |
 | `ImmichAPI` | Checked-in OpenAPI spec, generator configuration and generated client |
 | `ImmichKit` | Domain models, live/mock services, timeline actor, image cache, prefetcher, search and Keychain credentials |
-| `ImmichUI` | Login, month library grid, media viewer, Albums, People, Search and `ImmichRootView` |
+| `ImmichUI` | Login, Library grid (own exact virtualized layout, see `GridLayout`), viewer, Collections, Search, About Bloom and `ImmichRootView` |
 | `ImmichKitTests` | Unit tests using the mock, transport fixtures and optional live-server integration tests |
 
-The `ImmichKit` library product exposes all three modules. Deployment targets are iOS 18 and macOS 15. iOS gets full-screen swipe paging, thumbnail zoom transitions and pinch density controls; macOS compiles the shared UI and provides a sheet viewer with previous/next controls.
+The `ImmichKit` library product exposes all three modules. Deployment targets are iOS 18 and macOS 15; iOS 26
+features (Liquid Glass, tab bar accessory) are used when available. macOS compiles the shared UI.
+
+The logo kit (SVG masters, app icons, colours and usage rules) is in [`Branding/bloom-logo`](Branding/bloom-logo/README.md).
 
 ## Create the iPhone app in Xcode
 
@@ -48,6 +80,12 @@ otherwise in English. Texts live in `Sources/ImmichKit/Resources/nb.lproj` and
 user-facing text in `tr("…")`; `LocalizationTests` fails if a text has no Norwegian translation.
 Dates and month names follow the same language. No setting in the app target is needed.
 
+## App icons
+
+The app target's asset catalog has `AppIcon` (light, dark and tinted) plus the alternate sets
+`AppIcon-Light`, `AppIcon-Dark` and `AppIcon-Tinted` from `Branding/bloom-logo/ios/`, with
+**Include All App Icon Assets** set to Yes. About Bloom switches between them.
+
 ## Preview without a server
 
 All UI screens have mock previews. For a complete app demo, use:
@@ -59,7 +97,9 @@ import ImmichUI
 ImmichRootView(service: MockImmichService.preview)
 ```
 
-This root initializer uses an in-memory session and does not read the real Keychain. The deterministic mock has hundreds of generated photos, albums, people and metadata. Its search uses word matching rather than CLIP, and mock videos show a placeholder because they have no playable media.
+This root initializer uses an in-memory session and does not read the real Keychain. In Debug
+builds the app can also start in this demo mode with the launch argument `-BloomDemo` (and
+`-BloomDemoTab collections|search`); that is how the README screenshots are taken. Release builds ignore it. The deterministic mock has hundreds of generated photos, albums, people and metadata. Its search uses word matching rather than CLIP, and mock videos show a placeholder because they have no playable media.
 
 ## Run all three checks
 
@@ -92,7 +132,7 @@ Commit the generated changes and rerun all three checks.
 ## Remaining validation
 
 - Re-check the API spec version against the real server and run the integration suite with local credentials.
-- Exercise paging, double-tap zoom, downward dismissal, pinch anchoring and thumbnail transitions on a simulator/device; compilation and model tests do not verify animation quality.
+- Exercise paging, double-tap zoom, downward dismissal, pinch feel and thumbnail transitions on a device; compilation, model tests and simulator probes do not verify animation quality.
 - Check authenticated video playback, large libraries, offline/reconnect behavior and Dynamic Type/VoiceOver on a physical iPhone.
 
 The root shares one loader across tabs and namespaces its disk cache by a digest of the connection identity, so different server/account connections do not reuse each other's thumbnails. Custom service integrations that create loaders directly should likewise supply a separate `DiskImageCache` directory per connection.

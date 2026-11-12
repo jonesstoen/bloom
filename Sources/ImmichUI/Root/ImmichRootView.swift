@@ -5,7 +5,16 @@ import SwiftUI
 public struct ImmichRootView: View {
     @State private var model: RootModel
 
-    public init() { _model = State(initialValue: RootModel()) }
+    public init() {
+        #if DEBUG
+        // README screenshots: `-BloomDemo` opens the mock library without touching the Keychain.
+        if ProcessInfo.processInfo.arguments.contains("-BloomDemo") {
+            _model = State(initialValue: RootModel(previewService: MockImmichService(library: MockLibrary(assetCount: 2400, years: 6))))
+            return
+        }
+        #endif
+        _model = State(initialValue: RootModel())
+    }
 
     public init(model: RootModel) { _model = State(initialValue: model) }
 
@@ -54,7 +63,7 @@ private struct ImmichTabs: View {
     let session: ImmichSession
     let isSigningOut: Bool
     let signOut: () -> Void
-    @State private var selection: AppTab = .library
+    @State private var selection: AppTab = Self.initialTab
     /// Bumped when the Library tab is tapped while it is already open.
     @State private var libraryReselections = 0
     @State private var showsAbout = false
@@ -62,6 +71,21 @@ private struct ImmichTabs: View {
     @State private var libraryChrome = LibraryChrome()
 
     enum AppTab: Hashable { case library, collections, search }
+
+    /// `-BloomDemoTab collections|search` (Debug builds only), for README screenshots.
+    private static var initialTab: AppTab {
+        #if DEBUG
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-BloomDemoTab"), i + 1 < args.count {
+            switch args[i + 1] {
+            case "collections": return .collections
+            case "search": return .search
+            default: break
+            }
+        }
+        #endif
+        return .library
+    }
 
     /// Tapping the open tab again calls the setter with the same value. iOS would scroll the
     /// Library to its top, which is the oldest photo; Photos goes to the newest, so we do too.

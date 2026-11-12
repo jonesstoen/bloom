@@ -382,6 +382,9 @@ public struct LibraryGridView: View {
                         selection.start()
                     }
                     .font(.subheadline.weight(.semibold))
+                    // "Marker" in Norwegian wrapped onto two lines in the narrow capsule.
+                    .lineLimit(1)
+                    .fixedSize()
                     .padding(.horizontal, 14)
                     .frame(minHeight: 44)
                     .photosGlass(in: Capsule())
