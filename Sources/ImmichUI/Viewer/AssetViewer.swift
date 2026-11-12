@@ -18,6 +18,8 @@ public struct AssetViewer: View {
     /// Position of each asset, built once: the bars look up the current item on every swipe.
     private let indexByID: [String: Int]
     @State private var selectedID: String?
+    /// The pages the pager builds (see `ViewerPageWindow`).
+    @State private var pageWindow: Range<Int>
     @State private var chromeVisible = true
     @State private var showsInfo = false
     @State private var shareActive = false
@@ -46,6 +48,7 @@ public struct AssetViewer: View {
         self.initialID = selectedID
         self.indexByID = Dictionary(assets.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
         _selectedID = State(initialValue: selectedID)
+        _pageWindow = State(initialValue: ViewerPageWindow.around(indexByID[selectedID] ?? 0, count: assets.count))
         _store = State(initialValue: ViewerStore(service: service, loader: loader, thumbnails: thumbnails))
     }
 
@@ -140,7 +143,7 @@ public struct AssetViewer: View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 0) {
-                    ForEach(assets) { asset in
+                    ForEach(assets[pageWindow.clamped(to: assets.indices)]) { asset in
                         page(asset)
                             .containerRelativeFrame([.horizontal, .vertical])
                             .id(asset.id)
@@ -150,6 +153,10 @@ public struct AssetViewer: View {
             }
             .scrollTargetBehavior(.paging)
             .scrollPosition(id: $selectedID)
+            .onScrollPhaseChange { _, phase in
+                // Move the window once paging has settled, never mid-swipe.
+                if phase == .idle { recentrePageWindow() }
+            }
             .scrollIndicators(.hidden)
             .scrollDisabled(trashInteractionBlocked)
             .allowsHitTesting(!trashInteractionBlocked)
@@ -174,6 +181,20 @@ public struct AssetViewer: View {
                    livePlaybackAllowed: scenePhase == .active && !showsInfo && !showsAccessibleMenu && !trashInteractionBlocked) {
             withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { chromeVisible.toggle() }
         }
+    }
+
+    private func recentrePageWindow() {
+        guard let index = currentIndex,
+              let window = ViewerPageWindow.recentred(pageWindow, index: index, count: assets.count) else { return }
+        pageWindow = window
+    }
+
+    /// Jumps to `id` (the thumbnail strip), building its page first if it is outside the window.
+    private func select(_ id: String) {
+        if let index = indexByID[id], let window = ViewerPageWindow.recentred(pageWindow, index: index, count: assets.count) {
+            pageWindow = window
+        }
+        selectedID = id
     }
 
     private func step(_ delta: Int) {
@@ -297,7 +318,7 @@ public struct AssetViewer: View {
             #if os(iOS)
             ThumbnailStrip(assets: ThumbnailStrip.window(of: assets, around: currentIndex ?? 0),
                            selectedID: currentID, loader: loader) { id in
-                selectedID = id
+                select(id)
             }
             #endif
             HStack {
