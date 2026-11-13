@@ -23,6 +23,7 @@ public struct LoginView: View {
         NavigationStack {
             Form {
                 header
+                keyGuide
                 fields
                 if let error = model.error {
                     errorSection(error)
@@ -106,11 +107,40 @@ public struct LoginView: View {
                 } else if model.isTunnelHTTP {
                     Label(tr("Plain http, encrypted by Tailscale or kept on this device."), systemImage: "lock")
                 }
-                Text(tr("Create an API key in the Immich web app under Account Settings › API Keys. It is stored in the Keychain on this device."))
-                Text(tr("Give the key only these permissions: %@. To favorite, delete and add to albums with Allow Changes, also %@.",
-                        APIKeyPermissions.readOnly.joined(separator: ", "), APIKeyPermissions.changes.joined(separator: ", ")))
             }
         }
+    }
+
+    /// How to make a key with only the permissions Bloom needs, before the fields that ask for it.
+    private var keyGuide: some View {
+        Section {
+            Label(tr("In Immich on the web, open Account Settings › API Keys and create a new key."),
+                  systemImage: "1.circle")
+            Label {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(tr("Select only these permissions:"))
+                    permissionList(APIKeyPermissions.readOnly)
+                    Text(tr("To use Allow Changes (favorites, trash, albums), also:"))
+                        .foregroundStyle(.secondary)
+                    permissionList(APIKeyPermissions.changes)
+                }
+            } icon: {
+                Image(systemName: "2.circle")
+            }
+            Label(tr("Enter the server address and paste the key below."), systemImage: "3.circle")
+        } header: {
+            Text(tr("Before You Start"))
+        } footer: {
+            Text(tr("Even if it leaks, a key with only these permissions can't delete or share your library. Bloom keeps it only in the Keychain on this device."))
+        }
+    }
+
+    private func permissionList(_ permissions: [String]) -> some View {
+        Text(verbatim: permissions.joined(separator: "  "))
+            .font(.caption.monospaced())
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private func errorSection(_ error: LoginError) -> some View {

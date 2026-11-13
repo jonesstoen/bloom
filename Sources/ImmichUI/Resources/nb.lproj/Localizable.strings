@@ -124,7 +124,6 @@
 "Connect to Immich" = "Koble til Immich";
 "Connected to Immich %@" = "Koblet til Immich %@";
 "Connecting…" = "Kobler til …";
-"Create an API key in the Immich web app under Account Settings › API Keys. It is stored in the Keychain on this device." = "Lag en API-nøkkel i Immich på nettet under Kontoinnstillinger › API-nøkler. Den lagres i nøkkelringen på denne enheten.";
 "https://photos.example.com" = "https://photos.example.com";
 "Server" = "Server";
 "Server URL" = "Serveradresse";
@@ -240,4 +239,9 @@
 "This server uses http, so your API key and photos are sent unencrypted. On your own network that's usually fine, but on other Wi-Fi networks (hotels, cafés, work) others can read the key and get full access to your library. Use https or Tailscale if you can." = "Denne serveren bruker http, så API-nøkkelen og bildene sendes ukryptert. På ditt eget nettverk går det som regel bra, men på andre Wi-Fi-nett (hotell, kafé, jobb) kan andre lese nøkkelen og få full tilgang til biblioteket ditt. Bruk https eller Tailscale hvis du kan.";
 "Send Your API Key Unencrypted?" = "Sende API-nøkkelen ukryptert?";
 "Connect Anyway" = "Koble til likevel";
-"Give the key only these permissions: %@. To favorite, delete and add to albums with Allow Changes, also %@." = "Gi nøkkelen bare disse tillatelsene: %@. For å favorisere, slette og legge til i album med Tillat endringer trengs også %@.";
+"In Immich on the web, open Account Settings › API Keys and create a new key." = "Åpne Kontoinnstillinger › API-nøkler i Immich på nettet, og lag en ny nøkkel.";
+"Select only these permissions:" = "Velg bare disse tillatelsene:";
+"To use Allow Changes (favorites, trash, albums), also:" = "For å bruke Tillat endringer (favoritter, papirkurv, album) også:";
+"Enter the server address and paste the key below." = "Skriv inn serveradressen og lim inn nøkkelen nedenfor.";
+"Before You Start" = "Før du begynner";
+"Even if it leaks, a key with only these permissions can't delete or share your library. Bloom keeps it only in the Keychain on this device." = "En nøkkel med bare disse tillatelsene kan ikke slette eller dele biblioteket ditt, selv om den skulle komme på avveie. Bloom lagrer den bare i nøkkelringen på denne enheten.";
