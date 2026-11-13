@@ -156,12 +156,25 @@ public final class SearchModel {
         loadingSuggestions = true
         suggestionsError = nil
         defer { loadingSuggestions = false }
+        // Each row can appear as soon as its own request finishes, including on partial failure.
+        async let people: Void = loadPeopleSuggestions()
+        async let places: Void = loadPlaceSuggestions()
+        _ = await (people, places)
+    }
+
+    private func loadPeopleSuggestions() async {
         do {
             let result = try await service.people()
             try Task.checkCancellation()
             people = result.filter { $0.isNamed && !$0.isHidden }
         } catch is CancellationError { return }
-        catch { suggestionsError = tr("Some suggestions couldn't be loaded.") }
+        catch {
+            guard !Task.isCancelled else { return }
+            suggestionsError = tr("Some suggestions couldn't be loaded.")
+        }
+    }
+
+    private func loadPlaceSuggestions() async {
         do {
             let result = try await service.searchSuggestions(.city)
             try Task.checkCancellation()
@@ -171,7 +184,10 @@ public final class SearchModel {
                 return !city.isEmpty && seen.insert(city).inserted ? city : nil
             }
         } catch is CancellationError { return }
-        catch { suggestionsError = tr("Some suggestions couldn't be loaded.") }
+        catch {
+            guard !Task.isCancelled else { return }
+            suggestionsError = tr("Some suggestions couldn't be loaded.")
+        }
     }
 
     private func invalidate() {

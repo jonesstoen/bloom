@@ -44,6 +44,8 @@ ImmichAPI  client generated from openapi.json (swift-openapi-generator)
   A downward one-finger pan closes the viewer at normal zoom. Direction and zoom gating preserve
   horizontal paging and zoomed panning; drag presentation updates in small isolated modifiers.
 - **Search and Collections** call the service directly through their own small models.
+  Search loads people and place suggestions concurrently, publishing each row independently.
+  One failed request leaves the other row available; cancellation suppresses late results/errors.
 
 ## Talking to Immich
 
