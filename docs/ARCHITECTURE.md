@@ -26,6 +26,9 @@ ImmichAPI  client generated from openapi.json (swift-openapi-generator)
 - **Images.** Every thumbnail and preview goes through `ImageLoader`: memory cache, then disk cache
   (per connection), then one shared request per image. The `Prefetcher` loads thumbnails ahead of
   the scroll from the range of cells on screen.
+  Each decoded grid-thumbnail cache has a 600-image limit and a 96 MiB soft byte budget based on
+  bitmap row stride and height. Individual images larger than the budget are displayed without
+  being cached. Active cells and other caches retain their own images outside this budget.
   Decode requests propagate cancellation to their detached workers and discard cancelled results;
   ImageIO work already running synchronously must finish before it can be released.
 - **Viewer.** Opens with the grid's thumbnail, loads the preview, then the full asset (EXIF, Live

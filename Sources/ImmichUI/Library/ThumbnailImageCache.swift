@@ -8,9 +8,14 @@ import ImmichKit
 @MainActor
 public final class ThumbnailImageCache {
     private let cache = NSCache<NSString, CGImage>()
+    private let memoryCostLimit: Int
 
-    public init(countLimit: Int = 600) {
+    /// The byte budget is an eviction hint for decoded buffers, not a hard limit on app memory.
+    /// A nonpositive `memoryCostLimit` disables the byte budget.
+    public init(countLimit: Int = 600, memoryCostLimit: Int = 96 * 1024 * 1024) {
+        self.memoryCostLimit = max(0, memoryCostLimit)
         cache.countLimit = countLimit
+        cache.totalCostLimit = self.memoryCostLimit
     }
 
     public func image(for key: ImageKey) -> CGImage? {
@@ -18,7 +23,14 @@ public final class ThumbnailImageCache {
     }
 
     public func insert(_ image: CGImage, for key: ImageKey) {
-        cache.setObject(image, forKey: key.description as NSString)
+        let cacheKey = key.description as NSString
+        let (cost, overflow) = image.bytesPerRow.multipliedReportingOverflow(by: image.height)
+        // An oversized image can still be displayed by its cell without evicting useful thumbnails.
+        guard !overflow, memoryCostLimit == 0 || cost <= memoryCostLimit else {
+            cache.removeObject(forKey: cacheKey)
+            return
+        }
+        cache.setObject(image, forKey: cacheKey, cost: cost)
     }
 
     public func removeAll() {
