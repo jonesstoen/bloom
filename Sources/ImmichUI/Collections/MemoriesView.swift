@@ -14,14 +14,45 @@ struct MemoryCard: View {
     let loader: ImageLoader
     /// Fixed 300 × 380 in the Collections row; `nil` fills the width (Memories list) at that ratio.
     var width: CGFloat? = 300
-    @State private var image: CGImage?
+    var animatesPreview = false
+    @State private var preview = MemoryCardPreviewModel()
+    @State private var isVisible = false
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private struct PreviewTaskID: Equatable {
+        let assetIDs: [String]
+        let canAnimate: Bool
+    }
+
+    private var candidateIDs: [String] {
+        var seen = Set<String>()
+        var ids: [String] = []
+        for asset in year.assets where seen.insert(asset.id).inserted {
+            ids.append(asset.id)
+            if ids.count == 6 { break }
+        }
+        return ids
+    }
+
+    private var canAnimate: Bool {
+        animatesPreview && isVisible && scenePhase == .active && !reduceMotion
+    }
 
     var body: some View {
         Rectangle().fill(.quaternary)
             .aspectRatio(300.0 / 380.0, contentMode: .fit)
             .frame(width: width)
             .overlay {
-                if let image { Image(decorative: image, scale: 1).resizable().scaledToFill() }
+                ZStack {
+                    if let image = preview.image {
+                        MemoryCoverMotion(image: image, isActive: canAnimate && preview.canAdvance,
+                                          zoomsIn: preview.revision.isMultiple(of: 2))
+                            .id(preview.assetID)
+                            .transition(.opacity)
+                    }
+                }
+                .animation(canAnimate ? .easeInOut(duration: 0.7) : nil, value: preview.revision)
             }
             .overlay(alignment: .bottomLeading) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -40,13 +71,17 @@ struct MemoryCard: View {
             .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(tr("%@, %lld items", String(year.year), Int64(year.assets.count)))
-            .task(id: year.assets.first?.id) {
-                image = nil
-                guard let cover = year.assets.first,
-                      let data = try? await loader.data(for: ImageKey(assetID: cover.id, size: .preview)),
-                      !Task.isCancelled else { return }
-                let decoded = await ThumbnailDecoder.decode(data, maxPixelSize: 900)
-                if !Task.isCancelled { image = decoded }
+            .onScrollVisibilityChange { isVisible = $0 }
+            .onDisappear { isVisible = false }
+            .task(id: PreviewTaskID(assetIDs: candidateIDs, canAnimate: canAnimate)) {
+                await preview.prepare(assetIDs: candidateIDs, loader: loader)
+                guard canAnimate, preview.canAdvance else { return }
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(5)) }
+                    catch { return }
+                    guard !Task.isCancelled else { return }
+                    await preview.advance(loader: loader)
+                }
             }
     }
 }

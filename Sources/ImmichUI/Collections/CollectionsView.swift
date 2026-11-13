@@ -7,6 +7,7 @@ import SwiftUI
 public struct CollectionsView: View {
     @State private var model: CollectionsModel
     @State private var openMemory: MemoryStorySelection?
+    @State private var memoriesRowVisible = false
     /// Sections folded with their chevron button, remembered between launches.
     @AppStorage("collections.collapsed") private var collapsedRaw = ""
     private let accessory: AnyView?
@@ -117,11 +118,14 @@ public struct CollectionsView: View {
                              fold: fold(.memories)) {
             ForEach(years) { year in
                 Button { openMemory = MemoryStorySelection(years: years, startingYear: year.year) } label: {
-                    MemoryCard(year: year, loader: model.loader)
+                    MemoryCard(year: year, loader: model.loader,
+                               animatesPreview: memoriesRowVisible && openMemory == nil)
                 }
                 .buttonStyle(.plain)
             }
         }
+        .onScrollVisibilityChange(threshold: 0.1) { memoriesRowVisible = $0 }
+        .onDisappear { memoriesRowVisible = false }
     }
 
     private var pinnedRow: some View {
