@@ -30,6 +30,7 @@ public actor MockImmichService: ImmichService {
         case restoreAssets(String)
         case createAlbum(String)
         case addToAlbum(String)
+        case bulkUploadCheck(Int)
     }
 
     /// Base URL of the media requests the mock hands out. Nothing answers there.
@@ -87,6 +88,9 @@ public actor MockImmichService: ImmichService {
     public func setFailure(_ failure: ImmichServiceError?) { self.failure = failure }
     public private(set) var features = ServerFeatures()
     public private(set) var featuresFailure: ImmichServiceError?
+    public private(set) var serverChecksums: Set<String> = []
+    /// The checksums the mock server already has; `checkBulkUpload` reports these as duplicates.
+    public func setServerChecksums(_ checksums: Set<String>) { serverChecksums = checksums }
     public func setServerFeatures(_ features: ServerFeatures) { self.features = features }
     /// Fails only the features request, like a server that no longer serves it.
     public func setServerFeaturesFailure(_ failure: ImmichServiceError?) { featuresFailure = failure }
@@ -178,6 +182,15 @@ public actor MockImmichService: ImmichService {
     public func serverFeatures() async throws -> ServerFeatures {
         if let featuresFailure { throw featuresFailure }
         return features
+    }
+
+    public func checkBulkUpload(_ items: [BulkUploadCheckItem]) async throws -> [BulkUploadCheckResult] {
+        try await begin(.bulkUploadCheck(items.count))
+        return items.map { item in
+            let known = serverChecksums.contains(item.checksum)
+            return BulkUploadCheckResult(
+                id: item.id, isDuplicate: known, serverAssetID: known ? "server-\(item.checksum)" : nil, isTrashed: false)
+        }
     }
 
     public func timeBuckets(options: TimelineOptions) async throws -> [TimeBucket] {

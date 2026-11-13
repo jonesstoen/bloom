@@ -244,6 +244,11 @@
 "Access" = "Tilgang";
 "View Only" = "Bare se";
 "View and Organize" = "Se og endre";
+"View, Organize and Back Up" = "Se, endre og sikkerhetskopiere";
+"Everything in View and Organize, plus backing up this iPhone" = "Alt i Se og endre, pluss sikkerhetskopiering av denne iPhonen";
+"Can't change your account or other people's libraries" = "Kan ikke endre kontoen din eller andres biblioteker";
+"Bloom only moves items to Recently Deleted, where they can be restored. But a leaked key with asset.delete could delete items permanently, so choose View Only if you don't need changes. It can also upload photos to your library." = "Bloom flytter bare til Nylig slettet, der alt kan gjenopprettes. Men en nøkkel med asset.delete som kommer på avveie, kan slette for godt, så velg Bare se hvis du ikke trenger å endre noe. Den kan også laste opp bilder til biblioteket ditt.";
+"Also for Backup" = "Også for sikkerhetskopiering";
 "Open Immich on the web and go to Account Settings › API Keys." = "Åpne Immich på nettet og gå til Kontoinnstillinger › API-nøkler.";
 "Create a new key and name it, for example Bloom." = "Lag en ny nøkkel og gi den et navn, for eksempel Bloom.";
 "Select only the permissions below." = "Kryss bare av for tillatelsene nedenfor.";

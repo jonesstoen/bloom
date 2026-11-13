@@ -4,16 +4,16 @@ import XCTest
 /// The documented key permissions must cover every operation Bloom calls, per the checked-in spec.
 final class APIKeyPermissionTests: XCTestCase {
     /// Every Immich operation Bloom calls (generated client and hand-written requests), and whether
-    /// only Allow Changes uses it. Add new operations here when the app starts calling them.
-    static let operations: [(id: String, changes: Bool)] = [
-        ("getTimeBuckets", false), ("getTimeBucket", false), ("getAssetInfo", false), ("viewAsset", false),
-        ("downloadAsset", false), ("playAssetVideo", false), ("getAllAlbums", false), ("getAlbumInfo", false),
-        ("getAllPeople", false), ("getPerson", false), ("getPersonThumbnail", false), ("searchSmart", false),
-        ("searchAssets", false), ("getSearchSuggestions", false), ("getMapMarkers", false), ("searchMemories", false),
-        ("updateAsset", true), ("deleteAssets", true), ("restoreAssets", true), ("createAlbum", true),
-        ("addAssetsToAlbum", true),
+    /// the lowest access level that needs it. Add new operations here when the app starts calling them.
+    static let operations: [(id: String, level: APIKeyAccess)] = [
+        ("getTimeBuckets", .view), ("getTimeBucket", .view), ("getAssetInfo", .view), ("viewAsset", .view),
+        ("downloadAsset", .view), ("playAssetVideo", .view), ("getAllAlbums", .view), ("getAlbumInfo", .view),
+        ("getAllPeople", .view), ("getPerson", .view), ("getPersonThumbnail", .view), ("searchSmart", .view),
+        ("searchAssets", .view), ("getSearchSuggestions", .view), ("getMapMarkers", .view), ("searchMemories", .view),
+        ("updateAsset", .organize), ("deleteAssets", .organize), ("restoreAssets", .organize), ("createAlbum", .organize),
+        ("addAssetsToAlbum", .organize), ("checkBulkUpload", .backup),
         // Public, need no permission.
-        ("pingServer", false), ("getServerVersion", false), ("getServerFeatures", false), ("getServerConfig", false),
+        ("pingServer", .view), ("getServerVersion", .view), ("getServerFeatures", .view), ("getServerConfig", .view),
     ]
 
     private func spec() throws -> [String: [String: Any]] {
@@ -34,9 +34,9 @@ final class APIKeyPermissionTests: XCTestCase {
     func testDocumentedPermissionsCoverEveryOperation() throws {
         let operations = try spec()
         let readOnly = Set(APIKeyPermissions.readOnly)
-        let all = readOnly.union(APIKeyPermissions.changes)
+        let all = readOnly.union(APIKeyPermissions.changes).union(APIKeyPermissions.backup)
         var used: Set<String> = []
-        for (id, changes) in Self.operations {
+        for (id, level) in Self.operations {
             let operation = try XCTUnwrap(operations[id], "\(id) is not in the spec")
             guard let permission = operation["x-immich-permission"] as? String else {
                 // Public operations have no (or an empty) security requirement in the spec.
@@ -46,7 +46,7 @@ final class APIKeyPermissionTests: XCTestCase {
                 continue
             }
             used.insert(permission)
-            XCTAssertTrue((changes ? all : readOnly).contains(permission), "\(id) needs \(permission)")
+            XCTAssertTrue(level.permissions.contains(permission), "\(id) needs \(permission)")
         }
         XCTAssertEqual(used, all, "every listed permission is needed by some operation, and no more")
     }
@@ -63,5 +63,9 @@ final class APIKeyAccessTests: XCTestCase {
         XCTAssertEqual(APIKeyAccess.view.permissions, APIKeyPermissions.readOnly)
         XCTAssertEqual(Set(APIKeyAccess.organize.permissions), Set(APIKeyPermissions.readOnly + APIKeyPermissions.changes))
         XCTAssertFalse(APIKeyAccess.organize.permissions.contains("all"))
+        XCTAssertEqual(APIKeyAccess.backup.permissions,
+                       APIKeyPermissions.readOnly + APIKeyPermissions.changes + ["asset.upload"])
+        XCTAssertEqual(APIKeyPermissions.backup, ["asset.upload"])
+        XCTAssertFalse(APIKeyAccess.backup.permissions.contains("all"))
     }
 }

@@ -17,7 +17,7 @@ struct KeySetupView: View {
                 step(2, tr("Create a new key and name it, for example Bloom."))
                 step(3, tr("Select only the permissions below."))
                 step(4, tr("Copy the key and paste it into Bloom."))
-                if access == .organize {
+                if access != .view {
                     step(5, tr("After signing in, turn on Allow Changes in the account menu."))
                 }
             } header: {
@@ -26,9 +26,12 @@ struct KeySetupView: View {
                 Text(Self.refusesInDetail(access))
             }
             permissionSection(APIKeyPermissions.readOnly,
-                              header: access == .organize ? tr("For Viewing") : tr("Permissions"))
-            if access == .organize {
+                              header: access != .view ? tr("For Viewing") : tr("Permissions"))
+            if access != .view {
                 permissionSection(APIKeyPermissions.changes, header: tr("Also for Changes"))
+            }
+            if access == .backup {
+                permissionSection(APIKeyPermissions.backup, header: tr("Also for Backup"))
             }
         }
         .formStyle(.grouped)
@@ -58,6 +61,7 @@ struct KeySetupView: View {
         switch access {
         case .view: tr("View Only")
         case .organize: tr("View and Organize")
+        case .backup: tr("View, Organize and Back Up")
         }
     }
 
@@ -66,6 +70,7 @@ struct KeySetupView: View {
         switch access {
         case .view: tr("Browse, search, play videos and share")
         case .organize: tr("Everything in View Only, plus favorites, trash and albums")
+        case .backup: tr("Everything in View and Organize, plus backing up this iPhone")
         }
     }
 
@@ -74,6 +79,7 @@ struct KeySetupView: View {
         switch access {
         case .view: tr("Can't change, delete or upload anything")
         case .organize: tr("Can't upload anything")
+        case .backup: tr("Can't change your account or other people's libraries")
         }
     }
 
@@ -83,6 +89,8 @@ struct KeySetupView: View {
             tr("A key with only these permissions can't change, delete or upload anything, even if it leaks.")
         case .organize:
             tr("Bloom only moves items to Recently Deleted, where they can be restored. But a leaked key with asset.delete could delete items permanently, so choose View Only if you don't need changes.")
+        case .backup:
+            tr("Bloom only moves items to Recently Deleted, where they can be restored. But a leaked key with asset.delete could delete items permanently, so choose View Only if you don't need changes. It can also upload photos to your library.")
         }
     }
 }
@@ -93,4 +101,8 @@ struct KeySetupView: View {
 
 #Preview("View and organize") {
     NavigationStack { KeySetupView(access: .organize) }
+}
+
+#Preview("View, organize and back up") {
+    NavigationStack { KeySetupView(access: .backup) }
 }

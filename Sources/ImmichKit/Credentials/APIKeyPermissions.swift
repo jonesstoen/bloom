@@ -11,6 +11,9 @@ public enum APIKeyPermissions {
 
     /// Added for Allow Changes: favorites, moving to and restoring from trash, new albums and adding to them.
     public static let changes = ["asset.update", "asset.delete", "album.create", "albumAsset.create"]
+
+    /// Added for backing up this iPhone: uploading, and asking the server which photos it already has.
+    public static let backup = ["asset.upload"]
 }
 
 /// The access a user chooses to give Bloom when creating the key. New levels (for example
@@ -20,6 +23,8 @@ public enum APIKeyAccess: String, CaseIterable, Identifiable, Sendable {
     case view
     /// Also favorites, moving to and restoring from trash, and albums (with Allow Changes).
     case organize
+    /// Also uploading photos from this iPhone.
+    case backup
 
     public var id: String { rawValue }
 
@@ -27,6 +32,7 @@ public enum APIKeyAccess: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .view: APIKeyPermissions.readOnly
         case .organize: APIKeyPermissions.readOnly + APIKeyPermissions.changes
+        case .backup: APIKeyPermissions.readOnly + APIKeyPermissions.changes + APIKeyPermissions.backup
         }
     }
 }

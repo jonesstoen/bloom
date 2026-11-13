@@ -14,6 +14,10 @@ public protocol ImmichService: Sendable {
     /// `GET /server/features`: which optional features (faces, smart search, ...) are on.
     func serverFeatures() async throws -> ServerFeatures
 
+    /// `POST /assets/bulk-upload-check`: which of these checksums the server already has.
+    /// Needs the `asset.upload` permission. Callers send batches.
+    func checkBulkUpload(_ items: [BulkUploadCheckItem]) async throws -> [BulkUploadCheckResult]
+
     /// `GET /timeline/buckets`: month buckets with asset counts, in `options` order.
     func timeBuckets(options: TimelineOptions) async throws -> [TimeBucket]
 
@@ -107,6 +111,11 @@ public protocol ImmichService: Sendable {
 extension ImmichService {
     /// Services that can't tell assume every feature is on, so nothing is reported as off.
     public func serverFeatures() async throws -> ServerFeatures { ServerFeatures() }
+
+    /// Services that can't ask the server don't claim to.
+    public func checkBulkUpload(_ items: [BulkUploadCheckItem]) async throws -> [BulkUploadCheckResult] {
+        throw ImmichServiceError.unexpectedStatus(501)
+    }
 
     /// Existing custom/read-only services do not acquire write access implicitly.
     public func restoreAssets(assetIDs: [String]) async throws -> RestoreResult {

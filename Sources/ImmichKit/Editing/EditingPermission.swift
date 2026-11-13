@@ -64,6 +64,10 @@ public struct EditGuardedService: ImmichService {
     public func ping() async throws { try await base.ping() }
     public func serverVersion() async throws -> ServerVersion { try await base.serverVersion() }
     public func serverFeatures() async throws -> ServerFeatures { try await base.serverFeatures() }
+    /// Only reads the server's checksums, so it needs no edit permission.
+    public func checkBulkUpload(_ items: [BulkUploadCheckItem]) async throws -> [BulkUploadCheckResult] {
+        try await base.checkBulkUpload(items)
+    }
     public func timeBuckets(options: TimelineOptions) async throws -> [TimeBucket] {
         try await base.timeBuckets(options: options)
     }
