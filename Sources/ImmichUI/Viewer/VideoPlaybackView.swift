@@ -10,6 +10,7 @@ struct VideoPlaybackView: View {
     private let isActive: Bool
     @State private var player: AVPlayer
     @State private var failed = false
+    @Environment(\.viewerChromeInsets) private var chromeInsets
 
     init(request: MediaRequest, isActive: Bool = true) {
         self.request = request
@@ -25,7 +26,7 @@ struct VideoPlaybackView: View {
             } else if failed {
                 ContentUnavailableView(tr("Video Unavailable"), systemImage: "video.slash", description: Text(tr("Close this item and try again.")))
             } else if let item = player.currentItem {
-                VideoPlayer(player: player)
+                playerView
                     .onReceive(item.publisher(for: \.status)) { failed = $0 == .failed }
                     .onReceive(NotificationCenter.default.publisher(for: AVPlayerItem.didPlayToEndTimeNotification, object: item)) { _ in
                         // Back to the start, ready to play again, like Photos.
@@ -38,10 +39,46 @@ struct VideoPlaybackView: View {
         .onDisappear { player.pause() }
     }
 
+    @ViewBuilder
+    private var playerView: some View {
+        #if os(iOS)
+        SystemVideoPlayer(player: player, extraInsets: chromeInsets)
+            .ignoresSafeArea()
+        #else
+        VideoPlayer(player: player)
+        #endif
+    }
+
     private func updatePlayback(_ active: Bool) {
         if active && !failed { player.play() } else { player.pause() }
     }
 }
+
+#if os(iOS)
+/// The system player, with extra safe area so its controls avoid the viewer's bars.
+private struct SystemVideoPlayer: UIViewControllerRepresentable {
+    let player: AVPlayer
+    let extraInsets: EdgeInsets
+
+    func makeUIViewController(context: Context) -> AVPlayerViewController {
+        let controller = AVPlayerViewController()
+        controller.player = player
+        controller.videoGravity = .resizeAspect
+        controller.entersFullScreenWhenPlaybackBegins = false
+        return controller
+    }
+
+    func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
+        if controller.player !== player { controller.player = player }
+        let insets = UIEdgeInsets(top: extraInsets.top, left: 0, bottom: extraInsets.bottom, right: 0)
+        guard controller.additionalSafeAreaInsets != insets else { return }
+        UIView.animate(withDuration: 0.25) {
+            controller.additionalSafeAreaInsets = insets
+            controller.view.layoutIfNeeded()
+        }
+    }
+}
+#endif
 
 #Preview("Video placeholder") {
     let _ = MockImmichService.preview
