@@ -14,7 +14,7 @@ struct VideoPlaybackView: View {
     init(request: MediaRequest, isActive: Bool = true) {
         self.request = request
         self.isActive = isActive
-        let item = AVPlayerItem(asset: AVURLAsset(url: request.url, options: request.avURLAssetOptions))
+        let item = AVPlayerItem(asset: GuardedMediaAsset(request: request))
         _player = State(initialValue: AVPlayer(playerItem: item))
     }
 

@@ -53,7 +53,7 @@ final class LivePhotoPlayerView: UIView {
             Task { @MainActor [weak self] in self?.finish(session: started, failed: true) }
             return
         }
-        let item = AVPlayerItem(asset: AVURLAsset(url: request.url, options: request.avURLAssetOptions))
+        let item = AVPlayerItem(asset: GuardedMediaAsset(request: request))
         let player = AVPlayer(playerItem: item)
         playerLayer.player = player
         statusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in

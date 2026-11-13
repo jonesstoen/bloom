@@ -221,9 +221,10 @@ final class MockDetailTests: XCTestCase {
         XCTAssertFalse("\(request)".contains(secret))
         XCTAssertTrue(request.description.contains("x-api-key"))
         XCTAssertEqual(request.urlRequest.value(forHTTPHeaderField: "x-api-key"), secret)
-        let options = request.avURLAssetOptions["AVURLAssetHTTPHeaderFieldsKey"] as? [String: String]
-        XCTAssertEqual(options, ["x-api-key": secret])
-        XCTAssertTrue(MediaRequest(kind: .original, assetID: "a", url: request.url).avURLAssetOptions.isEmpty)
+        // Playback never hands the key or the real address to AVFoundation (GuardedMediaAsset).
+        let asset = GuardedMediaAsset(request: request)
+        XCTAssertEqual(asset.url.scheme, GuardedMediaAsset.scheme)
+        XCTAssertFalse(asset.url.absoluteString.contains("photos.example.com"))
     }
 }
 

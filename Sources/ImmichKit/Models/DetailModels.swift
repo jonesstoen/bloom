@@ -122,12 +122,6 @@ public struct MediaRequest: Sendable, Hashable, CustomStringConvertible, CustomD
         return request
     }
 
-    /// Options for `AVURLAsset(url:options:)` so AVFoundation sends the headers with every
-    /// (range) request: `AVURLAsset(url: request.url, options: request.avURLAssetOptions)`.
-    public var avURLAssetOptions: [String: Any] {
-        headers.isEmpty ? [:] : ["AVURLAssetHTTPHeaderFieldsKey": headers]
-    }
-
     public var description: String {
         let names = headers.keys.sorted().map { "\($0): <redacted>" }.joined(separator: ", ")
         return "MediaRequest(\(kind.rawValue), \(url.absoluteString)\(names.isEmpty ? "" : ", headers: [\(names)]"))"
