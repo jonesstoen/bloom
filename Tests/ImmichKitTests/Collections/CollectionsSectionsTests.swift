@@ -42,6 +42,25 @@ final class CollectionsSectionsTests: XCTestCase {
         XCTAssertFalse(model.assets.isEmpty)
     }
 
+    func testLaterPageFailureRetainsPhotosAndExplicitRetryContinues() async {
+        let mock = MockImmichService(library: library)
+        let model = QueryGridModel(query: MetadataSearchQuery(), service: mock, pageSize: 3)
+        await model.loadMore()
+        let firstIDs = model.assets.map(\.id)
+        XCTAssertEqual(firstIDs.count, 3)
+        await mock.setFailure(.network("Offline"))
+        await model.loadMore()
+        XCTAssertEqual(model.assets.map(\.id), firstIDs)
+        XCTAssertNotNil(model.error)
+        XCTAssertTrue(model.canLoadMore)
+        await mock.setFailure(nil)
+        await model.loadMore()
+        XCTAssertNil(model.error)
+        XCTAssertEqual(Array(model.assets.prefix(3).map(\.id)), firstIDs)
+        XCTAssertEqual(model.assets.count, 6)
+        XCTAssertEqual(Set(model.assets.map(\.id)).count, 6)
+    }
+
     func testPlacesComeFromCitySuggestions() async throws {
         let mock = MockImmichService(library: library)
         let model = CollectionsModel(service: mock)

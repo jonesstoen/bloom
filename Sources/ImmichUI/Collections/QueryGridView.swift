@@ -77,11 +77,22 @@ public struct QueryGridView: View {
                     }
                     .buttonStyle(.plain)
                     .onAppear {
-                        if asset.id == model.assets.last?.id { Task { await model.loadMore() } }
+                        if asset.id == model.assets.last?.id, model.error == nil {
+                            Task { await model.loadMore() }
+                        }
                     }
                 }
             }
             if model.isLoading { ProgressView().padding() }
+            if let error = model.error, !model.assets.isEmpty {
+                VStack(spacing: 12) {
+                    Text(error)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Button(tr("Try Again")) { Task { await model.loadMore() } }
+                }
+                .padding()
+            }
             if model.hasLoaded && !model.assets.isEmpty {
                 Text(tr("%@ Items", "\(model.assets.count.formatted(.number.locale(Localization.locale)))\(model.canLoadMore ? "+" : "")"))
                     .font(.subheadline.weight(.semibold))
