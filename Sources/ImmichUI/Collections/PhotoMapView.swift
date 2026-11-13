@@ -42,6 +42,7 @@ public struct PhotoMapView: View {
     @State private var clusters: [MapCluster] = []
     @State private var cellSize: Double = 1
     @State private var failed = false
+    @State private var loaded = false
     @State private var opening: MapCluster?
     @State private var viewerAssets: ViewerAssets?
 
@@ -80,6 +81,10 @@ public struct PhotoMapView: View {
                     Button(tr("Try Again")) { Task { await load() } }
                 }
                 .background(.regularMaterial)
+            } else if loaded && markers.isEmpty {
+                ContentUnavailableView(tr("No Photo Locations"), systemImage: "mappin.slash",
+                                       description: Text(tr("Photos with location data from the camera appear here.")))
+                    .background(.regularMaterial)
             }
         }
         .navigationTitle(tr("Map"))
@@ -102,6 +107,7 @@ public struct PhotoMapView: View {
         do {
             markers = try await service.mapMarkers()
             clusters = MapCluster.make(markers, cellSize: cellSize)
+            loaded = true
         } catch is CancellationError {
             return
         } catch {
@@ -172,4 +178,8 @@ private struct MapPin: View {
 
 #Preview("Map") {
     NavigationStack { PhotoMapView(service: MockImmichService.preview) }
+}
+
+#Preview("Map — no locations") {
+    NavigationStack { PhotoMapView(service: MockImmichService()) }
 }

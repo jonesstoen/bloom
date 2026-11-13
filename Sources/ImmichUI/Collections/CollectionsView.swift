@@ -179,7 +179,8 @@ public struct CollectionsView: View {
                       fold: fold(.people)) {
             if model.people.isEmpty {
                 placeholderCards(loading: model.loadingPeople || !model.loadedPeople,
-                                 failed: model.peopleError != nil, empty: tr("No people yet"))
+                                 failed: model.peopleError != nil,
+                                 empty: model.faceRecognitionOff ? tr("Face recognition is off") : tr("No people yet"))
             }
             ForEach(model.people.filter(\.isNamed).prefix(20)) { person in
                 NavigationLink {

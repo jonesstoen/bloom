@@ -231,3 +231,8 @@
 "Smart search isn't available on this Immich server (it may not be set up), so Bloom can't search what's in your photos. Showing only photos whose file name contains “%@”." = "Smart søk er ikke tilgjengelig på denne Immich-serveren (det er kanskje ikke satt opp), så Bloom kan ikke søke i hva som er på bildene. Viser bare bilder der filnavnet inneholder «%@».";
 "Smart Search Isn't Available" = "Smart søk er ikke tilgjengelig";
 "Bloom can't search what's in your photos, because smart search isn't set up or isn't working on your Immich server. No file names contain “%@”." = "Bloom kan ikke søke i hva som er på bildene, fordi smart søk ikke er satt opp eller ikke virker på Immich-serveren din. Ingen filnavn inneholder «%@».";
+"Face Recognition Is Off" = "Ansiktsgjenkjenning er slått av";
+"Your Immich server isn't set up to recognize faces, so there are no people to show. An administrator can turn it on under Machine Learning in Immich's settings." = "Immich-serveren din er ikke satt opp til å gjenkjenne ansikter, så det er ingen personer å vise. En administrator kan slå det på under Maskinlæring i innstillingene til Immich.";
+"Face recognition is off" = "Ansiktsgjenkjenning er av";
+"No Photo Locations" = "Ingen bildesteder";
+"Photos with location data from the camera appear here." = "Bilder med stedsdata fra kameraet vises her.";

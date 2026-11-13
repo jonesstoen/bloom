@@ -11,6 +11,9 @@ public protocol ImmichService: Sendable {
     /// `GET /server/version`.
     func serverVersion() async throws -> ServerVersion
 
+    /// `GET /server/features`: which optional features (faces, smart search, ...) are on.
+    func serverFeatures() async throws -> ServerFeatures
+
     /// `GET /timeline/buckets`: month buckets with asset counts, in `options` order.
     func timeBuckets(options: TimelineOptions) async throws -> [TimeBucket]
 
@@ -102,6 +105,9 @@ public protocol ImmichService: Sendable {
 }
 
 extension ImmichService {
+    /// Services that can't tell assume every feature is on, so nothing is reported as off.
+    public func serverFeatures() async throws -> ServerFeatures { ServerFeatures() }
+
     /// Existing custom/read-only services do not acquire write access implicitly.
     public func restoreAssets(assetIDs: [String]) async throws -> RestoreResult {
         throw ImmichServiceError.invalidResponse

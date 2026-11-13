@@ -63,6 +63,7 @@ public struct EditGuardedService: ImmichService {
 
     public func ping() async throws { try await base.ping() }
     public func serverVersion() async throws -> ServerVersion { try await base.serverVersion() }
+    public func serverFeatures() async throws -> ServerFeatures { try await base.serverFeatures() }
     public func timeBuckets(options: TimelineOptions) async throws -> [TimeBucket] {
         try await base.timeBuckets(options: options)
     }

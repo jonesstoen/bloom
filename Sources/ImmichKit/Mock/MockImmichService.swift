@@ -85,6 +85,11 @@ public actor MockImmichService: ImmichService {
     public func setAssets(_ assets: [Asset]) { self.assets = assets }
     public func setLatency(_ latency: Duration) { self.latency = latency }
     public func setFailure(_ failure: ImmichServiceError?) { self.failure = failure }
+    public private(set) var features = ServerFeatures()
+    public private(set) var featuresFailure: ImmichServiceError?
+    public func setServerFeatures(_ features: ServerFeatures) { self.features = features }
+    /// Fails only the features request, like a server that no longer serves it.
+    public func setServerFeaturesFailure(_ failure: ImmichServiceError?) { featuresFailure = failure }
     /// Fails only smart search, like a server without a working machine-learning service.
     public func setSmartSearchFailure(_ failure: ImmichServiceError?) { smartSearchFailure = failure }
 
@@ -167,6 +172,12 @@ public actor MockImmichService: ImmichService {
     public func serverVersion() async throws -> ServerVersion {
         try await begin(.serverVersion)
         return version
+    }
+
+    /// Not recorded in `requests`, so existing request-order assertions stay unchanged.
+    public func serverFeatures() async throws -> ServerFeatures {
+        if let featuresFailure { throw featuresFailure }
+        return features
     }
 
     public func timeBuckets(options: TimelineOptions) async throws -> [TimeBucket] {

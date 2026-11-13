@@ -11,6 +11,8 @@ public final class CollectionsModel {
     public private(set) var loadingPeople = false
     public private(set) var loadedAlbums = false
     public private(set) var loadedPeople = false
+    /// The server said facial recognition is off, so an empty People list is not "no people yet".
+    public private(set) var faceRecognitionOff = false
     /// Memories, newest first, without empty ones.
     public private(set) var memories: [Memory] = []
     public private(set) var loadedMemories = false
@@ -67,10 +69,14 @@ public final class CollectionsModel {
         loadingPeople = true
         peopleError = nil
         defer { loadingPeople = false }
+        // A failed features request only means "unknown": the list is shown as before.
+        async let features = try? service.serverFeatures()
         do {
             let result = try await service.people()
+            let faceRecognition = await features?.facialRecognition
             try Task.checkCancellation()
             people = result.filter { !$0.isHidden }
+            faceRecognitionOff = faceRecognition == false
             loadedPeople = true
         } catch is CancellationError { return }
         catch { peopleError = tr("Couldn't load people. Please try again.") }

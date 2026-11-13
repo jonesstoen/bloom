@@ -15,8 +15,11 @@ public struct PeopleView: View {
                 CollectionLoadState(isEmpty: model.people.isEmpty, isLoading: model.loadingPeople,
                                     hasLoaded: model.loadedPeople, error: model.peopleError,
                                     errorTitle: tr("Can't Load People"),
-                                    emptyTitle: tr("No People"), emptySymbol: "person.crop.circle",
-                                    emptyDescription: tr("People recognized by your Immich server appear here."),
+                                    emptyTitle: model.faceRecognitionOff ? tr("Face Recognition Is Off") : tr("No People"),
+                                    emptySymbol: model.faceRecognitionOff ? "person.crop.circle.badge.xmark" : "person.crop.circle",
+                                    emptyDescription: model.faceRecognitionOff
+                                        ? tr("Your Immich server isn't set up to recognize faces, so there are no people to show. An administrator can turn it on under Machine Learning in Immich's settings.")
+                                        : tr("People recognized by your Immich server appear here."),
                                     retry: { await model.loadPeople() }) {
                     LazyVGrid(columns: columns, alignment: .center, spacing: 24) {
                         ForEach(model.people) { person in
