@@ -53,7 +53,7 @@ final class FakePhotoLibrary: PhotoLibrarySource, @unchecked Sendable {
         _ resource: DeviceResource,
         of assetID: String,
         allowNetwork: Bool,
-        onData: @Sendable (Data) -> Void
+        onData: @escaping @Sendable (Data) -> Void
     ) async throws {
         let (failure, iCloudOnly, chunks): (Error?, Bool, [Data]) = lock.withLock {
             _reads.append(ReadCall(resource: resource, assetID: assetID, allowNetwork: allowNetwork))

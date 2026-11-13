@@ -70,7 +70,7 @@ public struct PhotoKitLibrarySource: PhotoLibrarySource {
         _ resource: DeviceResource,
         of assetID: String,
         allowNetwork: Bool,
-        onData: @Sendable (Data) -> Void
+        onData: @escaping @Sendable (Data) -> Void
     ) async throws {
         guard let asset = Self.phAsset(assetID),
               let phResource = PHAssetResource.assetResources(for: asset).first(where: {
@@ -82,26 +82,26 @@ public struct PhotoKitLibrarySource: PhotoLibrarySource {
         options.isNetworkAccessAllowed = allowNetwork
         let request = RequestBox()
 
-        try await withoutActuallyEscaping(onData) { escapingOnData in
-            try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                    let id = PHAssetResourceManager.default().requestData(
-                        for: phResource,
-                        options: options,
-                        dataReceivedHandler: { escapingOnData($0) },
-                        completionHandler: { error in
-                            if let error {
-                                continuation.resume(throwing: Self.map(error))
-                            } else {
-                                continuation.resume()
-                            }
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                let id = PHAssetResourceManager.default().requestData(
+                    for: phResource,
+                    options: options,
+                    dataReceivedHandler: { onData($0) },
+                    completionHandler: { error in
+                        if let error {
+                            continuation.resume(throwing: Self.map(error))
+                        } else {
+                            continuation.resume()
                         }
-                    )
-                    request.set(id)
-                }
-            } onCancel: {
-                if let id = request.value { PHAssetResourceManager.default().cancelDataRequest(id) }
+                    }
+                )
+                request.set(id)
+                // The task may have been cancelled before the ID was stored; onCancel then saw nothing.
+                if Task.isCancelled { PHAssetResourceManager.default().cancelDataRequest(id) }
             }
+        } onCancel: {
+            if let id = request.value { PHAssetResourceManager.default().cancelDataRequest(id) }
         }
     }
 

@@ -76,6 +76,6 @@ public protocol PhotoLibrarySource: Sendable {
         _ resource: DeviceResource,
         of assetID: String,
         allowNetwork: Bool,
-        onData: @Sendable (Data) -> Void
+        onData: @escaping @Sendable (Data) -> Void
     ) async throws
 }
