@@ -104,7 +104,8 @@ public final class RootModel {
                 return previous
             }.value
             session?.library.stopPrefetching()
-            // A running scan saves the index: wait for it before the directory is removed.
+            // A running scan or upload saves the index and stages files: wait for both (this also
+            // stops the runner and empties its staging folder) before the directory is removed.
             await session?.backup.stop()
             await session?.snapshotStore?.invalidate()
             await session?.loader.invalidate()
@@ -130,10 +131,13 @@ public final class RootModel {
         let snapshots = persistsImages ? TimelineSnapshotStore(
             directory: Self.cacheDirectory(for: credentials).appendingPathComponent("Timeline", isDirectory: true)
         ) : nil
-        session = ImmichSession(
+        let session = ImmichSession(
             service: service, disk: disk, snapshotStore: snapshots,
             backup: BackupModel(
                 source: Self.photoLibrary, service: service, directory: Self.backupDirectory(for: credentials)))
+        // Staged files left by an upload the system ended. Queued before the first run, which waits for it.
+        session.backup.runner.removeLeftoverStaging()
+        self.session = session
         error = nil
         phase = .signedIn
         if persistsImages {

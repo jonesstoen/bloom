@@ -1,9 +1,10 @@
 import Foundation
 import ImmichKit
 import Observation
+import os
 
 /// What the Backup screens show: which photos are on the server, which still aren't, and the
-/// choices that steer that (albums, cellular). Nothing is uploaded yet.
+/// choices that steer that (albums, cellular, the Backup switch). Uploads are started by `runner`.
 ///
 /// Scans run in a task the model owns, never in a view's `.task`: closing the sheet must not stop
 /// a scan, and the scanner cancels joiners together with the task that started it. Only `cancel()`
@@ -38,6 +39,9 @@ final class BackupModel {
         didSet {
             guard settings != oldValue else { return }
             settings.save(to: defaults)
+            let new = settings
+            sharedSettings.withLock { $0 = new }
+            if settings.isEnabled != oldValue.isEnabled { madeRunner?.enabledDidChange() }
             // The scanner works with the settings it was made with: check again with the new ones,
             // so items waiting for Wi-Fi are tried once cellular is allowed.
             if settings.photosOnCellular != oldValue.photosOnCellular
@@ -65,6 +69,13 @@ final class BackupModel {
     private var hasUnsavedSelection: Bool { selectionRevision != savedSelectionRevision }
     /// The index couldn't be read when it was last used; it is reopened before the next attempt.
     @ObservationIgnored private var indexWasUnavailable = false
+    /// `settings` for the uploader, which reads them off the main actor before each item.
+    @ObservationIgnored private let sharedSettings: OSAllocatedUnfairLock<BackupSettings>
+    @ObservationIgnored private var madeRunner: BackupRunner?
+    /// The account's `Staging` folder, where the uploader copies each resource before sending it.
+    @ObservationIgnored let staging: BackupStaging
+    /// `load()` has run: the selection and photo access on the model are known.
+    @ObservationIgnored private(set) var hasLoaded = false
 
     /// - Parameters:
     ///   - directory: where the account's `index.json` lives; the index is opened on first use.
@@ -81,7 +92,33 @@ final class BackupModel {
         self.directory = directory
         self.network = network
         self.defaults = defaults
-        settings = BackupSettings.load(from: defaults)
+        let settings = BackupSettings.load(from: defaults)
+        self.settings = settings
+        sharedSettings = OSAllocatedUnfairLock(initialState: settings)
+        let stagingDirectory = directory.appendingPathComponent("Staging", isDirectory: true)
+        staging = BackupStaging(
+            directory: stagingDirectory, freeSpace: { BackupStaging.availableCapacity(at: stagingDirectory) })
+    }
+
+    /// Decides when scans and uploads run (the Backup switch, the app being open, library changes).
+    /// Made on first use; a runner made for this model in a test takes its place.
+    var runner: BackupRunner {
+        if let madeRunner { return madeRunner }
+        return BackupRunner(model: self, source: source, staging: staging)
+    }
+
+    /// Called by `BackupRunner.init`.
+    func adopt(_ runner: BackupRunner) { madeRunner = runner }
+
+    /// The uploader for this account: same index, photo library, server and settings as the scans.
+    func makeUploader(clock: BackupRetryClock = .live) async -> BackupUploader {
+        let index = await ensureIndex()
+        let network = self.network ?? PathMonitorNetwork()
+        self.network = network
+        let settings = sharedSettings
+        return BackupUploader(
+            source: source, service: service, index: index, staging: staging,
+            settings: { settings.withLock { $0 } }, network: network, clock: clock)
     }
 
     // MARK: - Reading
@@ -101,6 +138,7 @@ final class BackupModel {
         if rescan == nil, mayRestoreSelection, !hasUnsavedSelection, loadingRevision == selectionRevision {
             selection = saved
         }
+        hasLoaded = true
         // An unlock/reopen retries the local choice, without starting another library scan.
         if hasUnsavedSelection, rescan == nil, !isStopped {
             scheduleRescan(scanning: false)
@@ -213,8 +251,25 @@ final class BackupModel {
         let pending = rescan?.task
         pending?.cancel()
         scanTask?.cancel()
+        // Uploads too; the runner then empties the staging folder.
+        await madeRunner?.stop()
         await pending?.value
         await scanTask?.value
+    }
+
+    /// Uploads changed what is on the server: shows the new counts (a running scan brings its own).
+    func uploadsChanged() async {
+        guard !isScanning, !isStopped else { return }
+        await refreshCounts()
+    }
+
+    /// An upload run stopped on something every item would run into: shown like a scan's error.
+    func reportUploadFailure(_ failure: Error) {
+        switch failure {
+        case BackupIndexError.unavailable, ImmichServiceError.unauthorized: report(failure)
+        // A full disk fails the item with its reason; other errors are only retried next time.
+        default: break
+        }
     }
 
     /// Waits until scans and the rescans that selection changes trigger have finished.

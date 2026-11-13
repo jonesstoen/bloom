@@ -29,29 +29,36 @@ public final class PathMonitorNetwork: NetworkConditions, @unchecked Sendable {
     }
 }
 
-/// The user's backup switches. Both off by default: no cellular data for uploads or iCloud downloads.
+/// The user's backup switches, per device. All off by default: no uploads, and no cellular data for
+/// uploads or iCloud downloads.
 public struct BackupSettings: Sendable, Equatable {
     public static let photosOnCellularKey = "backup.photosOnCellular"
     public static let videosOnCellularKey = "backup.videosOnCellular"
+    public static let isEnabledKey = "backup.isEnabled"
 
     public var photosOnCellular: Bool
     public var videosOnCellular: Bool
+    /// The Backup switch: upload while the app is open.
+    public var isEnabled: Bool
 
-    public init(photosOnCellular: Bool = false, videosOnCellular: Bool = false) {
+    public init(photosOnCellular: Bool = false, videosOnCellular: Bool = false, isEnabled: Bool = false) {
         self.photosOnCellular = photosOnCellular
         self.videosOnCellular = videosOnCellular
+        self.isEnabled = isEnabled
     }
 
     /// Reads the switches; missing keys mean off.
     public static func load(from defaults: UserDefaults = .standard) -> BackupSettings {
         BackupSettings(
             photosOnCellular: defaults.bool(forKey: photosOnCellularKey),
-            videosOnCellular: defaults.bool(forKey: videosOnCellularKey))
+            videosOnCellular: defaults.bool(forKey: videosOnCellularKey),
+            isEnabled: defaults.bool(forKey: isEnabledKey))
     }
 
     public func save(to defaults: UserDefaults = .standard) {
         defaults.set(photosOnCellular, forKey: Self.photosOnCellularKey)
         defaults.set(videosOnCellular, forKey: Self.videosOnCellularKey)
+        defaults.set(isEnabled, forKey: Self.isEnabledKey)
     }
 
     /// Whether resources of `asset` may come over the network right now. A Live Photo counts as a photo.

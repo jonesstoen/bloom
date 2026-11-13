@@ -65,6 +65,7 @@ private struct ImmichTabs: View {
     let isSigningOut: Bool
     let signOut: () -> Void
     @AppStorage(LibraryChanges.storageKey) private var allowsChanges = false
+    @Environment(\.scenePhase) private var scenePhase
     @State private var selection: AppTab = Self.initialTab
     /// Bumped when the Library tab is tapped while it is already open.
     @State private var libraryReselections = 0
@@ -141,6 +142,14 @@ private struct ImmichTabs: View {
         }
         .environment(\.allowsLibraryChanges, allowsChanges)
         .onChange(of: allowsChanges, initial: true) { _, allowed in editing.isAllowed = allowed }
+        // Backup runs while Bloom is open: `.inactive` (Control Center, the app switcher) doesn't stop it.
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            switch phase {
+            case .active: session.backup.runner.appBecameActive()
+            case .background: session.backup.runner.appLeftForeground()
+            default: break
+            }
+        }
     }
 
     private var accountMenu: some View {

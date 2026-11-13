@@ -37,7 +37,7 @@ struct BackupView: View {
                 Button(tr("Done")) { dismiss() }
             }
         }
-        .task { await model.load() }
+        .task { await model.load(); model.runner.backupScreenOpened() }
         #if os(iOS)
         // Keep the screen awake while a scan runs: auto-lock would suspend the app and stop a long first run.
         .onAppear { UIApplication.shared.isIdleTimerDisabled = model.isScanning }
