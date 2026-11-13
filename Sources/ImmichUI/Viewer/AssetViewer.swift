@@ -63,7 +63,7 @@ public struct AssetViewer: View {
     private var trashInteractionBlocked: Bool { trash.pendingAsset != nil || trash.isBusy }
 
     private var dismissInteractionBlocked: Bool {
-        trashInteractionBlocked || trash.error != nil || showsInfo
+        trashInteractionBlocked || trash.error != nil
             || showsAccessibleMenu || currentIndex == nil
     }
 
@@ -80,16 +80,10 @@ public struct AssetViewer: View {
     public var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            pager.disabled(trashInteractionBlocked)
-                .modifier(ViewerDismissTransform(motion: dismissMotion))
-                .environment(\.viewerBottomBarTop, chromeVisible && chromeLayout.bottomBarTop > 0 ? chromeLayout.bottomBarTop : nil)
-                .environment(\.viewerVideoPlayback, ViewerVideoPlayback { playing in
-                    guard chromeVisible == playing else { return }
-                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { chromeVisible = !playing }
-                })
+            mediaAndInformation
         }
         .overlay(alignment: .top) {
-            if chromeVisible {
+            if chromeVisible && !showsInfo {
                 topBar.transition(.opacity).disabled(trashInteractionBlocked)
                     .modifier(ViewerDismissChromeOpacity(motion: dismissMotion))
             }
@@ -114,7 +108,7 @@ public struct AssetViewer: View {
         }
         #if os(iOS)
         .statusBarHidden(!chromeVisible)
-        .interactiveDismissDisabled(trashInteractionBlocked)
+        .interactiveDismissDisabled(trashInteractionBlocked || showsInfo)
         .onChange(of: dismissInteractionBlocked) { _, blocked in
             if blocked { resetDismissDrag() }
         }
@@ -151,28 +145,55 @@ public struct AssetViewer: View {
         .confirmationDialog(tr("More"), isPresented: $showsAccessibleMenu, titleVisibility: .hidden) {
             if let model = currentModel { menuActions(model) }
         }
-        .sheet(isPresented: $showsInfo) {
-            if let model = currentModel {
-                AssetInfoView(asset: model.asset)
-                    #if os(iOS)
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
-                    #endif
+    }
+
+    private var mediaAndInformation: some View {
+        GeometryReader { geometry in
+            let height = showsInfo ? geometry.size.height * 0.38 : geometry.size.height
+            VStack(spacing: 0) {
+                pager(height: height)
+                    .frame(height: height)
+                    .clipped()
+                    .disabled(trashInteractionBlocked)
+                    .modifier(ViewerDismissTransform(motion: dismissMotion))
+                    .environment(\.viewerBottomBarTop, !showsInfo && chromeVisible && chromeLayout.bottomBarTop > 0 ? chromeLayout.bottomBarTop : nil)
+                    .environment(\.viewerVideoPlayback, ViewerVideoPlayback { playing in
+                        guard !showsInfo, chromeVisible == playing else { return }
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { chromeVisible = !playing }
+                    })
+                if showsInfo, let model = currentModel {
+                    AssetInfoView(asset: model.asset, onClose: { setInformation(false) })
+                        .padding(.bottom, chromeLayout.bottomBarTop > 0 ? max(70, geometry.frame(in: .global).maxY - chromeLayout.bottomBarTop) : 90)
+                        .background(Color(white: 0.06))
+                }
             }
+        }
+        .ignoresSafeArea()
+    }
+
+    private func setInformation(_ shown: Bool) {
+        guard !trashInteractionBlocked, trash.error == nil, !showsAccessibleMenu else { return }
+        resetDismissDrag()
+        if shown { store.stopLivePhotos() }
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) {
+            showsInfo = shown
+            chromeVisible = true
         }
     }
 
     // MARK: Pager
 
     @ViewBuilder
-    private var pager: some View {
+    private func pager(height: CGFloat) -> some View {
         #if os(iOS)
         ScrollViewReader { proxy in
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 0) {
                     ForEach(assets[pageWindow.clamped(to: assets.indices)]) { asset in
                         page(asset)
-                            .containerRelativeFrame([.horizontal, .vertical])
+                            .containerRelativeFrame(.horizontal)
+                            // The vertical relative frame includes safe-area space in a reduced pager.
+                            .frame(height: height)
                             .id(asset.id)
                     }
                 }
@@ -189,10 +210,10 @@ public struct AssetViewer: View {
             .scrollIndicators(.hidden)
             .scrollDisabled(trashInteractionBlocked)
             .allowsHitTesting(!trashInteractionBlocked)
-            .ignoresSafeArea()
             .onAppear { proxy.scrollTo(initialID) }
             .gesture(ViewerDismissGesture(isZoomed: currentPhotoIsZoomed,
                                           blocked: dismissInteractionBlocked,
+                                          allowsUp: true,
                                           onChanged: updateDismissDrag,
                                           onEnded: endDismissDrag,
                                           onCancelled: resetDismissDrag))
@@ -211,19 +232,23 @@ public struct AssetViewer: View {
     }
 
     private func updateDismissDrag(_ translation: CGSize) {
-        guard !dismissInteractionBlocked, !currentPhotoIsZoomed else { return }
-        if dismissMotion.offset == 0 { store.stopLivePhotos() }
+        guard !dismissInteractionBlocked, !currentPhotoIsZoomed, !showsInfo else { return }
+        if translation.height > 0, dismissMotion.offset == 0 { store.stopLivePhotos() }
         dismissMotion.offset = max(0, translation.height)
     }
 
     private func endDismissDrag(_ translation: CGSize) {
-        guard !dismissInteractionBlocked, !currentPhotoIsZoomed,
-              ViewerGesture.shouldDismiss(x: translation.width, y: translation.height, zoom: 1) else {
-            resetDismissDrag()
-            return
+        let action = ViewerGesture.verticalAction(x: translation.width, y: translation.height,
+                                                  isZoomed: currentPhotoIsZoomed,
+                                                  blocked: dismissInteractionBlocked, infoShown: showsInfo)
+        switch action {
+        case .openInfo: setInformation(true)
+        case .closeInfo: setInformation(false)
+        case .dismiss:
+            store.stopLivePhotos()
+            dismiss()
+        case .none: resetDismissDrag()
         }
-        store.stopLivePhotos()
-        dismiss()
     }
 
     private func resetDismissDrag() {
@@ -236,7 +261,8 @@ public struct AssetViewer: View {
     private func page(_ asset: Asset) -> some View {
         ViewerPage(model: store.model(for: asset), store: store, isActive: currentID == asset.id,
                    livePlaybackAllowed: scenePhase == .active && !showsInfo && !showsAccessibleMenu && !trashInteractionBlocked) {
-            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { chromeVisible.toggle() }
+            if showsInfo { setInformation(false) }
+            else { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { chromeVisible.toggle() } }
         }
     }
 
@@ -316,7 +342,7 @@ public struct AssetViewer: View {
 
     @ViewBuilder
     private func menuActions(_ model: ViewerAssetModel) -> some View {
-        Button(tr("Photo information"), systemImage: "info.circle") { showsInfo = true }
+        Button(tr("Photo information"), systemImage: "info.circle") { setInformation(true) }
         if allowsChanges && !allowsRestore && !model.asset.isTrashed {
             Button(model.asset.isFavorite ? tr("Remove from Favorites") : tr("Add to Favorites"),
                    systemImage: model.asset.isFavorite ? "heart.slash" : "heart") {
@@ -385,9 +411,11 @@ public struct AssetViewer: View {
     private var bottomBar: some View {
         VStack(spacing: 14) {
             #if os(iOS)
-            ThumbnailStrip(assets: ThumbnailStrip.window(of: assets, around: currentIndex ?? 0),
+            if !showsInfo {
+                ThumbnailStrip(assets: ThumbnailStrip.window(of: assets, around: currentIndex ?? 0),
                            selectedID: currentID, loader: loader) { id in
-                select(id)
+                    select(id)
+                }
             }
             #endif
             HStack {
@@ -407,7 +435,10 @@ public struct AssetViewer: View {
                             }
                             .sensoryFeedback(.impact(weight: .light), trigger: model.asset.isFavorite)
                         }
-                        capsuleButton("info.circle", label: tr("Photo information")) { showsInfo = true }
+                        capsuleButton(showsInfo ? "info.circle.fill" : "info.circle", label: showsInfo ? tr("Close information") : tr("Photo information")) {
+                            setInformation(!showsInfo)
+                        }
+                        .accessibilityAddTraits(showsInfo ? .isSelected : [])
                     }
                     .padding(.horizontal, 6)
                     .photosGlass(in: Capsule())

@@ -157,9 +157,17 @@ public final class ViewerAssetModel {
     }
 }
 
+enum ViewerVerticalAction: Equatable { case none, openInfo, closeInfo, dismiss }
+
 enum ViewerGesture {
-    static func canStartDismiss(x: Double, y: Double, isZoomed: Bool, blocked: Bool) -> Bool {
-        !blocked && !isZoomed && y > 0 && y > abs(x) * 1.5
+    static func canStartDismiss(x: Double, y: Double, isZoomed: Bool, blocked: Bool, allowsUp: Bool = false) -> Bool {
+        !blocked && !isZoomed && (allowsUp || y > 0) && abs(y) > abs(x) * 1.5
+    }
+
+    static func verticalAction(x: Double, y: Double, isZoomed: Bool, blocked: Bool, infoShown: Bool) -> ViewerVerticalAction {
+        guard !blocked, !isZoomed, abs(y) > 100, abs(y) > abs(x) * 1.5 else { return .none }
+        if infoShown { return y > 0 ? .closeInfo : .none }
+        return y < 0 ? .openInfo : .dismiss
     }
 
     static func shouldDismiss(x: Double, y: Double, zoom: Double) -> Bool {

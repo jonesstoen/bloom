@@ -50,12 +50,13 @@ import UIKit
 struct ViewerDismissGesture: UIGestureRecognizerRepresentable {
     var isZoomed: Bool
     var blocked: Bool
+    var allowsUp = false
     var onChanged: (CGSize) -> Void
     var onEnded: (CGSize) -> Void
     var onCancelled: () -> Void
 
     func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator {
-        Coordinator(isZoomed: isZoomed, blocked: blocked)
+        Coordinator(isZoomed: isZoomed, blocked: blocked, allowsUp: allowsUp)
     }
 
     func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
@@ -78,6 +79,7 @@ struct ViewerDismissGesture: UIGestureRecognizerRepresentable {
     func configure(_ recognizer: UIPanGestureRecognizer, coordinator: Coordinator) {
         coordinator.isZoomed = isZoomed
         coordinator.blocked = blocked
+        coordinator.allowsUp = allowsUp
         // Disabling a live recognizer cancels its drag, including when a modal opens.
         recognizer.isEnabled = !isZoomed && !blocked
     }
@@ -105,17 +107,19 @@ struct ViewerDismissGesture: UIGestureRecognizerRepresentable {
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var isZoomed: Bool
         var blocked: Bool
+        var allowsUp: Bool
 
-        init(isZoomed: Bool, blocked: Bool) {
+        init(isZoomed: Bool, blocked: Bool, allowsUp: Bool = false) {
             self.isZoomed = isZoomed
             self.blocked = blocked
+            self.allowsUp = allowsUp
         }
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
             guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
             let velocity = pan.velocity(in: pan.view?.window)
             return ViewerGesture.canStartDismiss(x: velocity.x, y: velocity.y,
-                                                 isZoomed: isZoomed, blocked: blocked)
+                                                 isZoomed: isZoomed, blocked: blocked, allowsUp: allowsUp)
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,

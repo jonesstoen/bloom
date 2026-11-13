@@ -35,6 +35,18 @@ final class ViewerDismissNativeTests: XCTestCase {
         XCTAssertTrue(coordinator.gestureRecognizerShouldBegin(input))
     }
 
+    func testInformationSwipeOptInAndSimultaneousPaging() {
+        let gesture = ViewerDismissGesture(isZoomed: false, blocked: false, allowsUp: true,
+                                          onChanged: { _ in }, onEnded: { _ in }, onCancelled: {})
+        let coordinator = ViewerDismissGesture.Coordinator(isZoomed: false, blocked: false, allowsUp: true)
+        let input = ScriptedDismissPan()
+        input.velocityValue = CGPoint(x: 0, y: -120)
+        XCTAssertTrue(coordinator.gestureRecognizerShouldBegin(input))
+        XCTAssertTrue(coordinator.gestureRecognizer(input, shouldRecognizeSimultaneouslyWith: UIPanGestureRecognizer()))
+        let pan = gesture.makeRecognizer(coordinator: coordinator)
+        XCTAssertTrue(pan.isEnabled)
+    }
+
     func testNativeActionRoutesChangesCompletionAndCancellation() {
         var offsets: [CGSize] = []
         var ends: [CGSize] = []

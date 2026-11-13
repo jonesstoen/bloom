@@ -83,6 +83,8 @@
 "Back" = "Tilbake";
 "Camera" = "Kamera";
 "Caption" = "Bildetekst";
+"Close information" = "Lukk informasjon";
+"Format" = "Format";
 "Close this item and try again." = "Lukk dette objektet og prøv igjen.";
 "Close viewer" = "Lukk";
 "Couldn't add to Favorites." = "Kunne ikke legge til i Favoritter.";
@@ -266,3 +268,6 @@
 "Mute" = "Slå av lyd";
 "Unmute" = "Slå på lyd";
 "Playback position" = "Avspillingsposisjon";
+
+"Audio" = "Lyd";
+"Media" = "Medier";
