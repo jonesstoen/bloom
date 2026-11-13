@@ -53,7 +53,9 @@ public struct AssetViewer: View {
         self.indexByID = Dictionary(assets.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
         _selectedID = State(initialValue: selectedID)
         _pageWindow = State(initialValue: ViewerPageWindow.around(indexByID[selectedID] ?? 0, count: assets.count))
-        _store = State(initialValue: ViewerStore(service: service, loader: loader, thumbnails: thumbnails))
+        let store = ViewerStore(service: service, loader: loader, thumbnails: thumbnails)
+        store.updateSelection(index: indexByID[selectedID] ?? 0, assets: assets)
+        _store = State(initialValue: store)
     }
 
     private var trashInteractionBlocked: Bool { trash.pendingAsset != nil || trash.isBusy }
@@ -95,7 +97,10 @@ public struct AssetViewer: View {
         .onChange(of: selectedID, initial: true) { _, id in
             showsInfo = false
             store.stopLivePhotos()
-            if let id { onSelection(id) }
+            if let id, let index = indexByID[id] {
+                store.updateSelection(index: index, assets: assets)
+                onSelection(id)
+            }
         }
         .onChange(of: showsInfo) { _, shown in
             if shown { currentModel?.stopLivePhotoPlayback() }
@@ -210,6 +215,7 @@ public struct AssetViewer: View {
 
     /// Jumps to `id` (the thumbnail strip), building its page first if it is outside the window.
     private func select(_ id: String) {
+        if let index = indexByID[id] { store.updateSelection(index: index, assets: assets) }
         if let index = indexByID[id], let window = ViewerPageWindow.recentred(pageWindow, index: index, count: assets.count) {
             pageWindow = window
         }
@@ -403,36 +409,6 @@ public struct AssetViewer: View {
     private static let timeStyle = Date.FormatStyle(locale: Localization.locale, calendar: Asset.localCalendar, timeZone: .gmt).hour().minute()
 }
 
-/// Keeps one `ViewerAssetModel` per asset while the viewer is open, so the bars can read the
-/// current page's loaded details (place, favorite) and swiping back doesn't reload.
-@MainActor @Observable
-final class ViewerStore {
-    /// Whether pages other than the current one may load (see `AssetViewer.neighboursMayLoad`).
-    var neighboursMayLoad = true
-    @ObservationIgnored private var models: [String: ViewerAssetModel] = [:]
-    @ObservationIgnored private let service: any ImmichService
-    @ObservationIgnored private let loader: ImageLoader
-    @ObservationIgnored private let thumbnails: ThumbnailImageCache?
-
-    init(service: any ImmichService, loader: ImageLoader, thumbnails: ThumbnailImageCache? = nil) {
-        self.service = service
-        self.loader = loader
-        self.thumbnails = thumbnails
-    }
-
-    func stopLivePhotos() {
-        for model in models.values { model.stopLivePhotoPlayback() }
-    }
-
-    func model(for asset: Asset) -> ViewerAssetModel {
-        if let model = models[asset.id] { return model }
-        let thumbnail = thumbnails?.image(for: ImageKey(assetID: asset.id, size: .thumbnail))
-        let model = ViewerAssetModel(asset: asset, service: service, loader: loader, placeholder: thumbnail)
-        models[asset.id] = model
-        return model
-    }
-}
-
 /// One item in the pager. Loads its preview and full details when it is built, so the
 /// neighbours the lazy pager builds ahead are ready before you swipe to them.
 private struct ViewerPage: View {
@@ -442,6 +418,11 @@ private struct ViewerPage: View {
     var livePlaybackAllowed = true
     let onTap: () -> Void
     @State private var playbackAllowed = false
+
+    private struct LoadID: Hashable {
+        let mayLoad: Bool
+        let retentionGeneration: Int
+    }
 
     var body: some View {
         ZStack {
@@ -525,8 +506,11 @@ private struct ViewerPage: View {
             model.stopLivePhotoPlayback()
             model.setLivePhotoZoomed(false)
         }
-        .task(id: isActive || store.neighboursMayLoad) {
-            if (isActive || store.neighboursMayLoad) && !model.isLoaded { await model.load() }
+        .task(id: LoadID(mayLoad: model.retainsPreview && (isActive || store.neighboursMayLoad),
+                         retentionGeneration: model.previewRetentionGeneration)) {
+            if model.retainsPreview && (isActive || store.neighboursMayLoad) && !model.isLoaded {
+                await model.load()
+            }
         }
     }
 

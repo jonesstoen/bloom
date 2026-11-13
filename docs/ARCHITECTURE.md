@@ -28,6 +28,8 @@ ImmichAPI  client generated from openapi.json (swift-openapi-generator)
   the scroll from the range of cells on screen.
 - **Viewer.** Opens with the grid's thumbnail, loads the preview, then the full asset (EXIF, Live
   Photo, video). Originals for sharing are downloaded to a temporary file.
+  Decoded previews and playback are retained only for the current item and two neighbours on
+  each side. Visited models keep favorite/detail state while releasing media outside that window.
 - **Search and Collections** call the service directly through their own small models.
 
 ## Talking to Immich

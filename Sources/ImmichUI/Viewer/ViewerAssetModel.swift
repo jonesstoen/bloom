@@ -16,6 +16,10 @@ public final class ViewerAssetModel {
     public private(set) var error: String?
     public private(set) var isLoading = false
     public private(set) var isLoaded = false
+    /// Whether this page may retain or load decoded media in the current viewer window.
+    public private(set) var retainsPreview = true
+    /// Changes even if a rapid away/back jump coalesces the permission back to `true`.
+    public private(set) var previewRetentionGeneration = 0
     public private(set) var isLivePhotoPlaying = false
     public private(set) var livePhotoPlaybackGeneration = 0
     public private(set) var livePhotoPlaybackError: String?
@@ -76,7 +80,27 @@ public final class ViewerAssetModel {
         if zoomed { stopLivePhotoPlayback() }
     }
 
+    /// Invalidates suspended loads before releasing media, including loads owned by pages
+    /// SwiftUI still retains outside the preview window. Keep favorite and EXIF state intact.
+    func setPreviewRetained(_ retained: Bool) {
+        guard retainsPreview != retained else { return }
+        retainsPreview = retained
+        previewRetentionGeneration += 1
+        guard !retained else { return }
+        generation += 1
+        stopLivePhotoPlayback()
+        isLivePhotoZoomed = false
+        image = nil
+        placeholder = nil
+        playback = nil
+        error = nil
+        livePhotoPlaybackError = nil
+        isLoading = false
+        isLoaded = false
+    }
+
     public func load() async {
+        guard retainsPreview else { return }
         stopLivePhotoPlayback()
         livePhotoPlaybackError = nil
         generation += 1
@@ -90,12 +114,18 @@ public final class ViewerAssetModel {
             if generation == started, image == nil { placeholder = thumbnail }
         }
         do {
+            try Task.checkCancellation()
+            guard generation == started, retainsPreview else { return }
             let data = try await loader.data(for: ImageKey(assetID: asset.id, size: .preview))
+            try Task.checkCancellation()
+            guard generation == started else { return }
             let decoded = await ThumbnailDecoder.decode(data, maxPixelSize: 2560)
             try Task.checkCancellation()
             guard generation == started else { return }
             image = decoded
             let detail = try await service.asset(id: asset.id)
+            try Task.checkCancellation()
+            guard generation == started else { return }
             var request: MediaRequest?
             var motionFailed = false
             do {
