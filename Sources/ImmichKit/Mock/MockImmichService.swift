@@ -31,6 +31,8 @@ public actor MockImmichService: ImmichService {
         case createAlbum(String)
         case addToAlbum(String)
         case bulkUploadCheck(Int)
+        case upload(String)
+        case linkLivePhoto(String, String)
     }
 
     /// Base URL of the media requests the mock hands out. Nothing answers there.
@@ -107,6 +109,26 @@ public actor MockImmichService: ImmichService {
         bulkUploadFailure = failure.map { ($0, calls) }
         bulkUploadChecks = 0
     }
+
+    /// Every `uploadAsset` call, failed ones included, in order.
+    public private(set) var uploads: [AssetUploadRequest] = []
+    /// Every `linkLivePhoto` call, failed ones included, in order.
+    public private(set) var links: [(photoID: String, motionID: String)] = []
+    private var queuedUploadResults: [AssetUploadResult] = []
+    private var uploadedIDs: [String: String] = [:]
+    private var uploadCalls = 0
+    private var uploadFailure: (error: any Error, after: Int)?
+    private var linkFailure: (any Error)?
+    /// The next uploads answer with these results, one per call, in order. After that, an upload answers
+    /// `.created` with a new UUID, or `.duplicate` with the earlier ID for a checksum uploaded before.
+    public func setUploadResults(_ results: [AssetUploadResult]) { queuedUploadResults = results }
+    /// Makes `uploadAsset` throw `failure`, but only after `calls` calls have succeeded.
+    public func setUploadFailure(_ failure: (any Error)?, afterCalls calls: Int = 0) {
+        uploadFailure = failure.map { ($0, calls) }
+        uploadCalls = 0
+    }
+    /// Makes `linkLivePhoto` throw `failure`.
+    public func setLinkFailure(_ failure: (any Error)?) { linkFailure = failure }
     public func setServerFeatures(_ features: ServerFeatures) { self.features = features }
     /// Fails only the features request, like a server that no longer serves it.
     public func setServerFeaturesFailure(_ failure: ImmichServiceError?) { featuresFailure = failure }
@@ -211,6 +233,31 @@ public actor MockImmichService: ImmichService {
                 id: item.id, isDuplicate: known, serverAssetID: known ? "server-\(item.checksum)" : nil, isTrashed: trashed,
                 isRejected: !known && rejectedChecksums.contains(item.checksum))
         }
+    }
+
+    /// A successful upload adds the checksum to `serverChecksums`, so a later `checkBulkUpload` sees a duplicate.
+    public func uploadAsset(_ request: AssetUploadRequest) async throws -> AssetUploadResult {
+        uploads.append(request)
+        try await begin(.upload(request.checksum))
+        uploadCalls += 1
+        if let uploadFailure, uploadCalls > uploadFailure.after { throw uploadFailure.error }
+        let result: AssetUploadResult
+        if !queuedUploadResults.isEmpty {
+            result = queuedUploadResults.removeFirst()
+        } else if let id = uploadedIDs[request.checksum] {
+            result = AssetUploadResult(id: id, status: .duplicate)
+        } else {
+            result = AssetUploadResult(id: UUID().uuidString.lowercased(), status: .created)
+        }
+        uploadedIDs[request.checksum] = uploadedIDs[request.checksum] ?? result.id
+        serverChecksums.insert(request.checksum)
+        return result
+    }
+
+    public func linkLivePhoto(photoID: String, motionID: String) async throws {
+        links.append((photoID, motionID))
+        try await begin(.linkLivePhoto(photoID, motionID))
+        if let linkFailure { throw linkFailure }
     }
 
     public func timeBuckets(options: TimelineOptions) async throws -> [TimeBucket] {

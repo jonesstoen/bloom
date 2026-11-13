@@ -68,6 +68,14 @@ public struct EditGuardedService: ImmichService {
     public func checkBulkUpload(_ items: [BulkUploadCheckItem]) async throws -> [BulkUploadCheckResult] {
         try await base.checkBulkUpload(items)
     }
+    /// Backup uploads have their own switch and key permission; Allow Changes covers editing the
+    /// existing library, so these two are not guarded.
+    public func uploadAsset(_ request: AssetUploadRequest) async throws -> AssetUploadResult {
+        try await base.uploadAsset(request)
+    }
+    public func linkLivePhoto(photoID: String, motionID: String) async throws {
+        try await base.linkLivePhoto(photoID: photoID, motionID: motionID)
+    }
     public func timeBuckets(options: TimelineOptions) async throws -> [TimeBucket] {
         try await base.timeBuckets(options: options)
     }

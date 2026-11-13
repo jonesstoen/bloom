@@ -18,6 +18,14 @@ public protocol ImmichService: Sendable {
     /// Needs the `asset.upload` permission. Callers send batches.
     func checkBulkUpload(_ items: [BulkUploadCheckItem]) async throws -> [BulkUploadCheckResult]
 
+    /// `POST /assets`: uploads one file (multipart, streamed from `request.fileURL`). A file the server
+    /// already has comes back as `.duplicate` with the existing asset's ID. Needs the `asset.upload` permission.
+    /// Throws `BackupUploadError.rejected` when the server refuses the file for good.
+    func uploadAsset(_ request: AssetUploadRequest) async throws -> AssetUploadResult
+
+    /// `PUT /assets/{photoID}` with only `livePhotoVideoId`: ties an uploaded motion video to its photo.
+    func linkLivePhoto(photoID: String, motionID: String) async throws
+
     /// `GET /timeline/buckets`: month buckets with asset counts, in `options` order.
     func timeBuckets(options: TimelineOptions) async throws -> [TimeBucket]
 
@@ -114,6 +122,15 @@ extension ImmichService {
 
     /// Services that can't ask the server don't claim to.
     public func checkBulkUpload(_ items: [BulkUploadCheckItem]) async throws -> [BulkUploadCheckResult] {
+        throw ImmichServiceError.unexpectedStatus(501)
+    }
+
+    /// Services that can't upload don't claim to.
+    public func uploadAsset(_ request: AssetUploadRequest) async throws -> AssetUploadResult {
+        throw ImmichServiceError.unexpectedStatus(501)
+    }
+
+    public func linkLivePhoto(photoID: String, motionID: String) async throws {
         throw ImmichServiceError.unexpectedStatus(501)
     }
 
