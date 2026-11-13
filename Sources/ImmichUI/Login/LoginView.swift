@@ -107,6 +107,8 @@ public struct LoginView: View {
                     Label(tr("Plain http, encrypted by Tailscale or kept on this device."), systemImage: "lock")
                 }
                 Text(tr("Create an API key in the Immich web app under Account Settings › API Keys. It is stored in the Keychain on this device."))
+                Text(tr("Give the key only these permissions: %@. To favorite, delete and add to albums with Allow Changes, also %@.",
+                        APIKeyPermissions.readOnly.joined(separator: ", "), APIKeyPermissions.changes.joined(separator: ", ")))
             }
         }
     }

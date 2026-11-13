@@ -240,3 +240,4 @@
 "This server uses http, so your API key and photos are sent unencrypted. On your own network that's usually fine, but on other Wi-Fi networks (hotels, cafés, work) others can read the key and get full access to your library. Use https or Tailscale if you can." = "Denne serveren bruker http, så API-nøkkelen og bildene sendes ukryptert. På ditt eget nettverk går det som regel bra, men på andre Wi-Fi-nett (hotell, kafé, jobb) kan andre lese nøkkelen og få full tilgang til biblioteket ditt. Bruk https eller Tailscale hvis du kan.";
 "Send Your API Key Unencrypted?" = "Sende API-nøkkelen ukryptert?";
 "Connect Anyway" = "Koble til likevel";
+"Give the key only these permissions: %@. To favorite, delete and add to albums with Allow Changes, also %@." = "Gi nøkkelen bare disse tillatelsene: %@. For å favorisere, slette og legge til i album med Tillat endringer trengs også %@.";

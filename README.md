@@ -89,6 +89,20 @@ each part lives: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). The logo kit (S
 5. Select an iPhone simulator or your signed-in physical device and run. On first launch, enter the server URL and API key in the login screen. The connection test checks an authenticated endpoint before saving to the Keychain. Subsequent launches restore that connection; **Library → Account → Sign Out** clears it and the session's image cache.
 6. For a server on your local network, add **Privacy - Local Network Usage Description** (`NSLocalNetworkUsageDescription`) to the app target's Info settings, explaining that the app connects to the user's photo server. Prefer a server with trusted HTTPS. Bloom refuses plain HTTP except for servers on your own network (private addresses, `.local` names) or on Tailscale, which encrypts the traffic itself; for those, configure a narrowly scoped App Transport Security exception in the app target. The package does not disable ATS globally, and it never follows a redirect to another server.
 
+### API key permissions
+
+Create the key in Immich under **Account Settings › API Keys** and give it only what Bloom uses,
+not "all". A leaked read-only key can't delete, edit or share anything.
+
+| Use | Permissions |
+|---|---|
+| Browsing, search, map, memories, videos, sharing originals | `asset.read`, `asset.view`, `asset.download`, `album.read`, `person.read`, `map.read`, `memory.read` |
+| Also for **Allow Changes** (favorites, trash and restore, new albums, add to album) | `asset.update`, `asset.delete`, `album.create`, `albumAsset.create` |
+
+The lists live in `APIKeyPermissions` (ImmichKit) and are shown on the sign-in screen;
+`APIKeyPermissionTests` checks them against the OpenAPI spec. Without a permission the matching
+feature shows an error, and the rest of the app keeps working.
+
 Browsing does not require permission to the iPhone's Photos library: images come from Immich. Uploading and saving to the device's photo library are not implemented.
 
 ## Language
