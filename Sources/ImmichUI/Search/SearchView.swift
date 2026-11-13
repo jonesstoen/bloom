@@ -221,6 +221,16 @@ public struct SearchView: View {
                         .accessibilityAddTraits(.isHeader)
                         .padding(.horizontal, 20)
                         .padding(.top, 8)
+                    if model.usingFileNameSearch && !model.assets.isEmpty {
+                        Label {
+                            Text(tr("Smart search isn't available on this Immich server (it may not be set up), so Bloom can't search what's in your photos. Showing only photos whose file name contains “%@”.", model.searchedText))
+                        } icon: {
+                            Image(systemName: "info.circle")
+                        }
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 20)
+                    }
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 3), spacing: 2) {
                         ForEach(model.assets) { asset in
                             Button {
@@ -254,6 +264,11 @@ public struct SearchView: View {
                         } }
                         .frame(minHeight: 44)
                     }.padding(20)
+                } else if model.hasSearched && model.assets.isEmpty && !model.isLoading && model.usingFileNameSearch {
+                    ContentUnavailableView(
+                        tr("Smart Search Isn't Available"), systemImage: "sparkle.magnifyingglass",
+                        description: Text(tr("Bloom can't search what's in your photos, because smart search isn't set up or isn't working on your Immich server. No file names contain “%@”.", model.searchedText))
+                    )
                 } else if model.hasSearched && model.assets.isEmpty && !model.isLoading {
                     ContentUnavailableView.search(text: model.text)
                 } else if model.next != nil && !model.isLoading {
@@ -281,4 +296,9 @@ public struct SearchView: View {
 #Preview("Search, large text") {
     NavigationStack { SearchView(service: MockImmichService.preview) }
         .environment(\.dynamicTypeSize, .accessibility2)
+}
+#Preview("Search, smart search unavailable") {
+    let mock = MockImmichService(library: .standard)
+    NavigationStack { SearchView(service: mock) }
+        .task { await mock.setSmartSearchFailure(.unexpectedStatus(500)) }
 }

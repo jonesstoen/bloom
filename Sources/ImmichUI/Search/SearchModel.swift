@@ -31,6 +31,9 @@ public final class SearchModel {
     public private(set) var isLoading = false
     public private(set) var hasSearched = false
     public private(set) var error: String?
+    /// The current text search shows file-name matches only, because the server's smart search
+    /// (machine learning) answered with an error that means it is off or not working.
+    public private(set) var usingFileNameSearch = false
     public private(set) var people: [Person] = []
     public private(set) var places: [String] = []
     public private(set) var suggestionsError: String?
@@ -47,6 +50,9 @@ public final class SearchModel {
         self.loader = loader ?? ImageLoader(service: service)
         self.pageSize = min(1000, max(1, pageSize))
     }
+
+    /// The text the current search is for, without surrounding spaces.
+    var searchedText: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     var query: Query? {
         if let selectedFilter { return selectedFilter }
@@ -116,9 +122,10 @@ public final class SearchModel {
         isLoading = true
         defer { if generation == started { isLoading = false } }
         do {
-            let result = try await fetch(query, page: nil)
+            let (result, fileNames) = try await fetch(query, page: nil)
             try Task.checkCancellation()
             guard started == generation else { return }
+            usingFileNameSearch = fileNames
             var seen: Set<String> = []
             assets = result.assets.filter { seen.insert($0.id).inserted }
             next = result.next
@@ -138,7 +145,7 @@ public final class SearchModel {
         error = nil
         defer { if generation == started { isLoading = false } }
         do {
-            let result = try await fetch(query, page: page)
+            let (result, _) = try await fetch(query, page: page)
             try Task.checkCancellation()
             guard started == generation else { return }
             var seen = Set(assets.map(\.id))
@@ -197,16 +204,36 @@ public final class SearchModel {
         error = nil
         hasSearched = false
         isLoading = false
+        usingFileNameSearch = false
     }
 
-    private func fetch(_ query: Query, page: SearchPageToken?) async throws -> SearchResults {
+    /// Returns the results and whether they are file-name matches standing in for smart search.
+    /// Later pages stay in the mode the first page used, so their tokens always match.
+    private func fetch(_ query: Query, page: SearchPageToken?) async throws -> (SearchResults, Bool) {
         switch query {
         case .smart(let text):
-            return try await service.smartSearch(SmartSearchQuery(text: text), page: page, size: pageSize)
+            if page != nil && usingFileNameSearch { return (try await fileNameSearch(text, page: page), true) }
+            do {
+                return (try await service.smartSearch(SmartSearchQuery(text: text), page: page, size: pageSize), false)
+            } catch let error as ImmichServiceError where page == nil && Self.meansSmartSearchUnavailable(error) {
+                return (try await fileNameSearch(text, page: nil), true)
+            }
         case .city(let city):
-            return try await service.metadataSearch(MetadataSearchQuery(filters: SearchFilters(city: city), withExif: true), page: page, size: pageSize)
+            return (try await service.metadataSearch(MetadataSearchQuery(filters: SearchFilters(city: city), withExif: true), page: page, size: pageSize), false)
         case .person(let id):
-            return try await service.metadataSearch(MetadataSearchQuery(filters: SearchFilters(personIds: [id]), withExif: true), page: page, size: pageSize)
+            return (try await service.metadataSearch(MetadataSearchQuery(filters: SearchFilters(personIds: [id]), withExif: true), page: page, size: pageSize), false)
         }
+    }
+
+    private func fileNameSearch(_ text: String, page: SearchPageToken?) async throws -> SearchResults {
+        try await service.metadataSearch(MetadataSearchQuery(originalFileName: text, withExif: true), page: page, size: pageSize)
+    }
+
+    /// Immich answers 400 when smart search is turned off in its settings, and a 5xx status when
+    /// its machine-learning service is missing or failing. Network errors, sign-in problems and
+    /// other statuses are real failures and are shown as such.
+    static func meansSmartSearchUnavailable(_ error: ImmichServiceError) -> Bool {
+        guard case .unexpectedStatus(let status) = error else { return false }
+        return status == 400 || (500...599).contains(status)
     }
 }

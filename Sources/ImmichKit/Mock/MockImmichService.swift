@@ -46,6 +46,7 @@ public actor MockImmichService: ImmichService {
     public var latency: Duration
     /// If set, every request throws this error.
     public var failure: ImmichServiceError?
+    public private(set) var smartSearchFailure: ImmichServiceError?
     /// If `true`, authenticated requests throw `.unauthorized` (a wrong API key).
     /// Ping and version still succeed, as they need no key on a real server.
     public var rejectsAPIKey = false
@@ -84,6 +85,8 @@ public actor MockImmichService: ImmichService {
     public func setAssets(_ assets: [Asset]) { self.assets = assets }
     public func setLatency(_ latency: Duration) { self.latency = latency }
     public func setFailure(_ failure: ImmichServiceError?) { self.failure = failure }
+    /// Fails only smart search, like a server without a working machine-learning service.
+    public func setSmartSearchFailure(_ failure: ImmichServiceError?) { smartSearchFailure = failure }
 
     private var trashFailures: Set<String> = []
     public func setTrashFailures(_ ids: Set<String>) { trashFailures = ids }
@@ -305,6 +308,7 @@ public actor MockImmichService: ImmichService {
     /// number of matching words, then newest first. Pages by number, like the server's smart search.
     public func smartSearch(_ query: SmartSearchQuery, page: SearchPageToken?, size: Int) async throws -> SearchResults {
         try await begin(.smartSearch(query.text))
+        if let smartSearchFailure { throw smartSearchFailure }
         let words = Self.words(query.text)
         guard !words.isEmpty else { throw ImmichServiceError.unexpectedStatus(400) }
         let index = searchIndex()
