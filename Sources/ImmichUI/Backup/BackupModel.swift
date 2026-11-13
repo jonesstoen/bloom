@@ -367,14 +367,19 @@ final class BackupModel {
     private func refreshFailures() async {
         guard counts.failed > 0 else { failedItems = []; return }
         let index = await ensureIndex()
-        // The index's selection is what the scanner counted, so the list always matches the counts.
+        // Match counts(): a missing or edited asset no longer has its cached failure state.
         let ids = await index.selection().assetIDs(in: source).sorted()
         var items: [FailedItem] = []
-        for id in ids {
-            if case let .failed(reason)? = await index.entry(for: id)?.state {
+        for start in stride(from: 0, to: ids.count, by: 500) {
+            let chunk = Array(ids[start..<min(start + 500, ids.count)])
+            let dates = await source.modificationDates(chunk)
+            for id in chunk {
+                guard let date = dates[id], let entry = await index.entry(for: id),
+                      entry.modificationDate == date, case let .failed(reason) = entry.state else { continue }
                 items.append(FailedItem(id: id, reason: reason))
                 if items.count == Self.failedItemLimit { break }
             }
+            if items.count == Self.failedItemLimit { break }
         }
         failedItems = items
     }

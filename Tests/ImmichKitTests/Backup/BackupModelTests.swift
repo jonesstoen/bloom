@@ -471,4 +471,35 @@ final class BackupModelTests: XCTestCase {
         XCTAssertEqual(model.counts.total, model.counts.backedUp + model.remaining + model.counts.failed)
         XCTAssertEqual(model.selectionSummary, "Recents · 1 excluded")
     }
+    func testLoadingOnlyListsFailuresForUnchangedExistingAssets() async throws {
+        let directory = makeDirectory()
+        let index = BackupIndex(directory: directory)
+        let library = FakePhotoLibrary()
+        for id in ["current", "edited", "removed"] {
+            await index.set(BackupEntry(modificationDate: Self.date, checksums: [:],
+                                        state: .failed(reason: "Old read failure")), for: id)
+            if id != "removed" {
+                let date = id == "edited" ? Self.date.addingTimeInterval(60) : Self.date
+                library.addAsset(DeviceAsset(
+                    id: id, isVideo: false, creationDate: Self.date, modificationDate: date,
+                    isFavorite: false, duration: 0,
+                    resources: [DeviceResource(type: .photo, filename: "\(id).jpg")]))
+            }
+        }
+        library.addAlbum(id: "recents", title: "Recents", assetIDs: ["current", "edited", "removed"])
+        await index.setSelection(BackupSelection(included: ["recents"]))
+        try await index.save()
+        let model = makeModel(library, directory: directory)
+        await model.load()
+
+        XCTAssertEqual(model.counts.total, 2, "Missing assets are not counted")
+        XCTAssertEqual(model.counts.pending, 1, "An edited asset needs a new check")
+        XCTAssertEqual(model.counts.failed, 1)
+        XCTAssertEqual(model.failedItems.map(\.id), ["current"],
+                       "Old failures for edited or missing assets must not appear")
+        XCTAssertEqual(model.failedItems.first?.reason, "Old read failure")
+        XCTAssertTrue(library.reads.isEmpty, "Opening the list must not read photo files")
+        await model.stop()
+    }
+
 }
