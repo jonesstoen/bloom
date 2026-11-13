@@ -225,4 +225,88 @@ final class BackupIndexTests: XCTestCase {
         XCTAssertEqual(saved, entry, "A failed write must remain pending for the next checkpoint")
     }
 
+    // MARK: Phase 2: server IDs and deletedOnServer
+
+    func testPhase1IndexLoadsWithEmptyServerIDs() async throws {
+        let directory = makeDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        // Exactly what Phase 1 wrote: no `serverIDs` key, one `backedUp` entry.
+        let json = """
+        {"entries":{"1":{"modificationDate":721692800,"checksums":["photo","aa","pairedVideo","bb"],\
+        "state":{"backedUp":{"serverAssetID":"srv-1"}}}},"selection":{"included":["A"],"excluded":[]}}
+        """
+        try Data(json.utf8).write(to: directory.appendingPathComponent("index.json"))
+
+        let index = BackupIndex(directory: directory)
+        let entry = await index.entry(for: "1")
+        let selection = await index.selection()
+        XCTAssertEqual(entry, BackupEntry(
+            modificationDate: Date(timeIntervalSinceReferenceDate: 721_692_800),
+            checksums: [.photo: "aa", .pairedVideo: "bb"],
+            state: .backedUp(serverAssetID: "srv-1"),
+            serverIDs: [:]
+        ))
+        XCTAssertEqual(entry?.serverIDs, [:])
+        XCTAssertEqual(selection, BackupSelection(included: ["A"]))
+        let corrupt = directory.appendingPathComponent("index.json.corrupt")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: corrupt.path), "A Phase 1 file must not be treated as corrupt")
+    }
+
+    func testServerIDsRoundTrip() async throws {
+        let directory = makeDirectory()
+        let index = BackupIndex(directory: directory)
+        var entry = sampleEntry()
+        entry.serverIDs = [.photo: "p-1", .pairedVideo: "v-1"]
+        await index.set(entry, for: "1")
+        try await index.save()
+        let reloaded = await BackupIndex(directory: directory).entry(for: "1")
+        XCTAssertEqual(reloaded, entry)
+        XCTAssertEqual(reloaded?.serverIDs[.pairedVideo], "v-1")
+    }
+
+    func testDeletedOnServerRoundTrips() async throws {
+        let directory = makeDirectory()
+        let index = BackupIndex(directory: directory)
+        let entry = sampleEntry(state: .deletedOnServer(trashed: [.photo], gone: [.pairedVideo]))
+        await index.set(entry, for: "1")
+        try await index.save()
+        let reloaded = await BackupIndex(directory: directory).entry(for: "1")
+        XCTAssertEqual(reloaded, entry)
+        XCTAssertEqual(reloaded?.state, .deletedOnServer(trashed: [.photo], gone: [.pairedVideo]))
+    }
+
+    func testCountsAddUpWithDeletedOnServer() {
+        var counts = BackupCounts()
+        let states: [BackupState] = [
+            .backedUp(serverAssetID: "s"),
+            .pending(reason: .needsUpload),
+            .deletedOnServer(trashed: [.photo], gone: []),
+            .failed(reason: "x"),
+        ]
+        for state in states { counts.add(state) }
+        XCTAssertEqual(counts.total, 4)
+        XCTAssertEqual(counts.deletedOnServer, 1)
+        XCTAssertEqual(counts.total, counts.backedUp + counts.pending + counts.deletedOnServer + counts.failed)
+        counts.remove(.deletedOnServer(trashed: [], gone: [.photo]))
+        XCTAssertEqual(counts.deletedOnServer, 0)
+        XCTAssertEqual(counts.total, 3)
+    }
+
+    func testEntriesWhereFiltersInsideTheIndex() async {
+        let index = BackupIndex(directory: makeDirectory())
+        for n in 0..<10 {
+            await index.set(sampleEntry(state: n % 3 == 0 && n < 9 ? .failed(reason: "r\(n)") : .backedUp(serverAssetID: "s\(n)")),
+                            for: "\(n)")
+        }
+        // 0, 3, 6 are failed.
+        let ids = Set((0..<10).map(String.init))
+        func isFailed(_ e: BackupEntry) -> Bool { if case .failed = e.state { true } else { false } }
+        let limited = await index.entries(where: isFailed, in: ids, limit: 2)
+        XCTAssertEqual(limited.count, 2)
+        XCTAssertTrue(limited.allSatisfy { isFailed($0.1) })
+        let all = await index.entries(where: isFailed, in: ids, limit: 100)
+        XCTAssertEqual(Set(all.map(\.0)), ["0", "3", "6"])
+        let restricted = await index.entries(where: isFailed, in: ["3", "4", "missing"], limit: 100)
+        XCTAssertEqual(restricted.map(\.0), ["3"])
+    }
 }

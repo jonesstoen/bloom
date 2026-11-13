@@ -1,16 +1,18 @@
 import Foundation
 
-/// How the selected items stand. `total == backedUp + pending + failed`; `waitingForWiFi` is the part
-/// of `pending` that needs an iCloud download the cellular switches don't allow right now.
+/// How the selected items stand. `total == backedUp + pending + deletedOnServer + failed`;
+/// `waitingForWiFi` is the part of `pending` that needs an iCloud download the cellular switches don't allow right now.
 public struct BackupCounts: Sendable, Equatable {
     public var total, backedUp, pending, failed: Int
+    public var deletedOnServer: Int
     public var waitingForWiFi: Int
 
-    public init(total: Int = 0, backedUp: Int = 0, pending: Int = 0, failed: Int = 0, waitingForWiFi: Int = 0) {
+    public init(total: Int = 0, backedUp: Int = 0, pending: Int = 0, failed: Int = 0, deletedOnServer: Int = 0, waitingForWiFi: Int = 0) {
         self.total = total
         self.backedUp = backedUp
         self.pending = pending
         self.failed = failed
+        self.deletedOnServer = deletedOnServer
         self.waitingForWiFi = waitingForWiFi
     }
 
@@ -22,6 +24,7 @@ public struct BackupCounts: Sendable, Equatable {
         switch state {
         case .backedUp: backedUp += delta
         case .failed: failed += delta
+        case .deletedOnServer: deletedOnServer += delta
         case let .pending(reason):
             pending += delta
             if reason == .waitingForWiFi { waitingForWiFi += delta }

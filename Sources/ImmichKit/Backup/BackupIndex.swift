@@ -8,6 +8,10 @@ public enum BackupState: Codable, Sendable, Equatable {
     case pending(reason: PendingReason)
     case backedUp(serverAssetID: String)
     case failed(reason: String)
+    /// The server had these copies once and no longer does: `trashed` halves are in the server's
+    /// trash (restorable), `gone` halves are deleted for good. Nothing is uploaded or restored
+    /// for an item in this state without the user's action.
+    case deletedOnServer(trashed: Set<DeviceResourceType>, gone: Set<DeviceResourceType>)
 }
 
 /// What Bloom knows about one device asset: when it last changed, the checksums of its resources
@@ -16,11 +20,32 @@ public struct BackupEntry: Codable, Sendable, Equatable {
     public var modificationDate: Date
     public var checksums: [DeviceResourceType: String]
     public var state: BackupState
+    /// The server asset ID of each resource Bloom knows to be on the server. Empty in indexes
+    /// written before Phase 2 and filled in by the next re-check.
+    public var serverIDs: [DeviceResourceType: String]
 
-    public init(modificationDate: Date, checksums: [DeviceResourceType: String], state: BackupState) {
+    public init(
+        modificationDate: Date,
+        checksums: [DeviceResourceType: String],
+        state: BackupState,
+        serverIDs: [DeviceResourceType: String] = [:]
+    ) {
         self.modificationDate = modificationDate
         self.checksums = checksums
         self.state = state
+        self.serverIDs = serverIDs
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case modificationDate, checksums, state, serverIDs
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        modificationDate = try container.decode(Date.self, forKey: .modificationDate)
+        checksums = try container.decode([DeviceResourceType: String].self, forKey: .checksums)
+        state = try container.decode(BackupState.self, forKey: .state)
+        serverIDs = try container.decodeIfPresent([DeviceResourceType: String].self, forKey: .serverIDs) ?? [:]
     }
 }
 
@@ -54,6 +79,21 @@ public actor BackupIndex {
     }
 
     public func entry(for assetID: String) -> BackupEntry? { stored.entries[assetID] }
+
+    /// Up to `limit` entries among `ids` that satisfy `isIncluded`, filtered inside the actor so
+    /// callers don't make one hop per ID. Order is unspecified.
+    public func entries(
+        where isIncluded: (BackupEntry) -> Bool, in ids: Set<String>, limit: Int
+    ) -> [(String, BackupEntry)] {
+        guard limit > 0 else { return [] }
+        var result: [(String, BackupEntry)] = []
+        for id in ids {
+            guard let entry = stored.entries[id], isIncluded(entry) else { continue }
+            result.append((id, entry))
+            if result.count == limit { break }
+        }
+        return result
+    }
 
     public func set(_ entry: BackupEntry, for assetID: String) {
         guard stored.entries[assetID] != entry else { return }
