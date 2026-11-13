@@ -10,9 +10,10 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/library.png" alt="Library" width="230">
-  <img src="docs/screenshots/collections.png" alt="Collections" width="230">
-  <img src="docs/screenshots/search.png" alt="Search" width="230">
+  <img src="docs/screenshots/library.png" alt="Library" width="200">
+  <img src="docs/screenshots/collections.png" alt="Collections" width="200">
+  <img src="docs/screenshots/search.png" alt="Search" width="200">
+  <img src="docs/screenshots/signin.png" alt="Sign in" width="200">
 </p>
 
 ## Status
@@ -40,6 +41,26 @@ Immich app and is not on the App Store: you build it yourself in Xcode (see belo
 - Norwegian Bokmål and English, Liquid Glass with fallbacks, a Home Screen icon picker (About Bloom).
 
 Uploading from the iPhone (backup) is not implemented yet: Bloom shows what is on your server.
+
+## Security and privacy
+
+Bloom collects nothing: no analytics, crash reporting, ads or tracking, and it talks only to your
+own Immich server. See the [privacy policy](PRIVACY.md).
+
+- **API key**: kept in the iOS Keychain on this device only, never logged. The sign-in screen
+  explains how to create a key with only the permissions Bloom needs (View Only, or View and
+  Organize), so a leaked key can't do more; see [API key permissions](#api-key-permissions).
+- **Transport**: https, or http only on your own network (after asking) or over Tailscale. Plain
+  http to the internet is refused, including disguised numeric hosts. No request carrying the key
+  follows a redirect to another server, video and Live Photo playback included.
+- **Untrusted responses**: malformed or oversized server data is rejected instead of crashing the
+  app or filling memory; file names from other people's uploads are cleaned before sharing.
+- **On the device**: cached photos and library data are protected while the iPhone is locked and
+  removed at sign-out; leftovers from earlier accounts and interrupted shares are cleaned up.
+
+Found a vulnerability? Please report it privately through
+[GitHub security advisories](https://github.com/jonesstoen/bloom/security/advisories/new) rather
+than a public issue.
 
 ## How it was built
 
@@ -87,7 +108,7 @@ each part lives: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). The logo kit (S
 
    The generated `ContentView` is no longer needed. No API key, server URL or extra service wiring belongs in the app source.
 5. Select an iPhone simulator or your signed-in physical device and run. On first launch, enter the server URL and API key in the login screen. The connection test checks an authenticated endpoint before saving to the Keychain. Subsequent launches restore that connection; **Library → Account → Sign Out** clears it and the session's image cache.
-6. For a server on your local network, add **Privacy - Local Network Usage Description** (`NSLocalNetworkUsageDescription`) to the app target's Info settings, explaining that the app connects to the user's photo server. Prefer a server with trusted HTTPS. Bloom refuses plain HTTP except for servers on your own network (private addresses, `.local` names) or on Tailscale, which encrypts the traffic itself; for those, configure a narrowly scoped App Transport Security exception in the app target. The package does not disable ATS globally, and it never follows a redirect to another server.
+6. For a server on your local network, add **Privacy - Local Network Usage Description** (`NSLocalNetworkUsageDescription`) to the app target's Info settings, for example "Bloom connects to your Immich server when it is on your local network." ([`docs/APP_STORE.md`](docs/APP_STORE.md) has the Norwegian text, the app's privacy manifest and the other App Store settings). Prefer a server with trusted HTTPS. Bloom refuses plain HTTP except for servers on your own network (private addresses, `.local` names) or on Tailscale, which encrypts the traffic itself; for those, configure a narrowly scoped App Transport Security exception in the app target. The package does not disable ATS globally, and it never follows a redirect to another server.
 
 ### API key permissions
 
