@@ -38,12 +38,22 @@ public struct AssetInfoView: View {
         .onScrollGeometryChange(for: CGFloat.self) { geometry in
             geometry.contentOffset.y + geometry.contentInsets.top
         } action: { _, offset in
-            if infoPull.updateOffset(offset) { onClose?() }
+            infoPull.updateOffset(offset)
         }
-        .onScrollPhaseChange { _, phase in
-            if phase == .tracking { infoPull.begin() }
-            else if phase == .idle { infoPull.end() }
-        }
+        #if os(iOS)
+        .contentShape(Rectangle())
+        .gesture(ViewerDismissGesture(isZoomed: false, blocked: onClose == nil,
+                                      mayBegin: infoPull.canStart,
+                                      onChanged: { _ in
+                                          if !infoPull.isActive { infoPull.begin() }
+                                      },
+                                      onEnded: { translation in
+                                          let shouldClose = infoPull.updateDrag(translation)
+                                          infoPull.end()
+                                          if shouldClose { onClose?() }
+                                      },
+                                      onCancelled: { infoPull.end() }))
+        #endif
     }
 
     private var heading: some View {

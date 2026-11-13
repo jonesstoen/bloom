@@ -51,12 +51,14 @@ struct ViewerDismissGesture: UIGestureRecognizerRepresentable {
     var isZoomed: Bool
     var blocked: Bool
     var allowsUp = false
+    /// Gates a new touch sequence without cancelling an already active recognizer.
+    var mayBegin = true
     var onChanged: (CGSize) -> Void
     var onEnded: (CGSize) -> Void
     var onCancelled: () -> Void
 
     func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator {
-        Coordinator(isZoomed: isZoomed, blocked: blocked, allowsUp: allowsUp)
+        Coordinator(isZoomed: isZoomed, blocked: blocked, allowsUp: allowsUp, mayBegin: mayBegin)
     }
 
     func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
@@ -80,6 +82,7 @@ struct ViewerDismissGesture: UIGestureRecognizerRepresentable {
         coordinator.isZoomed = isZoomed
         coordinator.blocked = blocked
         coordinator.allowsUp = allowsUp
+        coordinator.mayBegin = mayBegin
         // Disabling a live recognizer cancels its drag, including when a modal opens.
         recognizer.isEnabled = !isZoomed && !blocked
     }
@@ -108,15 +111,17 @@ struct ViewerDismissGesture: UIGestureRecognizerRepresentable {
         var isZoomed: Bool
         var blocked: Bool
         var allowsUp: Bool
+        var mayBegin: Bool
 
-        init(isZoomed: Bool, blocked: Bool, allowsUp: Bool = false) {
+        init(isZoomed: Bool, blocked: Bool, allowsUp: Bool = false, mayBegin: Bool = true) {
             self.isZoomed = isZoomed
             self.blocked = blocked
             self.allowsUp = allowsUp
+            self.mayBegin = mayBegin
         }
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
+            guard mayBegin, let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
             let velocity = pan.velocity(in: pan.view?.window)
             return ViewerGesture.canStartDismiss(x: velocity.x, y: velocity.y,
                                                  isZoomed: isZoomed, blocked: blocked, allowsUp: allowsUp)

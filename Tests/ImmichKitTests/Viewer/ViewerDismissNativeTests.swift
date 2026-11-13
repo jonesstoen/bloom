@@ -5,6 +5,25 @@ import UIKit
 
 @MainActor
 final class ViewerDismissNativeTests: XCTestCase {
+    func testStartGateRejectsNewPanWithoutDisablingRecognizer() {
+        var gesture = ViewerDismissGesture(isZoomed: false, blocked: false, mayBegin: false,
+                                          onChanged: { _ in }, onEnded: { _ in }, onCancelled: {})
+        let coordinator = ViewerDismissGesture.Coordinator(isZoomed: false, blocked: false, mayBegin: false)
+        let pan = gesture.makeRecognizer(coordinator: coordinator)
+        let input = ScriptedDismissPan()
+        input.velocityValue = CGPoint(x: 0, y: 120)
+        XCTAssertTrue(pan.isEnabled)
+        XCTAssertFalse(coordinator.gestureRecognizerShouldBegin(input))
+        gesture.mayBegin = true
+        gesture.configure(pan, coordinator: coordinator)
+        XCTAssertTrue(pan.isEnabled)
+        XCTAssertTrue(coordinator.gestureRecognizerShouldBegin(input))
+        gesture.mayBegin = false
+        gesture.configure(pan, coordinator: coordinator)
+        XCTAssertTrue(pan.isEnabled)
+        XCTAssertFalse(coordinator.gestureRecognizerShouldBegin(input))
+    }
+
     func testNativePanConfigurationAndDirectionDelegate() {
         var gesture = ViewerDismissGesture(isZoomed: false, blocked: false, onChanged: { _ in }, onEnded: { _ in }, onCancelled: {})
         let coordinator = ViewerDismissGesture.Coordinator(isZoomed: false, blocked: false)
