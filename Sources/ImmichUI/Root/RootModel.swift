@@ -12,9 +12,16 @@ public final class ImmichSession: Identifiable {
     public let library: LibraryGridModel
     public let search: SearchModel
     public let snapshotStore: TimelineSnapshotStore?
+    let backup: BackupModel
 
-    init(service: any ImmichService, disk: DiskImageCache?, snapshotStore: TimelineSnapshotStore? = nil) {
+    /// - Parameter backup: defaults to the preview photo library with a throwaway index.
+    init(service: any ImmichService, disk: DiskImageCache?, snapshotStore: TimelineSnapshotStore? = nil,
+         backup: BackupModel? = nil) {
         self.service = service
+        self.backup = backup ?? BackupModel(
+            source: PreviewPhotoLibrary(), service: service,
+            directory: FileManager.default.temporaryDirectory
+                .appendingPathComponent("BloomPreviewBackup-\(UUID().uuidString)", isDirectory: true))
         self.snapshotStore = snapshotStore
         let loader = ImageLoader(service: service, disk: disk)
         self.loader = loader
@@ -97,6 +104,8 @@ public final class RootModel {
                 return previous
             }.value
             session?.library.stopPrefetching()
+            // A running scan saves the index: wait for it before the directory is removed.
+            await session?.backup.stop()
             await session?.snapshotStore?.invalidate()
             await session?.loader.invalidate()
             if persistsImages {
@@ -121,13 +130,25 @@ public final class RootModel {
         let snapshots = persistsImages ? TimelineSnapshotStore(
             directory: Self.cacheDirectory(for: credentials).appendingPathComponent("Timeline", isDirectory: true)
         ) : nil
-        session = ImmichSession(service: service, disk: disk, snapshotStore: snapshots)
+        session = ImmichSession(
+            service: service, disk: disk, snapshotStore: snapshots,
+            backup: BackupModel(
+                source: Self.photoLibrary, service: service, directory: Self.backupDirectory(for: credentials)))
         error = nil
         phase = .signedIn
         if persistsImages {
             let current = Self.cacheDirectory(for: credentials)
             Task.detached(priority: .utility) { await Self.removeLeftoverFiles(keeping: current) }
         }
+    }
+
+    /// The device's photo library on iOS; the preview library where PhotoKit isn't available.
+    private static var photoLibrary: any PhotoLibrarySource {
+        #if os(iOS)
+        PhotoKitLibrarySource()
+        #else
+        PreviewPhotoLibrary()
+        #endif
     }
 
     /// Other accounts' caches and share files from a quit or crashed app. Nothing is being shared

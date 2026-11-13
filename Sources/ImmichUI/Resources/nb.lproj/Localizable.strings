@@ -276,3 +276,34 @@
 
 "Audio" = "Lyd";
 "Media" = "Medier";
+
+"Backup" = "Sikkerhetskopi";
+"None" = "Ingen";
+"%lld albums" = "%lld album";
+"%lld excluded" = "%lld utelatt";
+"Total" = "Totalt";
+"On Server" = "På serveren";
+"Remaining" = "Gjenstår";
+"%lld waiting for Wi-Fi" = "%lld venter på Wi-Fi";
+"Check Now" = "Sjekk nå";
+"Checking %@ of %@" = "Sjekker %1$@ av %2$@";
+"Items with Problems" = "Objekter med problemer";
+"Showing the first %lld." = "Viser de første %lld.";
+"Photos over Cellular" = "Bilder over mobilnett";
+"Videos over Cellular" = "Videoer over mobilnett";
+"Photos that exist only in iCloud are checked on Wi-Fi, unless you allow cellular here." = "Bilder som bare finnes i iCloud, sjekkes på Wi-Fi med mindre du tillater mobilnett her.";
+"Uploading comes in a later update." = "Opplasting kommer i en senere oppdatering.";
+"Bloom never deletes photos from your iPhone." = "Bloom sletter aldri bilder fra iPhone.";
+"Photo Access Is Off" = "Tilgang til bilder er av";
+"Allow Bloom to read your photos in Settings so it can check which ones are already on your server." = "Gi Bloom tilgang til bildene dine i Innstillinger, så kan den sjekke hvilke som allerede ligger på serveren.";
+"Limited Access" = "Begrenset tilgang";
+"Bloom can only see the photos you selected. Allow access to all photos to check your whole library." = "Bloom ser bare bildene du har valgt. Gi tilgang til alle bilder for å sjekke hele biblioteket.";
+"Open Settings" = "Åpne Innstillinger";
+"Included" = "Med";
+"Excluded" = "Utelatt";
+"Not Included" = "Ikke med";
+"Suggested" = "Anbefalt";
+"Tap an album to include it, tap again to exclude it, and once more to clear it. Recents is a good place to start." = "Trykk på et album for å ta det med, trykk igjen for å utelate det, og en gang til for å fjerne valget. Nylig er et godt sted å begynne.";
+"Bloom couldn't open its backup records. Unlock your device and try again." = "Bloom fikk ikke åpnet sikkerhetskopi-oversikten. Lås opp enheten og prøv igjen.";
+"Couldn't check your photos: %@" = "Kunne ikke sjekke bildene: %@";
+"Problems" = "Problemer";

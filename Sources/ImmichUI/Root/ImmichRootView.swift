@@ -69,6 +69,7 @@ private struct ImmichTabs: View {
     /// Bumped when the Library tab is tapped while it is already open.
     @State private var libraryReselections = 0
     @State private var showsAbout = false
+    @State private var showsBackup = false
     /// Years / Months / All and the Library's scroll state, shared with the tab bar.
     @State private var libraryChrome = LibraryChrome()
 
@@ -132,6 +133,9 @@ private struct ImmichTabs: View {
         .modifier(LibraryScaleAccessory(chrome: libraryChrome, isLibraryTab: selection == .library))
         .modifier(MinimizeTabBarOnScroll(direction: LibraryChrome.tabBarMinimizeDirection(
             libraryTab: selection == .library, newestFirst: libraryChrome.newestFirst)))
+        .sheet(isPresented: $showsBackup) {
+            NavigationStack { BackupView(model: session.backup) }
+        }
         .sheet(isPresented: $showsAbout) {
             AboutBloomView(icons: AppIconModel(switcher: SystemAppIconSwitcher()))
         }
@@ -143,6 +147,7 @@ private struct ImmichTabs: View {
         Menu {
             Toggle(tr("Allow Changes"), systemImage: "pencil", isOn: $allowsChanges)
                 .disabled(session.library.isMutating)
+            Button(tr("Backup"), systemImage: "arrow.up.circle") { showsBackup = true }
             Button(tr("About Bloom"), systemImage: "info.circle") { showsAbout = true }
             Button(tr("Sign Out"), systemImage: "rectangle.portrait.and.arrow.right", role: .destructive, action: signOut)
                 .disabled(isSigningOut || session.library.isMutating)
