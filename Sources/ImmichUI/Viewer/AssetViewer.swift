@@ -27,7 +27,6 @@ public struct AssetViewer: View {
     @State private var shareActive = false
     @State private var dismissMotion = ViewerDismissMotion()
     @State private var showsAccessibleMenu = false
-    @State private var trashConfirmationSubmitted = false
     @State private var trash: ViewerTrashModel
     private let allowsTrash: Bool
     private let allowsRestore: Bool
@@ -131,30 +130,16 @@ public struct AssetViewer: View {
             if phase != .active { store.stopLivePhotos() }
         }
         .onDisappear { store.stopLivePhotos() }
-        .confirmationDialog(allowsRestore ? tr("Restore this item?") : tr("Move to Recently Deleted?"), isPresented: Binding(
-            get: { trash.pendingAsset != nil },
-            set: { if !$0 && !trashConfirmationSubmitted { trash.cancelConfirmation() } }
-        ), titleVisibility: .visible) {
-            Button(allowsRestore ? tr("Restore") : tr("Move to Trash"), role: allowsRestore ? nil : .destructive) {
-                trashConfirmationSubmitted = true
-                Task {
-                    let succeeded = await trash.confirm()
-                    trashConfirmationSubmitted = false
-                    if succeeded { dismiss() }
-                }
-            }
-            Button(tr("Cancel"), role: .cancel) { trash.cancelConfirmation() }
-        } message: {
-            Text(allowsRestore ? tr("These items will return to your library.") : tr("You can recover these items from Recently Deleted in Immich until your server removes them."))
+        .confirmedAction(allowsRestore ? tr("Restore this item?") : tr("Move to Recently Deleted?"),
+                         isPending: trash.pendingAsset != nil,
+                         actionTitle: allowsRestore ? tr("Restore") : tr("Move to Trash"),
+                         role: allowsRestore ? nil : .destructive,
+                         message: allowsRestore ? tr("These items will return to your library.") : tr("You can recover these items from Recently Deleted in Immich until your server removes them."),
+                         onCancel: { trash.cancelConfirmation() }) {
+            if await trash.confirm() { dismiss() }
         }
-        .alert(allowsRestore ? tr("Couldn't Restore") : tr("Couldn't Move to Trash"), isPresented: Binding(
-            get: { trash.error != nil },
-            set: { if !$0 { trash.dismissError() } }
-        )) {
-            Button(tr("OK"), role: .cancel) { trash.dismissError() }
-        } message: {
-            if let error = trash.error { Text(error) }
-        }
+        .errorAlert(allowsRestore ? tr("Couldn't Restore") : tr("Couldn't Move to Trash"),
+                    message: trash.error, onDismiss: { trash.dismissError() })
         .confirmationDialog(tr("More"), isPresented: $showsAccessibleMenu, titleVisibility: .hidden) {
             if let model = currentModel { menuActions(model) }
         }

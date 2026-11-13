@@ -27,12 +27,7 @@ struct AboutBloomView: View {
                     Button(tr("Done")) { dismiss() }
                 }
             }
-            .alert(tr("Couldn't Change App Icon"), isPresented: Binding(
-                get: { icons.error != nil },
-                set: { if !$0 { icons.dismissError() } }
-            )) {
-                Button(tr("OK"), role: .cancel) { icons.dismissError() }
-            } message: { Text(icons.error ?? "") }
+            .errorAlert(tr("Couldn't Change App Icon"), message: icons.error, onDismiss: { icons.dismissError() })
         }
     }
 

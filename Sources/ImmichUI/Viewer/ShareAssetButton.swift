@@ -1,8 +1,5 @@
 import ImmichKit
 import SwiftUI
-#if os(iOS)
-import UIKit
-#endif
 
 /// The viewer's share button: downloads the original file from Immich, then opens the system
 /// share sheet (save to Photos, AirDrop, Messages, …).
@@ -77,27 +74,6 @@ struct ShareAssetButton: View {
         }
     }
 }
-
-#if os(iOS)
-private struct ActivityView: UIViewControllerRepresentable {
-    let items: [Any]
-    let owner: ViewerShareModel
-
-    // Retain the files' owner even if the originating viewer disappears during sharing.
-    final class Coordinator {
-        let owner: ViewerShareModel
-        init(owner: ViewerShareModel) { self.owner = owner }
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator(owner: owner) }
-
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
-    }
-
-    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
-}
-#endif
 
 #Preview("Share button") {
     ShareAssetButton(asset: MockLibrary.standard.assets[0], service: MockImmichService.preview,

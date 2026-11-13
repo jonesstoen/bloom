@@ -1,8 +1,5 @@
 import ImmichKit
 import SwiftUI
-#if os(iOS)
-import UIKit
-#endif
 
 /// Observes selection per visible cell, without copying its ID set through the grid parent.
 struct LibrarySelectableCell: View {
@@ -161,8 +158,6 @@ struct LibrarySelectionToolbar: View {
 /// Keeps the prepared files alive until the system sheet has actually finished dismissing.
 struct LibrarySelectionPresentation: ViewModifier {
     let selection: LibrarySelectionModel
-    @State private var trashConfirmationSubmitted = false
-    @State private var restoreConfirmationSubmitted = false
     @State private var presentedShare: SelectionShareItems?
 
     func body(content: Content) -> some View {
@@ -174,7 +169,7 @@ struct LibrarySelectionPresentation: ViewModifier {
             }
             .sheet(item: $presentedShare, onDismiss: { selection.finishSharing() }) { items in
                 #if os(iOS)
-                LibraryActivityView(urls: items.urls)
+                ActivityView(items: items.urls)
                     .presentationDetents([.medium, .large])
                     .ignoresSafeArea()
                 #else
@@ -185,48 +180,24 @@ struct LibrarySelectionPresentation: ViewModifier {
                 .padding(32)
                 #endif
             }
-            .confirmationDialog(tr("Move %@ items to Recently Deleted?",
-                                   (selection.pendingTrashAssets?.count ?? 0).formatted(.number.locale(Localization.locale))),
-                                isPresented: Binding(
-                                    get: { selection.pendingTrashAssets != nil },
-                                    set: { if !$0 && !trashConfirmationSubmitted { selection.cancelTrashConfirmation() } }
-                                ), titleVisibility: .visible) {
-                Button(tr("Move to Trash"), role: .destructive) {
-                    trashConfirmationSubmitted = true
-                    Task {
-                        await selection.confirmTrash()
-                        trashConfirmationSubmitted = false
-                    }
-                }
-                Button(tr("Cancel"), role: .cancel) { selection.cancelTrashConfirmation() }
-            } message: {
-                Text(tr("You can recover these items from Recently Deleted in Immich until your server removes them."))
+            .confirmedAction(tr("Move %@ items to Recently Deleted?",
+                                (selection.pendingTrashAssets?.count ?? 0).formatted(.number.locale(Localization.locale))),
+                             isPending: selection.pendingTrashAssets != nil,
+                             actionTitle: tr("Move to Trash"), role: .destructive,
+                             message: tr("You can recover these items from Recently Deleted in Immich until your server removes them."),
+                             onCancel: { selection.cancelTrashConfirmation() }) {
+                await selection.confirmTrash()
             }
-            .confirmationDialog(tr("Restore %@ items?",
-                                   (selection.pendingRestoreAssets?.count ?? 0).formatted(.number.locale(Localization.locale))),
-                                isPresented: Binding(
-                                    get: { selection.pendingRestoreAssets != nil },
-                                    set: { if !$0 && !restoreConfirmationSubmitted { selection.cancelRestoreConfirmation() } }
-                                ), titleVisibility: .visible) {
-                Button(tr("Restore")) {
-                    restoreConfirmationSubmitted = true
-                    Task {
-                        await selection.confirmRestore()
-                        restoreConfirmationSubmitted = false
-                    }
-                }
-                Button(tr("Cancel"), role: .cancel) { selection.cancelRestoreConfirmation() }
-            } message: {
-                Text(tr("These items will return to your library."))
+            .confirmedAction(tr("Restore %@ items?",
+                                (selection.pendingRestoreAssets?.count ?? 0).formatted(.number.locale(Localization.locale))),
+                             isPending: selection.pendingRestoreAssets != nil,
+                             actionTitle: tr("Restore"),
+                             message: tr("These items will return to your library."),
+                             onCancel: { selection.cancelRestoreConfirmation() }) {
+                await selection.confirmRestore()
             }
-            .alert(tr("Couldn't Update Selection"), isPresented: Binding(
-                get: { selection.error != nil },
-                set: { if !$0 { selection.dismissError() } }
-            )) {
-                Button(tr("OK"), role: .cancel) { selection.dismissError() }
-            } message: {
-                if let error = selection.error { Text(error) }
-            }
+            .errorAlert(tr("Couldn't Update Selection"), message: selection.error,
+                        onDismiss: { selection.dismissError() })
     }
 }
 
@@ -234,18 +205,6 @@ private struct SelectionShareItems: Identifiable {
     let id: UUID
     let urls: [URL]
 }
-
-#if os(iOS)
-private struct LibraryActivityView: UIViewControllerRepresentable {
-    let urls: [URL]
-
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: urls, applicationActivities: nil)
-    }
-
-    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
-}
-#endif
 
 #Preview("Selection controls") {
     let mock = MockImmichService.preview
