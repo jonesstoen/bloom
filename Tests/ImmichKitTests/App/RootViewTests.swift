@@ -78,4 +78,16 @@ final class RootViewTests: XCTestCase {
         XCTAssertNotEqual(RootModel.cacheDirectory(for: a), RootModel.cacheDirectory(for: c))
         XCTAssertEqual(RootModel.cacheDirectory(for: a), RootModel.cacheDirectory(for: a))
     }
+
+    func testBackupDirectoryIsPerAccountAndOutsideCaches() throws {
+        let a = try ServerCredentials(server: "https://one.invalid", apiKey: "test-a")
+        let b = try ServerCredentials(server: "https://two.invalid", apiKey: "test-a")
+        let c = try ServerCredentials(server: "https://one.invalid", apiKey: "test-b")
+        XCTAssertNotEqual(RootModel.backupDirectory(for: a), RootModel.backupDirectory(for: b))
+        XCTAssertNotEqual(RootModel.backupDirectory(for: a), RootModel.backupDirectory(for: c))
+        XCTAssertEqual(RootModel.backupDirectory(for: a), RootModel.backupDirectory(for: a))
+        let caches = try XCTUnwrap(FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first)
+        XCTAssertFalse(RootModel.backupDirectory(for: a).standardizedFileURL.path.hasPrefix(caches.standardizedFileURL.path))
+        XCTAssertFalse(RootModel.backupDirectory(for: a).path.contains("test-a"))
+    }
 }

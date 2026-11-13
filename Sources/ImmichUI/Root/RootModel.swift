@@ -91,11 +91,20 @@ public final class RootModel {
         defer { isSigningOut = false }
         do {
             let store = self.store
-            try await Task.detached { try store.clear() }.value
+            let signedOutCredentials = try await Task.detached { () -> ServerCredentials? in
+                let previous = try? store.load()
+                try store.clear()
+                return previous
+            }.value
             session?.library.stopPrefetching()
             await session?.snapshotStore?.invalidate()
             await session?.loader.invalidate()
-            if persistsImages { await Self.removeLeftoverFiles(keeping: nil) }
+            if persistsImages {
+                await Self.removeLeftoverFiles(keeping: nil)
+                if let credentials = signedOutCredentials {
+                    try? FileManager.default.removeItem(at: Self.backupDirectory(for: credentials))
+                }
+            }
             session = nil
             error = nil
             phase = .signedOut
@@ -128,10 +137,23 @@ public final class RootModel {
         SelectionShareFiles.removeLeftovers()
     }
 
+    /// `<Application Support>/Bloom/Backup/<digest>`. Unlike the caches this must survive low-storage
+    /// purges, because the index holds checksums that are expensive to recompute.
+    static func backupDirectory(for credentials: ServerCredentials) -> URL {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return support
+            .appendingPathComponent("Bloom/Backup", isDirectory: true)
+            .appendingPathComponent(accountDigest(for: credentials), isDirectory: true)
+    }
+
+    private static func accountDigest(for credentials: ServerCredentials) -> String {
+        let identity = Data((credentials.serverURL.absoluteString + "\u{0}" + credentials.apiKey).utf8)
+        return SHA256.hash(data: identity).map { String(format: "%02x", $0) }.joined()
+    }
+
     /// Hash the connection identity: no raw credentials appear in cache paths.
     static func cacheDirectory(for credentials: ServerCredentials) -> URL {
-        let identity = Data((credentials.serverURL.absoluteString + "\u{0}" + credentials.apiKey).utf8)
-        let digest = SHA256.hash(data: identity).map { String(format: "%02x", $0) }.joined()
-        return DiskImageCache.defaultDirectory.appendingPathComponent(digest, isDirectory: true)
+        DiskImageCache.defaultDirectory.appendingPathComponent(accountDigest(for: credentials), isDirectory: true)
     }
 }
