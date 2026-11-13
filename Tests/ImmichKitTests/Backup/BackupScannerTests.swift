@@ -371,6 +371,90 @@ final class BackupScannerTests: XCTestCase {
         XCTAssertTrue(library.reads.isEmpty)
     }
 
+    func testConcurrentScansShareOneRun() async throws {
+        let library = makeLibrary(album: ["1", "2", "3"])
+        for id in ["1", "2", "3"] { addAsset(id, to: library) }
+        let service = MockImmichService(latency: .milliseconds(200))
+        let scanner = makeScanner(library, service, await makeIndex())
+
+        async let first = scanner.scan { _, _ in }
+        async let second = scanner.scan { _, _ in }
+        let (a, b) = try await (first, second)
+
+        XCTAssertEqual(a, b)
+        XCTAssertEqual(library.reads.count, 3, "each resource is read once")
+        let requests = await checkRequests(service)
+        XCTAssertEqual(requests, [3])
+    }
+
+    func testStaleVerdictIsNotApplied() async throws {
+        let library = makeLibrary(album: ["1"])
+        let v1 = addAsset("1", to: library)
+        let service = MockImmichService(latency: .milliseconds(300))
+        await service.setServerChecksums([v1[.photo]!])
+        let index = await makeIndex()
+        let scanner = makeScanner(library, service, index)
+
+        let task = Task { try await scanner.scan { _, _ in } }
+        // While the server is answering for v1, the entry moves on to an edited version.
+        while await checkRequests(service).isEmpty { try await Task.sleep(for: .milliseconds(5)) }
+        let edited = BackupEntry(
+            modificationDate: Self.date + 60, checksums: [.photo: "v2"], state: .pending(reason: .notChecked))
+        await index.set(edited, for: "1")
+        _ = try await task.value
+
+        let entry = await index.entry(for: "1")
+        XCTAssertEqual(entry, edited, "v1's verdict must not land on v2")
+    }
+
+    func testNeedsUploadIsRecheckedWithoutReading() async throws {
+        let library = makeLibrary(album: ["1"])
+        let sums = addAsset("1", to: library)
+        let service = MockImmichService()
+        let index = await makeIndex()
+        let first = try await makeScanner(library, service, index).scan { _, _ in }
+        XCTAssertEqual(first.pending, 1)
+        let reads = library.reads.count
+
+        await service.setServerChecksums([sums[.photo]!]) // uploaded from elsewhere meanwhile
+        let second = try await makeScanner(library, service, index).scan { _, _ in }
+
+        XCTAssertEqual(second, BackupCounts(total: 1, backedUp: 1, pending: 0, failed: 0, waitingForWiFi: 0))
+        XCTAssertEqual(library.reads.count, reads)
+        let entry = await index.entry(for: "1")
+        XCTAssertEqual(entry?.state, .backedUp(serverAssetID: "server-\(sums[.photo]!)"))
+    }
+
+    func testLivePhotoPairIsNeverSplitAcrossRequests() async throws {
+        let ids = (0..<499).map { String(format: "a%03d", $0) }
+        let library = makeLibrary(album: Set(ids + ["z-live"]))
+        for id in ids { addAsset(id, to: library) }
+        addAsset("z-live", to: library, types: [.photo, .pairedVideo])
+        let service = MockImmichService()
+
+        _ = try await makeScanner(library, service, await makeIndex()).scan { _, _ in }
+
+        let requests = await checkRequests(service)
+        XCTAssertEqual(requests, [499, 2])
+    }
+
+    func testAssetsAreFetchedInBatchesAndCountsReadNoResources() async throws {
+        let ids = (0..<1_200).map { "a\($0)" }
+        let library = makeLibrary(album: Set(ids))
+        for id in ids { addAsset(id, to: library) }
+        let index = await makeIndex()
+        let scanner = makeScanner(library, MockImmichService(), index)
+
+        let scanned = try await scanner.scan { _, _ in }
+        XCTAssertEqual(library.batchLookups, [500, 500, 200])
+        XCTAssertEqual(library.singleLookups, 0)
+
+        let counted = await scanner.counts()
+        XCTAssertEqual(counted, scanned)
+        XCTAssertEqual(library.batchLookups, [500, 500, 200], "counts() fetches no resources")
+        XCTAssertEqual(library.dateLookups, [500, 500, 200])
+    }
+
     func testServerErrorKeepsChecksumsForTheNextScan() async throws {
         let library = makeLibrary(album: ["1", "2"])
         let one = addAsset("1", to: library)

@@ -18,6 +18,9 @@ final class FakePhotoLibrary: PhotoLibrarySource, @unchecked Sendable {
     private var _iCloudOnly: Set<DeviceResource> = []
     private var _failures: [DeviceResource: Error] = [:]
     private var _reads: [ReadCall] = []
+    private var _singleLookups = 0
+    private var _batchLookups: [Int] = []
+    private var _dateLookups: [Int] = []
 
     init(access: PhotoAccess = .full) { _access = access }
 
@@ -41,13 +44,32 @@ final class FakePhotoLibrary: PhotoLibrarySource, @unchecked Sendable {
     func failReads(of resource: DeviceResource, with error: Error) { lock.withLock { _failures[resource] = error } }
 
     var reads: [ReadCall] { lock.withLock { _reads } }
+    /// Calls to `asset(_:)`.
+    var singleLookups: Int { lock.withLock { _singleLookups } }
+    /// The number of IDs in each `assets(_:)` call.
+    var batchLookups: [Int] { lock.withLock { _batchLookups } }
+    /// The number of IDs in each `modificationDates(_:)` call.
+    var dateLookups: [Int] { lock.withLock { _dateLookups } }
 
     // PhotoLibrarySource
 
     func authorization() async -> PhotoAccess { lock.withLock { _access } }
     func albums() async -> [DeviceAlbum] { lock.withLock { _albums } }
     func assetIDs(inAlbum id: String) async -> Set<String> { lock.withLock { _albumAssets[id] ?? [] } }
-    func asset(_ id: String) async -> DeviceAsset? { lock.withLock { _assets[id] } }
+    func asset(_ id: String) async -> DeviceAsset? {
+        lock.withLock { _singleLookups += 1; return _assets[id] }
+    }
+    func assets(_ ids: [String]) async -> [DeviceAsset] {
+        lock.withLock { _batchLookups.append(ids.count); return ids.compactMap { _assets[$0] } }
+    }
+    func modificationDates(_ ids: [String]) async -> [String: Date] {
+        lock.withLock {
+            _dateLookups.append(ids.count)
+            var dates: [String: Date] = [:]
+            for id in ids { if let asset = _assets[id] { dates[id] = asset.modificationDate } }
+            return dates
+        }
+    }
 
     func read(
         _ resource: DeviceResource,

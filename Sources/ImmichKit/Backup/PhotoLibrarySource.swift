@@ -70,6 +70,10 @@ public protocol PhotoLibrarySource: Sendable {
     func albums() async -> [DeviceAlbum]
     func assetIDs(inAlbum id: String) async -> Set<String>
     func asset(_ id: String) async -> DeviceAsset?
+    /// The assets among `ids` that still exist, fetched together (order not guaranteed).
+    func assets(_ ids: [String]) async -> [DeviceAsset]
+    /// The modification dates of the assets among `ids` that still exist, without reading resources.
+    func modificationDates(_ ids: [String]) async -> [String: Date]
     /// Streams the resource's bytes to `onData`. Throws `PhotoLibraryReadError.needsNetwork` when the
     /// resource is only in iCloud and `allowNetwork` is false.
     func read(

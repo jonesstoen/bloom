@@ -50,16 +50,40 @@ public struct PhotoKitLibrarySource: PhotoLibrarySource {
     }
 
     public func asset(_ id: String) async -> DeviceAsset? {
-        guard let asset = Self.phAsset(id) else { return nil }
+        Self.phAsset(id).map(Self.deviceAsset)
+    }
+
+    /// One PhotoKit fetch for all `ids`; unknown ones are left out.
+    public func assets(_ ids: [String]) async -> [DeviceAsset] {
+        let result = PHAsset.fetchAssets(withLocalIdentifiers: ids, options: nil)
+        var assets: [DeviceAsset] = []
+        assets.reserveCapacity(result.count)
+        result.enumerateObjects { asset, _, _ in assets.append(Self.deviceAsset(asset)) }
+        return assets
+    }
+
+    /// One PhotoKit fetch, without looking up resources.
+    public func modificationDates(_ ids: [String]) async -> [String: Date] {
+        let result = PHAsset.fetchAssets(withLocalIdentifiers: ids, options: nil)
+        var dates: [String: Date] = [:]
+        dates.reserveCapacity(result.count)
+        result.enumerateObjects { asset, _, _ in dates[asset.localIdentifier] = Self.modificationDate(asset) }
+        return dates
+    }
+
+    private static func modificationDate(_ asset: PHAsset) -> Date {
+        asset.modificationDate ?? asset.creationDate ?? Date(timeIntervalSince1970: 0)
+    }
+
+    private static func deviceAsset(_ asset: PHAsset) -> DeviceAsset {
         let resources = PHAssetResource.assetResources(for: asset).map {
             DeviceResource(type: Self.type($0.type), filename: $0.originalFilename)
         }
-        let epoch = Date(timeIntervalSince1970: 0)
         return DeviceAsset(
             id: asset.localIdentifier,
             isVideo: asset.mediaType == .video,
-            creationDate: asset.creationDate ?? epoch,
-            modificationDate: asset.modificationDate ?? asset.creationDate ?? epoch,
+            creationDate: asset.creationDate ?? Date(timeIntervalSince1970: 0),
+            modificationDate: modificationDate(asset),
             isFavorite: asset.isFavorite,
             duration: asset.duration,
             resources: resources

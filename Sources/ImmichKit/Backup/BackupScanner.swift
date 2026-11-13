@@ -35,6 +35,8 @@ public struct BackupCounts: Sendable, Equatable {
 public actor BackupScanner {
     /// Checksums per `checkBulkUpload` request.
     static let batchSize = 500
+    /// Assets per PhotoKit fetch.
+    static let fetchSize = 500
     /// Items between index saves, so an interrupted scan keeps most of its work.
     static let saveInterval = 200
 
@@ -43,6 +45,8 @@ public actor BackupScanner {
     private let index: BackupIndex
     private let network: any NetworkConditions
     private let settings: BackupSettings
+    /// The scan in progress; later `scan` calls join it instead of starting a second one.
+    private var running: (id: UUID, task: Task<BackupCounts, Error>)?
 
     public init(
         source: some PhotoLibrarySource,
@@ -63,30 +67,54 @@ public actor BackupScanner {
         let assetID: String
         /// In `BackupResourcePolicy` order: the photo or video first.
         let checksums: [(type: DeviceResourceType, checksum: String)]
+        var dictionary: [DeviceResourceType: String] {
+            Dictionary(checksums.map { ($0.type, $0.checksum) }, uniquingKeysWith: { first, _ in first })
+        }
     }
 
     /// Scans the current selection. `progress` gets the counts and the number of items handled so far,
-    /// after each item. Saves the index every `saveInterval` items, at the end, and when stopped by
-    /// cancellation or an error (which is then rethrown). Throws `BackupIndexError.unavailable`
-    /// before reading anything when the index file couldn't be loaded.
+    /// after each item; the total shrinks when selected items turn out to be gone from the library.
+    /// Saves the index every `saveInterval` items, at the end, and when stopped by cancellation or an
+    /// error (which is then rethrown). Throws `BackupIndexError.unavailable` before reading anything
+    /// when the index file couldn't be loaded.
+    ///
+    /// Only one scan runs at a time: a call made while one is running waits for it and returns its
+    /// result (its own `progress` is not called). Cancelling the caller that started the scan stops it.
     @discardableResult
-    public func scan(progress: @Sendable (BackupCounts, Int) -> Void) async throws -> BackupCounts {
+    public func scan(progress: @escaping @Sendable (BackupCounts, Int) -> Void) async throws -> BackupCounts {
+        if let running { return try await running.task.value }
+        let id = UUID()
+        let task = Task { try await self.performScan(progress: progress) }
+        running = (id, task)
+        defer { if running?.id == id { running = nil } }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    private func performScan(progress: @Sendable (BackupCounts, Int) -> Void) async throws -> BackupCounts {
         // Fails fast on an unavailable index, so no work is done that couldn't be kept.
         try await index.save()
-        let assets = await selectedAssets()
+        let ids = await index.selection().assetIDs(in: source).sorted()
+
+        // A first estimate from the index; corrected per item once its asset is fetched.
         var states: [String: BackupState] = [:]
         var counts = BackupCounts()
-        for asset in assets {
-            let state = Self.state(of: asset, entry: await index.entry(for: asset.id))
-            states[asset.id] = state
+        for id in ids {
+            let state = await index.entry(for: id)?.state ?? .pending(reason: .notChecked)
+            states[id] = state
             counts.add(state)
         }
-
+        func show(_ state: BackupState?, for assetID: String) {
+            if let old = states[assetID] { counts.remove(old) }
+            states[assetID] = state
+            if let state { counts.add(state) }
+        }
         func record(_ entry: BackupEntry, for assetID: String) async {
             await index.set(entry, for: assetID)
-            if let old = states[assetID] { counts.remove(old) }
-            states[assetID] = entry.state
-            counts.add(entry.state)
+            show(entry.state, for: assetID)
         }
 
         var batch: [Hashed] = []
@@ -99,53 +127,66 @@ public actor BackupScanner {
             let results = try await service.checkBulkUpload(items)
             let byID = Dictionary(results.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             for item in batch {
-                guard var entry = await index.entry(for: item.assetID) else { continue }
+                // The entry may have changed while the server answered: only apply the verdict
+                // to the checksums it was given for.
+                guard var entry = await index.entry(for: item.assetID), entry.checksums == item.dictionary else { continue }
                 entry.state = Self.verdict(for: item, results: byID)
                 await record(entry, for: item.assetID)
             }
             batch = []
             batchChecksums = 0
         }
+        func enqueue(_ assetID: String, _ resources: [DeviceResource], _ checksums: [DeviceResourceType: String]) async throws {
+            let sums = resources.map { (type: $0.type, checksum: checksums[$0.type]!) }
+            // A Live Photo's checksums always travel in the same request.
+            if batchChecksums + sums.count > Self.batchSize { try await flush() }
+            batch.append(Hashed(assetID: assetID, checksums: sums))
+            batchChecksums += sums.count
+        }
 
+        var handled = 0
         do {
-            for (offset, asset) in assets.enumerated() {
+            for start in stride(from: 0, to: ids.count, by: Self.fetchSize) {
                 try Task.checkCancellation()
-                let resources = BackupResourcePolicy.upload(from: asset.resources)
-                let entry = await index.entry(for: asset.id)
-                if resources.isEmpty {
-                    let reason = tr("This item has no photo or video file that Bloom can back up.")
-                    await record(
-                        BackupEntry(modificationDate: asset.modificationDate, checksums: [:], state: .failed(reason: reason)),
-                        for: asset.id)
-                } else if let entry, Self.isCurrent(entry, for: asset, resources: resources) {
-                    // Already hashed: only ask the server again if it never answered.
-                    if entry.state == .pending(reason: .notChecked) {
-                        let sums = resources.map { (type: $0.type, checksum: entry.checksums[$0.type]!) }
-                        if batchChecksums + sums.count > Self.batchSize { try await flush() }
-                        batch.append(Hashed(assetID: asset.id, checksums: sums))
-                        batchChecksums += sums.count
+                let chunk = Array(ids[start..<min(start + Self.fetchSize, ids.count)])
+                let fetched = await source.assets(chunk)
+                let assets = Dictionary(fetched.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                for id in chunk {
+                    try Task.checkCancellation()
+                    handled += 1
+                    defer { progress(counts, handled) }
+                    guard let asset = assets[id] else {
+                        show(nil, for: id) // gone from the library: not counted, not failed
+                        continue
                     }
-                } else {
-                    let (checksums, state) = try await hash(asset, resources: resources)
-                    await record(
-                        BackupEntry(modificationDate: asset.modificationDate, checksums: checksums, state: state),
-                        for: asset.id)
-                    if state == .pending(reason: .notChecked) {
-                        let sums = resources.map { (type: $0.type, checksum: checksums[$0.type]!) }
-                        if batchChecksums + sums.count > Self.batchSize { try await flush() }
-                        batch.append(Hashed(assetID: asset.id, checksums: sums))
-                        batchChecksums += sums.count
+                    let entry = await index.entry(for: id)
+                    show(Self.state(of: asset, entry: entry), for: id)
+                    let resources = BackupResourcePolicy.upload(from: asset.resources)
+                    if resources.isEmpty {
+                        let reason = Self.noResourcesReason
+                        await record(
+                            BackupEntry(modificationDate: asset.modificationDate, checksums: [:], state: .failed(reason: reason)),
+                            for: id)
+                    } else if let entry, Self.isCurrent(entry, for: asset, resources: resources) {
+                        // Already hashed: ask the server again (it may have the file by now), no reads.
+                        if entry.state == .pending(reason: .notChecked) || entry.state == .pending(reason: .needsUpload) {
+                            try await enqueue(id, resources, entry.checksums)
+                        }
+                    } else {
+                        let (checksums, state) = try await hash(asset, resources: resources)
+                        await record(
+                            BackupEntry(modificationDate: asset.modificationDate, checksums: checksums, state: state),
+                            for: id)
+                        if state == .pending(reason: .notChecked) { try await enqueue(id, resources, checksums) }
                     }
+                    if batchChecksums >= Self.batchSize { try await flush() }
+                    if handled.isMultiple(of: Self.saveInterval) { try await index.save() }
                 }
-                if batchChecksums >= Self.batchSize { try await flush() }
-                let checked = offset + 1
-                progress(counts, checked)
-                if checked.isMultiple(of: Self.saveInterval) { try await index.save() }
             }
             try await flush()
         } catch {
-            // Keep what was learned: hashed items stay `notChecked` with their checksums,
-            // so the next scan asks the server without reading them again.
+            // Keep what was learned: hashed items keep their checksums, so the next scan asks
+            // the server without reading them again.
             try? await index.save()
             throw error
         }
@@ -153,33 +194,31 @@ public actor BackupScanner {
         return counts
     }
 
-    /// The counts for the current selection, from the index alone (reads no resources).
-    /// Items changed since they were recorded count as pending.
+    /// The counts for the current selection, from the index and the assets' modification dates
+    /// (fetched in batches, no resources read). Items changed since they were recorded count as pending.
     public func counts() async -> BackupCounts {
+        let ids = await index.selection().assetIDs(in: source).sorted()
         var counts = BackupCounts()
-        for asset in await selectedAssets() {
-            counts.add(Self.state(of: asset, entry: await index.entry(for: asset.id)))
+        for start in stride(from: 0, to: ids.count, by: Self.fetchSize) {
+            let chunk = Array(ids[start..<min(start + Self.fetchSize, ids.count)])
+            let dates = await source.modificationDates(chunk)
+            for id in chunk {
+                guard let date = dates[id] else { continue }
+                let entry = await index.entry(for: id)
+                counts.add(entry?.modificationDate == date ? entry!.state : .pending(reason: .notChecked))
+            }
         }
         return counts
     }
 
     // MARK: - Helpers
 
-    /// The selection's assets that still exist, in a stable order. Vanished assets are left out.
-    private func selectedAssets() async -> [DeviceAsset] {
-        let ids = await index.selection().assetIDs(in: source).sorted()
-        var assets: [DeviceAsset] = []
-        assets.reserveCapacity(ids.count)
-        for id in ids {
-            if let asset = await source.asset(id) { assets.append(asset) }
-        }
-        return assets
+    private static var noResourcesReason: String {
+        tr("This item has no photo or video file that Bloom can back up.")
     }
 
     private static func state(of asset: DeviceAsset, entry: BackupEntry?) -> BackupState {
-        if BackupResourcePolicy.upload(from: asset.resources).isEmpty {
-            return .failed(reason: tr("This item has no photo or video file that Bloom can back up."))
-        }
+        if BackupResourcePolicy.upload(from: asset.resources).isEmpty { return .failed(reason: noResourcesReason) }
         guard let entry, entry.modificationDate == asset.modificationDate else { return .pending(reason: .notChecked) }
         return entry.state
     }
