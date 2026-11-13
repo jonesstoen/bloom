@@ -44,6 +44,7 @@ public final class SearchModel {
     @ObservationIgnored public let loader: ImageLoader
     @ObservationIgnored private let pageSize: Int
     @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var seenTokens: Set<SearchPageToken> = []
 
     public init(service: any ImmichService, loader: ImageLoader? = nil, pageSize: Int = 100) {
         self.service = service
@@ -129,6 +130,7 @@ public final class SearchModel {
             var seen: Set<String> = []
             assets = result.assets.filter { seen.insert($0.id).inserted }
             next = result.next
+            seenTokens = result.next.map { [$0] } ?? []
             hasSearched = true
         } catch is CancellationError { return }
         catch {
@@ -149,8 +151,16 @@ public final class SearchModel {
             try Task.checkCancellation()
             guard started == generation else { return }
             var seen = Set(assets.map(\.id))
-            assets += result.assets.filter { seen.insert($0.id).inserted }
-            next = result.next == page ? nil : result.next
+            let fresh = result.assets.filter { seen.insert($0.id).inserted }
+            assets += fresh
+            // Stop when the server repeats any earlier token or a page adds nothing new: a
+            // broken or hostile server could otherwise keep the list growing forever.
+            seenTokens.insert(page)
+            if let token = result.next, !fresh.isEmpty, seenTokens.insert(token).inserted {
+                next = token
+            } else {
+                next = nil
+            }
         } catch is CancellationError { return }
         catch {
             guard started == generation else { return }

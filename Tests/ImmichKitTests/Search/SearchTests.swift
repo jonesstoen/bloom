@@ -2,6 +2,7 @@ import Foundation
 import HTTPTypes
 import OpenAPIRuntime
 import XCTest
+@testable import ImmichUI
 @testable import ImmichKit
 
 /// Smart and metadata search through the mock service.
@@ -268,6 +269,40 @@ final class LiveSearchTests: XCTestCase {
          "assets": {"total": \(total ?? assets.count), "count": \(assets.count), "items": [\(assets.joined(separator: ","))],
                     "facets": [], "nextPage": \(nextPage), "nextCursor": \(nextCursor)}}
         """
+    }
+
+    /// A server that cycles page tokens (2 -> 3 -> 2) must not make "load more" go on forever.
+    @MainActor
+    func testRepeatedPageTokensStopLoadingMore() async throws {
+        let pages = [("a1", "\"2\""), ("a2", "\"3\""), ("a3", "\"2\"")]
+        let (service, transport) = try service { _, index in
+            let page = pages[min(index, pages.count - 1)]
+            return (200, Self.response([Self.assetJSON(page.0)], nextPage: page.1))
+        }
+        let model = SearchModel(service: service, pageSize: 1)
+        model.text = "beach"
+        await model.search()
+        await model.loadMore()
+        await model.loadMore()
+        XCTAssertEqual(model.assets.map(\.id), ["a1", "a2", "a3"])
+        XCTAssertNil(model.next, "token 2 was already used")
+        await model.loadMore()
+        XCTAssertEqual(transport.requests.count, 3)
+    }
+
+    /// A page that adds nothing new ends paging too, even with a fresh token.
+    @MainActor
+    func testPageWithoutNewAssetsStopsLoadingMore() async throws {
+        let (service, transport) = try service { _, index in
+            (200, Self.response([Self.assetJSON("a1")], nextPage: "\"\(index + 2)\""))
+        }
+        let model = SearchModel(service: service, pageSize: 1)
+        model.text = "beach"
+        await model.search()
+        await model.loadMore()
+        XCTAssertNil(model.next)
+        await model.loadMore()
+        XCTAssertEqual(transport.requests.count, 2)
     }
 
     func testSmartSearchRequestAndResponse() async throws {
