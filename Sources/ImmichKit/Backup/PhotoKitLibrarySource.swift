@@ -86,7 +86,8 @@ public struct PhotoKitLibrarySource: PhotoLibrarySource {
 
     private static func deviceAsset(_ asset: PHAsset) -> DeviceAsset {
         let resources = PHAssetResource.assetResources(for: asset).map {
-            DeviceResource(type: Self.type($0.type), filename: $0.originalFilename)
+            DeviceResource(
+                type: Self.type($0.type), filename: $0.originalFilename, uniformTypeIdentifier: $0.uniformTypeIdentifier)
         }
         return DeviceAsset(
             id: asset.localIdentifier,

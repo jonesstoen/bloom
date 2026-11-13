@@ -329,13 +329,8 @@ public actor BackupScanner {
             let sink = HashSink()
             do {
                 try await source.read(resource, of: asset.id, allowNetwork: allowNetwork) { sink.update($0) }
-            } catch PhotoLibraryReadError.needsNetwork {
-                return (checksums, .pending(reason: .waitingForWiFi))
             } catch {
-                // Callback-based readers can return their own error when a request is cancelled.
-                if error is CancellationError || Task.isCancelled { throw CancellationError() }
-                let reason = tr("Couldn't read %@: %@", resource.filename, error.localizedDescription)
-                return (checksums, .failed(reason: reason))
+                return (checksums, try BackupReadFailure.state(for: error, reading: resource))
             }
             checksums[resource.type] = sink.base64()
         }

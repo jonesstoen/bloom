@@ -1,0 +1,205 @@
+import Foundation
+
+public enum BackupStagingError: Error, Equatable, Sendable {
+    /// The phone hasn't room for the staged file and the upload body made from it.
+    case notEnoughSpace
+}
+
+/// What a failed resource read means for the item, the same in the scanner and the uploader.
+enum BackupReadFailure {
+    /// `pending(.waitingForWiFi)` when the resource is only in iCloud and the network isn't allowed,
+    /// `failed` with the reason otherwise. Cancellation is rethrown: callback-based readers can
+    /// finish with their own error when a request is cancelled, so a cancelled task counts too.
+    static func state(for error: Error, reading resource: DeviceResource) throws -> BackupState {
+        if error is CancellationError || Task.isCancelled { throw CancellationError() }
+        if let error = error as? PhotoLibraryReadError, error == .needsNetwork { return .pending(reason: .waitingForWiFi) }
+        return .failed(reason: tr("Couldn't read %@: %@", resource.filename, error.localizedDescription))
+    }
+}
+
+/// Copies resources from the photo library into files for upload, hashing them on the way.
+/// The files live in `directory` (the account's `Staging` folder), are protected until the first
+/// unlock, and are removed by the caller after each item; `removeAll()` empties the folder.
+/// Never changes the photo library.
+public actor BackupStaging {
+    /// Room left free on top of what the upload needs.
+    public static let margin: Int64 = 200 * 1024 * 1024
+    /// PhotoKit has no public API for a resource's size, so the space check starts from an estimate:
+    /// generous for a photo, a motion clip and a video per second (4K HEVC is about 0.5–1 MB/s).
+    /// A file larger than that is checked again while it is written.
+    static let photoEstimate: Int64 = 30 * 1024 * 1024
+    static let motionEstimate: Int64 = 20 * 1024 * 1024
+    static let videoBytesPerSecond: Int64 = 2 * 1024 * 1024
+    static let minimumVideoEstimate: Int64 = 50 * 1024 * 1024
+
+    private let directory: URL
+    private let freeSpace: @Sendable () -> Int64
+    private let recheckInterval: Int64
+    private let estimate: @Sendable (DeviceResource, DeviceAsset) -> Int64
+
+    /// `freeSpace` gives the bytes available on the volume of `directory`
+    /// (see `availableCapacity(at:)`); it is asked before each resource and again while one
+    /// turns out larger than expected.
+    public init(directory: URL, freeSpace: @escaping @Sendable () -> Int64) {
+        self.init(directory: directory, freeSpace: freeSpace, recheckInterval: 64 * 1024 * 1024)
+    }
+
+    /// Tests set a small `recheckInterval` and their own `estimate`.
+    init(
+        directory: URL, freeSpace: @escaping @Sendable () -> Int64, recheckInterval: Int64,
+        estimate: @escaping @Sendable (DeviceResource, DeviceAsset) -> Int64 = { BackupStaging.estimate($0, of: $1) }
+    ) {
+        self.directory = directory
+        self.freeSpace = freeSpace
+        self.recheckInterval = max(1, recheckInterval)
+        self.estimate = estimate
+    }
+
+    /// Streams `resource` into a new file in the staging folder and returns it with the SHA1 (base64)
+    /// of its bytes. Needs room for the file twice (the upload body is a second copy) plus
+    /// `margin`, else throws `BackupStagingError.notEnoughSpace` before reading anything; a file
+    /// larger than expected is checked again while it is written. Read errors
+    /// (`PhotoLibraryReadError.needsNetwork` among them) and cancellation are rethrown. On any
+    /// error the partial file is removed.
+    public func stage(
+        _ resource: DeviceResource, of asset: DeviceAsset, from source: any PhotoLibrarySource, allowNetwork: Bool
+    ) async throws -> (url: URL, checksum: String) {
+        let expected = max(estimate(resource, asset), 0)
+        guard freeSpace() >= 2 * expected + Self.margin else { throw BackupStagingError.notEnoughSpace }
+
+        try Self.createDirectory(directory)
+        let url = directory.appendingPathComponent("\(UUID().uuidString).staged")
+        var attributes: [FileAttributeKey: Any]?
+        #if os(iOS)
+        attributes = [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+        #endif
+        guard FileManager.default.createFile(atPath: url.path, contents: nil, attributes: attributes) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        do {
+            let sink = try StagingSink(
+                url: url, freeSpace: freeSpace, firstCheck: expected + recheckInterval, interval: recheckInterval)
+            defer { sink.close() }
+            try await source.read(resource, of: asset.id, allowNetwork: allowNetwork) { sink.write($0) }
+            try Task.checkCancellation()
+            let checksum = try sink.finish()
+            return (url, checksum)
+        } catch {
+            remove(url)
+            if Self.isOutOfSpace(error) { throw BackupStagingError.notEnoughSpace }
+            throw error
+        }
+    }
+
+    /// Removes one staged file. Safe to call from a `defer`, and for a file that is already gone.
+    public nonisolated func remove(_ url: URL) {
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    /// Empties the staging folder: staged files and any upload bodies left behind by an app that was
+    /// stopped mid-upload. Call only while nothing is uploading.
+    public func removeAll() {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        for name in names { remove(directory.appendingPathComponent(name)) }
+    }
+
+    /// Free bytes on the volume holding `directory` (or its nearest existing parent), as iOS counts
+    /// them for user-requested work. `Int64.max` when the system can't tell, so an unknown answer
+    /// doesn't stop the backup; a full disk still fails the write and stops it.
+    public static func availableCapacity(at directory: URL) -> Int64 {
+        var url = directory
+        while true {
+            if let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+               let capacity = values.volumeAvailableCapacityForImportantUsage {
+                return capacity
+            }
+            let parent = url.deletingLastPathComponent()
+            if parent.path == url.path { return Int64.max }
+            url = parent
+        }
+    }
+
+    /// Whether `error` is the disk being full.
+    static func isOutOfSpace(_ error: Error) -> Bool {
+        if error as? BackupStagingError == .notEnoughSpace { return true }
+        let ns = error as NSError
+        if ns.domain == NSCocoaErrorDomain, ns.code == NSFileWriteOutOfSpaceError { return true }
+        if ns.domain == NSPOSIXErrorDomain, ns.code == Int(ENOSPC) { return true }
+        if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? Error { return isOutOfSpace(underlying) }
+        return false
+    }
+
+    // MARK: - Helpers
+
+    static func estimate(_ resource: DeviceResource, of asset: DeviceAsset) -> Int64 {
+        switch resource.type {
+        case .video, .fullSizeVideo:
+            let seconds = Int64(min(max(0, asset.duration.rounded(.up)), 1_000_000))
+            return max(minimumVideoEstimate, seconds * videoBytesPerSecond)
+        case .pairedVideo, .fullSizePairedVideo:
+            return motionEstimate
+        case .photo, .fullSizePhoto, .other:
+            return photoEstimate
+        }
+    }
+
+    private static func createDirectory(_ directory: URL) throws {
+        var attributes: [FileAttributeKey: Any]?
+        #if os(iOS)
+        attributes = [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+        #endif
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: attributes)
+    }
+}
+
+/// Receives a resource's bytes from PhotoKit's data callback: writes them to the staged file and
+/// hashes them. After the first failure (a write error, or no room left) further bytes are dropped
+/// and `finish()` throws it.
+private final class StagingSink: @unchecked Sendable {
+    private let lock = NSLock()
+    private let handle: FileHandle
+    private let freeSpace: @Sendable () -> Int64
+    private let interval: Int64
+    private var sha = SHA1Stream()
+    private var written: Int64 = 0
+    private var nextCheck: Int64
+    private var failure: Error?
+
+    init(url: URL, freeSpace: @escaping @Sendable () -> Int64, firstCheck: Int64, interval: Int64) throws {
+        handle = try FileHandle(forWritingTo: url)
+        self.freeSpace = freeSpace
+        self.interval = interval
+        nextCheck = firstCheck
+    }
+
+    func write(_ data: Data) {
+        lock.withLock {
+            guard failure == nil else { return }
+            do {
+                try autoreleasepool { try handle.write(contentsOf: data) }
+            } catch {
+                failure = error
+                return
+            }
+            sha.update(data)
+            written += Int64(data.count)
+            // Larger than expected: the rest of this file and the body copy of all of it must still fit.
+            if written >= nextCheck {
+                if freeSpace() < written + BackupStaging.margin {
+                    failure = BackupStagingError.notEnoughSpace
+                } else {
+                    nextCheck = written + interval
+                }
+            }
+        }
+    }
+
+    func finish() throws -> String {
+        try lock.withLock {
+            if let failure { throw failure }
+            return sha.base64()
+        }
+    }
+
+    func close() { lock.withLock { try? handle.close() } }
+}

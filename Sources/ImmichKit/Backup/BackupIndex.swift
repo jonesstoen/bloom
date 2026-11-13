@@ -101,6 +101,21 @@ public actor BackupIndex {
         hasChanges = true
     }
 
+    /// Writes `entry` only if the stored entry for `assetID` still has modification date `date` and
+    /// `checksums`, i.e. describes the version the caller worked on, checked and written in one step.
+    /// Returns whether it wrote; `false` also when there is no entry.
+    @discardableResult
+    public func set(
+        _ entry: BackupEntry, for assetID: String,
+        ifModificationDate date: Date, checksums: [DeviceResourceType: String]
+    ) -> Bool {
+        guard let current = stored.entries[assetID], current.modificationDate == date, current.checksums == checksums else {
+            return false
+        }
+        set(entry, for: assetID)
+        return true
+    }
+
     public func selection() -> BackupSelection { stored.selection }
 
     public func setSelection(_ s: BackupSelection) {

@@ -7,11 +7,15 @@ public enum DeviceResourceType: String, Sendable, Codable {
 
 public struct DeviceResource: Sendable, Hashable {
     public let type: DeviceResourceType
+    /// PhotoKit's original filename of this resource (for an edit, something like `FullSizeRender.jpg`).
     public let filename: String
+    /// The file's uniform type identifier (`public.heic`, `com.apple.quicktime-movie`), when known.
+    public let uniformTypeIdentifier: String?
 
-    public init(type: DeviceResourceType, filename: String) {
+    public init(type: DeviceResourceType, filename: String, uniformTypeIdentifier: String? = nil) {
         self.type = type
         self.filename = filename
+        self.uniformTypeIdentifier = uniformTypeIdentifier
     }
 }
 

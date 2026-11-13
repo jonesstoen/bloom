@@ -38,3 +38,4 @@
 "Bloom only uses http on your own network or Tailscale. Use https for this server." = "Bloom bruker bare http på ditt eget nettverk eller Tailscale. Bruk https for denne serveren.";
 "This item has no photo or video file that Bloom can back up." = "Dette objektet har ingen bilde- eller videofil som Bloom kan sikkerhetskopiere.";
 "Couldn't read %@: %@" = "Kunne ikke lese %@: %@";
+"Not enough free space on the iPhone." = "Ikke nok ledig plass på iPhone.";

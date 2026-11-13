@@ -309,4 +309,39 @@ final class BackupIndexTests: XCTestCase {
         let restricted = await index.entries(where: isFailed, in: ["3", "4", "missing"], limit: 100)
         XCTAssertEqual(restricted.map(\.0), ["3"])
     }
+
+    func testConditionalSetWritesOnlyOverTheSameVersion() async throws {
+        let directory = makeDirectory()
+        let index = BackupIndex(directory: directory)
+        let stored = sampleEntry(state: .pending(reason: .needsUpload))
+        await index.set(stored, for: "1")
+        try await index.save()
+        var uploaded = stored
+        uploaded.state = .backedUp(serverAssetID: "srv-9")
+        uploaded.serverIDs = [.photo: "srv-9", .pairedVideo: "srv-8"]
+
+        // Another version recorded meanwhile (new date, or new checksums): left alone.
+        let staleDate = await index.set(uploaded, for: "1", ifModificationDate: stored.modificationDate.addingTimeInterval(1),
+                                        checksums: stored.checksums)
+        let staleSums = await index.set(uploaded, for: "1", ifModificationDate: stored.modificationDate,
+                                        checksums: [.photo: "aa"])
+        let missing = await index.set(uploaded, for: "2", ifModificationDate: stored.modificationDate,
+                                      checksums: stored.checksums)
+        XCTAssertFalse(staleDate)
+        XCTAssertFalse(staleSums)
+        XCTAssertFalse(missing)
+        let unchanged = await index.entry(for: "1")
+        XCTAssertEqual(unchanged, stored)
+        let noEntry = await index.entry(for: "2")
+        XCTAssertNil(noEntry)
+
+        // The same version: written, and marked for the next save.
+        let wrote = await index.set(uploaded, for: "1", ifModificationDate: stored.modificationDate, checksums: stored.checksums)
+        XCTAssertTrue(wrote)
+        let current = await index.entry(for: "1")
+        XCTAssertEqual(current, uploaded)
+        try await index.saveIfChanged()
+        let reloaded = await BackupIndex(directory: directory).entry(for: "1")
+        XCTAssertEqual(reloaded, uploaded)
+    }
 }
