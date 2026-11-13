@@ -12,17 +12,23 @@ public struct LiveImmichService: ImmichService {
 
     /// - Parameter transport: defaults to `URLSessionTransport` on a session that refuses redirects
     ///   to other servers (`SameOriginRedirects`); tests inject a stub.
+    /// - Parameter maxJSONBytes: the largest non-media response body accepted (tests lower it).
     public init(credentials: ServerCredentials,
-                transport: any ClientTransport = LiveImmichService.defaultTransport) {
+                transport: any ClientTransport = LiveImmichService.defaultTransport,
+                maxJSONBytes: Int = LiveImmichService.maxJSONBytes) {
         self.credentials = credentials
         self.transport = transport
         self.client = Client(
             serverURL: credentials.apiBaseURL,
             configuration: Configuration(dateTranscoder: ImmichDateTranscoder()),
             transport: transport,
-            middlewares: [APIKeyMiddleware(apiKey: credentials.apiKey), BinaryContentTypeMiddleware()]
+            middlewares: [APIKeyMiddleware(apiKey: credentials.apiKey), BinaryContentTypeMiddleware(),
+                          ResponseSizeLimitMiddleware(maxBytes: maxJSONBytes)]
         )
     }
+
+    /// Far above real responses (a month of the timeline or all map markers is a few MB).
+    public static let maxJSONBytes = 64 * 1024 * 1024
 
     /// URLSession transport on the redirect-checking session.
     public static var defaultTransport: any ClientTransport {
