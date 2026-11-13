@@ -27,15 +27,9 @@ extension LibraryGridModel {
         }
         isTrashing = true
         defer { isTrashing = false }
-        // Drop callbacks of loads started before the write. Cancelling a task alone does not
-        // stop a service response or an already enqueued actor call from completing later.
-        loadGeneration += 1
-        loadingMonths = []
-        snapshotSave?.cancel()
-        if let snapshotStore {
-            // New saves are blocked by isTrashing; queued ones keep the previous revision.
-            snapshotRevision = await snapshotStore.clearAll()
-        }
+        cancelInFlightLoads()
+        // New saves are blocked by isTrashing; queued ones keep the previous revision.
+        await clearSavedSnapshots()
         let ids = Self.uniqueIDs(assets)
         do {
             let result = try await service.moveToTrash(assetIDs: ids)
@@ -144,14 +138,25 @@ extension LibraryGridModel {
     }
 
     private func prepareRestore() async {
-        loadGeneration += 1
-        loadingMonths = []
-        snapshotSave?.cancel()
+        cancelInFlightLoads()
         timeline = Timeline(service: service, options: options)
         didAttemptRestore = true
         needsFreshTrashLoad = true
+        // Clears every saved sort/filter, and queued saves keep their old revision.
+        await clearSavedSnapshots()
+    }
+
+    /// Drops callbacks of loads started before a write. Cancelling a task alone does not stop a
+    /// service response or an already enqueued actor call from completing later.
+    private func cancelInFlightLoads() {
+        loadGeneration += 1
+        loadingMonths = []
+        snapshotSave?.cancel()
+    }
+
+    /// Clears every saved snapshot before a write, so a force quit cannot bring old photos back.
+    private func clearSavedSnapshots() async {
         if let snapshotStore {
-            // Clears every saved sort/filter, and queued saves keep their old revision.
             snapshotRevision = await snapshotStore.clearAll()
         }
     }
