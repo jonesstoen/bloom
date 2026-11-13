@@ -25,9 +25,22 @@ final class PlainHTTPTests: XCTestCase {
         }
         for internet in ["http://photos.example.com", "http://203.0.113.5", "http://172.32.0.1", "http://100.128.0.1",
                          "http://8.8.8.8", "http://[2001:db8::1]", "http://192.169.0.1", "http://local.example.com",
-                         "http://example.ts.net.evil.com"] {
+                         "http://example.ts.net.evil.com",
+                         // Whole-number forms the resolver turns into 8.8.8.8, and leading-zero
+                         // parts that resolvers read differently (octal or decimal).
+                         "http://134744072", "http://0x8080808", "http://0X8080808", "http://010.8.8.8",
+                         "http://0127.0.0.1", "http://8.8.2056"] {
             XCTAssertFalse(protects(internet), internet)
         }
+    }
+
+    func testServerAddressesWithUserInfoAreRefused() {
+        for address in ["https://photos.example.com@evil.example", "https://user:pass@photos.example.com",
+                        "http://nas@203.0.113.5", "photos.example.com@evil.example"] {
+            XCTAssertNil(ServerCredentials.normalizedServerURL(from: address), address)
+            XCTAssertThrowsError(try ServerCredentials(server: address, apiKey: "k"), address)
+        }
+        XCTAssertNotNil(ServerCredentials.normalizedServerURL(from: "https://photos.example.com/immich"))
     }
 
     func testLoginRefusesPublicHTTPBeforeSendingAnything() async {

@@ -43,7 +43,9 @@ public struct ServerCredentials: Sendable, Hashable, Codable, CustomStringConver
         guard var components = URLComponents(string: text),
               let scheme = components.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
-              let host = components.host, !host.isEmpty
+              let host = components.host, !host.isEmpty,
+              // "https://photos.example.com@evil.com" is the host evil.com; never accept userinfo.
+              components.user == nil, components.password == nil
         else { return nil }
         components.scheme = scheme
         components.query = nil

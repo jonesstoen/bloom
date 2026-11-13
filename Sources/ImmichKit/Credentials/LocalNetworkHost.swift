@@ -8,15 +8,29 @@ enum LocalNetworkHost {
         let host = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
         if let v4 = ipv4(host) { return isLocal(v4) }
         if host.contains(":") { return isLocalIPv6(host) }
-        if host == "localhost" || !host.contains(".") { return true }
+        if host == "localhost" { return true }
+        // A single label is a name on the local network, unless it is a number: the system
+        // resolver reads "134744072" and "0x8080808" as the public address 8.8.8.8.
+        if !host.contains(".") { return !isNumericIPv4Form(host) }
         return [".local", ".lan", ".home.arpa", ".internal", ".ts.net"].contains { host.hasSuffix($0) }
     }
 
+    /// Plain dotted decimal only. Resolvers disagree on parts with a leading zero (inet_aton reads
+    /// "0127" as octal 87, macOS getaddrinfo as decimal 127), so such hosts are not trusted as an
+    /// address; they count as a name and, having no local suffix, as not local.
     private static func ipv4(_ host: String) -> [UInt8]? {
         let parts = host.split(separator: ".", omittingEmptySubsequences: false)
-        guard parts.count == 4 else { return nil }
+        guard parts.count == 4, parts.allSatisfy({ $0.count == 1 || !$0.hasPrefix("0") }) else { return nil }
         let bytes = parts.compactMap { UInt8($0) }
         return bytes.count == 4 ? bytes : nil
+    }
+
+    /// Decimal, octal or hexadecimal forms that inet_aton accepts as a whole IPv4 address.
+    private static func isNumericIPv4Form(_ label: String) -> Bool {
+        let ascii = label.unicodeScalars
+        if !ascii.isEmpty, ascii.allSatisfy({ ("0"..."9").contains($0) }) { return true }
+        guard label.hasPrefix("0x") else { return false }
+        return label.dropFirst(2).unicodeScalars.allSatisfy { ("0"..."9").contains($0) || ("a"..."f").contains($0) }
     }
 
     private static func isLocal(_ a: [UInt8]) -> Bool {
