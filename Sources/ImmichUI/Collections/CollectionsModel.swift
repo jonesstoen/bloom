@@ -65,6 +65,8 @@ public final class CollectionsModel {
             try Task.checkCancellation()
             memories = Self.sortedMemories(result)
             loadedMemories = true
+        } catch is CancellationError {
+            return
         } catch {
             loadedMemories = true
         }
@@ -76,7 +78,8 @@ public final class CollectionsModel {
             let result = try await service.searchSuggestions(.city)
             try Task.checkCancellation()
             places = result.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-        } catch {}
+        } catch is CancellationError { return }
+        catch {}
         loadedPlaces = true
     }
 
