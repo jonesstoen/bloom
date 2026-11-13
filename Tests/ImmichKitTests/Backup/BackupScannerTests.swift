@@ -9,6 +9,64 @@ private struct ReadFailure: Error, LocalizedError {
     var errorDescription: String? { "disk on fire" }
 }
 
+/// The mock service, except that the server copies of `trashed` checksums are in the server's trash.
+/// Everything else (including the recorded requests) goes to `base`.
+private struct TrashingService: ImmichService {
+    let base: MockImmichService
+    let trashed = Box<Set<String>>([])
+
+    func checkBulkUpload(_ items: [BulkUploadCheckItem]) async throws -> [BulkUploadCheckResult] {
+        let checksums = Dictionary(items.map { ($0.id, $0.checksum) }, uniquingKeysWith: { first, _ in first })
+        let inTrash = trashed.value
+        return try await base.checkBulkUpload(items).map { result in
+            guard result.isDuplicate, let checksum = checksums[result.id], inTrash.contains(checksum) else { return result }
+            return BulkUploadCheckResult(id: result.id, isDuplicate: true, serverAssetID: result.serverAssetID, isTrashed: true)
+        }
+    }
+
+    func ping() async throws { try await base.ping() }
+    func serverVersion() async throws -> ServerVersion { try await base.serverVersion() }
+    func serverFeatures() async throws -> ServerFeatures { try await base.serverFeatures() }
+    func timeBuckets(options: TimelineOptions) async throws -> [TimeBucket] { try await base.timeBuckets(options: options) }
+    func timeBucketAssets(bucketID: String, options: TimelineOptions) async throws -> [Asset] {
+        try await base.timeBucketAssets(bucketID: bucketID, options: options)
+    }
+    func thumbnail(assetID: String, size: ImageSize) async throws -> Data { try await base.thumbnail(assetID: assetID, size: size) }
+    func albums(shared: Bool?) async throws -> [Album] { try await base.albums(shared: shared) }
+    func albumsForAdding() async throws -> [Album] { try await base.albumsForAdding() }
+    func album(id: String) async throws -> Album { try await base.album(id: id) }
+    func people(withHidden: Bool) async throws -> [Person] { try await base.people(withHidden: withHidden) }
+    func person(id: String) async throws -> Person { try await base.person(id: id) }
+    func personThumbnail(personID: String) async throws -> Data { try await base.personThumbnail(personID: personID) }
+    func smartSearch(_ query: SmartSearchQuery, page: SearchPageToken?, size: Int) async throws -> SearchResults {
+        try await base.smartSearch(query, page: page, size: size)
+    }
+    func metadataSearch(_ query: MetadataSearchQuery, page: SearchPageToken?, size: Int) async throws -> SearchResults {
+        try await base.metadataSearch(query, page: page, size: size)
+    }
+    func searchSuggestions(_ kind: SearchSuggestionKind, context: SearchSuggestionContext) async throws -> [String] {
+        try await base.searchSuggestions(kind, context: context)
+    }
+    func asset(id: String) async throws -> Asset { try await base.asset(id: id) }
+    func original(assetID: String) async throws -> Data { try await base.original(assetID: assetID) }
+    func mediaRequest(_ kind: MediaRequest.Kind, assetID: String) async throws -> MediaRequest {
+        try await base.mediaRequest(kind, assetID: assetID)
+    }
+    func mapMarkers(_ options: MapMarkerOptions) async throws -> [MapMarker] { try await base.mapMarkers(options) }
+    func memories(_ query: MemoryQuery) async throws -> [Memory] { try await base.memories(query) }
+    func setFavorite(assetID: String, isFavorite: Bool) async throws -> Asset {
+        try await base.setFavorite(assetID: assetID, isFavorite: isFavorite)
+    }
+    func moveToTrash(assetIDs: [String]) async throws -> TrashResult { try await base.moveToTrash(assetIDs: assetIDs) }
+    func restoreAssets(assetIDs: [String]) async throws -> RestoreResult { try await base.restoreAssets(assetIDs: assetIDs) }
+    func createAlbum(name: String, assetIDs: [String]) async throws -> String {
+        try await base.createAlbum(name: name, assetIDs: assetIDs)
+    }
+    func addAssets(toAlbum albumID: String, assetIDs: [String]) async throws -> AlbumAddResult {
+        try await base.addAssets(toAlbum: albumID, assetIDs: assetIDs)
+    }
+}
+
 final class BackupScannerTests: XCTestCase {
     private var directories: [URL] = []
 
@@ -75,7 +133,7 @@ final class BackupScannerTests: XCTestCase {
 
     private func makeScanner(
         _ library: FakePhotoLibrary,
-        _ service: MockImmichService,
+        _ service: any ImmichService,
         _ index: BackupIndex,
         cellular: Bool = false,
         settings: BackupSettings = BackupSettings()
@@ -100,7 +158,7 @@ final class BackupScannerTests: XCTestCase {
     }
 
     private func assertInvariant(_ counts: BackupCounts, file: StaticString = #filePath, line: UInt = #line) {
-        XCTAssertEqual(counts.total, counts.backedUp + counts.pending + counts.failed, file: file, line: line)
+        XCTAssertEqual(counts.total, counts.backedUp + counts.pending + counts.deletedOnServer + counts.failed, file: file, line: line)
         XCTAssertLessThanOrEqual(counts.waitingForWiFi, counts.pending, file: file, line: line)
     }
 
@@ -145,7 +203,7 @@ final class BackupScannerTests: XCTestCase {
 
         let counts = try await makeScanner(library, MockImmichService(), index).scan { counts, checked in
             XCTAssertEqual(counts.total, 3)
-            XCTAssertEqual(counts.total, counts.backedUp + counts.pending + counts.failed)
+            XCTAssertEqual(counts.total, counts.backedUp + counts.pending + counts.deletedOnServer + counts.failed)
             seen.mutate { $0.append(checked) }
         }
 
@@ -303,7 +361,7 @@ final class BackupScannerTests: XCTestCase {
         let index = await makeIndex()
 
         let counts = try await makeScanner(library, service, index, cellular: true).scan { counts, _ in
-            XCTAssertEqual(counts.total, counts.backedUp + counts.pending + counts.failed)
+            XCTAssertEqual(counts.total, counts.backedUp + counts.pending + counts.deletedOnServer + counts.failed)
         }
 
         assertInvariant(counts)
@@ -534,6 +592,210 @@ final class BackupScannerTests: XCTestCase {
 
         XCTAssertEqual(library.reads.count, reads, "hashed items are checked again without rereading")
         XCTAssertEqual(counts, BackupCounts(total: 2, backedUp: 1, pending: 1, failed: 0, waitingForWiFi: 0))
+    }
+
+    // MARK: Re-checking what is on the server (Phase 2, option C)
+
+    func testBackedUpItemsAreRecheckedWithoutReads() async throws {
+        let library = makeLibrary(album: ["1", "2", "live"])
+        let one = addAsset("1", to: library)
+        let two = addAsset("2", to: library)
+        let live = addAsset("live", to: library, types: [.photo, .pairedVideo])
+        let service = MockImmichService()
+        await service.setServerChecksums(Set(one.values).union(two.values).union(live.values))
+        let index = await makeIndex()
+        let first = try await makeScanner(library, service, index).scan { _, _ in }
+        XCTAssertEqual(first.backedUp, 3)
+        let reads = library.reads.count
+        let before = await allCheckRequests(service).count
+
+        let second = try await makeScanner(library, service, index).scan { _, _ in }
+
+        XCTAssertEqual(library.reads.count, reads, "backed-up items are re-checked from their stored checksums")
+        let requests = await allCheckRequests(service).dropFirst(before)
+        XCTAssertEqual(Array(requests), [4], "one request with every stored checksum, no probe")
+        XCTAssertEqual(second, first)
+        let entry = await index.entry(for: "live")
+        XCTAssertEqual(entry?.state, .backedUp(serverAssetID: "server-\(live[.photo]!)"))
+        XCTAssertEqual(entry?.serverIDs, [.photo: "server-\(live[.photo]!)", .pairedVideo: "server-\(live[.pairedVideo]!)"])
+    }
+
+    func testPurgedOnServerBecomesDeletedOnServer() async throws {
+        let library = makeLibrary(album: ["1"])
+        let sums = addAsset("1", to: library)
+        let service = MockImmichService()
+        await service.setServerChecksums([sums[.photo]!])
+        let index = await makeIndex()
+        _ = try await makeScanner(library, service, index).scan { _, _ in }
+
+        await service.setServerChecksums([]) // deleted and purged on the server
+        let counts = try await makeScanner(library, service, index).scan { _, _ in }
+
+        assertInvariant(counts)
+        XCTAssertEqual(counts, BackupCounts(total: 1, backedUp: 0, pending: 0, failed: 0, deletedOnServer: 1, waitingForWiFi: 0))
+        let entry = await index.entry(for: "1")
+        XCTAssertEqual(entry?.state, .deletedOnServer(trashed: [], gone: [.photo]))
+        XCTAssertEqual(entry?.serverIDs, [:], "a gone copy's ID is not kept")
+        XCTAssertEqual(entry?.checksums, sums)
+        let stored = await makeScanner(library, service, index).counts()
+        XCTAssertEqual(stored, counts)
+    }
+
+    func testTrashedOnServerBecomesDeletedOnServerTrashed() async throws {
+        let library = makeLibrary(album: ["1"])
+        let sums = addAsset("1", to: library)
+        let mock = MockImmichService()
+        await mock.setServerChecksums([sums[.photo]!])
+        let service = TrashingService(base: mock)
+        let index = await makeIndex()
+        let first = try await makeScanner(library, service, index).scan { _, _ in }
+        XCTAssertEqual(first.backedUp, 1)
+
+        service.trashed.mutate { $0 = [sums[.photo]!] } // moved to the trash on the server
+        let counts = try await makeScanner(library, service, index).scan { _, _ in }
+
+        assertInvariant(counts)
+        XCTAssertEqual(counts, BackupCounts(total: 1, backedUp: 0, pending: 0, failed: 0, deletedOnServer: 1, waitingForWiFi: 0))
+        let entry = await index.entry(for: "1")
+        XCTAssertEqual(entry?.state, .deletedOnServer(trashed: [.photo], gone: []))
+        XCTAssertEqual(entry?.serverIDs, [.photo: "server-\(sums[.photo]!)"], "the trashed copy's ID is kept for restoring")
+    }
+
+    func testDeletedItemRestoredOnServerBecomesBackedUpAgain() async throws {
+        let library = makeLibrary(album: ["1", "2"])
+        let one = addAsset("1", to: library)
+        let two = addAsset("2", to: library)
+        let mock = MockImmichService()
+        await mock.setServerChecksums([one[.photo]!, two[.photo]!])
+        let service = TrashingService(base: mock)
+        let index = await makeIndex()
+        _ = try await makeScanner(library, service, index).scan { _, _ in }
+        let reads = library.reads.count
+
+        // "1" goes to the server's trash, "2" is purged.
+        service.trashed.mutate { $0 = [one[.photo]!] }
+        await mock.setServerChecksums([one[.photo]!])
+        let deleted = try await makeScanner(library, service, index).scan { _, _ in }
+        XCTAssertEqual(deleted.deletedOnServer, 2)
+
+        // Restored in the web app, and uploaded again from another device.
+        service.trashed.mutate { $0 = [] }
+        await mock.setServerChecksums([one[.photo]!, two[.photo]!])
+        let restored = try await makeScanner(library, service, index).scan { _, _ in }
+
+        assertInvariant(restored)
+        XCTAssertEqual(restored, BackupCounts(total: 2, backedUp: 2, pending: 0, failed: 0, deletedOnServer: 0, waitingForWiFi: 0))
+        XCTAssertEqual(library.reads.count, reads, "nothing is read again")
+        let entry = await index.entry(for: "2")
+        XCTAssertEqual(entry?.state, .backedUp(serverAssetID: "server-\(two[.photo]!)"))
+        XCTAssertEqual(entry?.serverIDs, [.photo: "server-\(two[.photo]!)"])
+    }
+
+    func testLivePhotoWithMotionGoneIsDeletedOnServerGoneMotion() async throws {
+        let library = makeLibrary(album: ["live"])
+        let sums = addAsset("live", to: library, types: [.photo, .pairedVideo])
+        let service = MockImmichService()
+        await service.setServerChecksums([sums[.photo]!, sums[.pairedVideo]!])
+        let index = await makeIndex()
+        let first = try await makeScanner(library, service, index).scan { _, _ in }
+        XCTAssertEqual(first.backedUp, 1)
+
+        await service.setServerChecksums([sums[.photo]!]) // the motion video was purged
+        let counts = try await makeScanner(library, service, index).scan { _, _ in }
+
+        assertInvariant(counts)
+        XCTAssertEqual(counts.deletedOnServer, 1)
+        let entry = await index.entry(for: "live")
+        guard case let .deletedOnServer(trashed, gone)? = entry?.state else {
+            return XCTFail("expected deletedOnServer, got \(String(describing: entry?.state))")
+        }
+        XCTAssertEqual(gone, [.pairedVideo])
+        XCTAssertEqual(trashed, [])
+        XCTAssertEqual(entry?.serverIDs, [.photo: "server-\(sums[.photo]!)"], "the photo still on the server keeps its ID")
+    }
+
+    func testNeverSeenAndAcceptedIsNeedsUploadNotDeleted() async throws {
+        let library = makeLibrary(album: ["1", "live"])
+        addAsset("1", to: library)
+        let live = addAsset("live", to: library, types: [.photo, .pairedVideo])
+        let service = MockImmichService()
+        await service.setServerChecksums([live[.photo]!]) // only the photo half is on the server
+        let index = await makeIndex()
+
+        let first = try await makeScanner(library, service, index).scan { _, _ in }
+        let second = try await makeScanner(library, service, index).scan { _, _ in }
+
+        for counts in [first, second] {
+            assertInvariant(counts)
+            XCTAssertEqual(counts, BackupCounts(total: 2, backedUp: 0, pending: 2, failed: 0, deletedOnServer: 0, waitingForWiFi: 0))
+        }
+        let one = await index.entry(for: "1")
+        XCTAssertEqual(one?.state, .pending(reason: .needsUpload))
+        let entry = await index.entry(for: "live")
+        XCTAssertEqual(entry?.state, .pending(reason: .needsUpload))
+        XCTAssertEqual(entry?.serverIDs, [.photo: "server-\(live[.photo]!)"], "the half the server has is remembered")
+    }
+
+    /// Replaces Phase 1's rule that a trashed duplicate counts as on the server.
+    func testFirstCheckFindsTrashedCopyIsDeletedOnServer() async throws {
+        let library = makeLibrary(album: ["1"])
+        let sums = addAsset("1", to: library)
+        let mock = MockImmichService()
+        await mock.setServerChecksums([sums[.photo]!])
+        let service = TrashingService(base: mock)
+        service.trashed.mutate { $0 = [sums[.photo]!] }
+        let index = await makeIndex()
+
+        let counts = try await makeScanner(library, service, index).scan { _, _ in }
+
+        assertInvariant(counts)
+        XCTAssertEqual(counts, BackupCounts(total: 1, backedUp: 0, pending: 0, failed: 0, deletedOnServer: 1, waitingForWiFi: 0))
+        let entry = await index.entry(for: "1")
+        XCTAssertEqual(entry?.state, .deletedOnServer(trashed: [.photo], gone: []))
+        XCTAssertEqual(entry?.serverIDs, [.photo: "server-\(sums[.photo]!)"])
+    }
+
+    func testEditedDeletedItemBecomesNeedsUpload() async throws {
+        let library = makeLibrary(album: ["1"])
+        let original = addAsset("1", to: library)
+        let service = MockImmichService()
+        await service.setServerChecksums([original[.photo]!])
+        let index = await makeIndex()
+        _ = try await makeScanner(library, service, index).scan { _, _ in }
+        await service.setServerChecksums([])
+        let deleted = try await makeScanner(library, service, index).scan { _, _ in }
+        XCTAssertEqual(deleted.deletedOnServer, 1)
+
+        // Edited on the phone: a new version, not the one deleted on the server.
+        let edited = addAsset("1", to: library, modified: Self.date + 60)
+        let counts = try await makeScanner(library, service, index).scan { _, _ in }
+
+        assertInvariant(counts)
+        XCTAssertEqual(counts, BackupCounts(total: 1, backedUp: 0, pending: 1, failed: 0, deletedOnServer: 0, waitingForWiFi: 0))
+        let entry = await index.entry(for: "1")
+        XCTAssertEqual(entry?.state, .pending(reason: .needsUpload))
+        XCTAssertEqual(entry?.checksums, edited)
+    }
+
+    func testRecheckOf1300BackedUpSendsThreeBatchedRequests() async throws {
+        let ids = (0..<1_300).map { "a\($0)" }
+        let library = makeLibrary(album: Set(ids))
+        var sums: Set<String> = []
+        for id in ids { sums.formUnion(addAsset(id, to: library).values) }
+        let service = MockImmichService()
+        await service.setServerChecksums(sums)
+        let index = await makeIndex()
+        let first = try await makeScanner(library, service, index).scan { _, _ in }
+        XCTAssertEqual(first.backedUp, 1_300)
+        let reads = library.reads.count
+        let before = await allCheckRequests(service).count
+
+        let second = try await makeScanner(library, service, index).scan { _, _ in }
+
+        let requests = await allCheckRequests(service).dropFirst(before)
+        XCTAssertEqual(Array(requests), [500, 500, 300])
+        XCTAssertEqual(library.reads.count, reads)
+        XCTAssertEqual(second, first)
     }
 }
 

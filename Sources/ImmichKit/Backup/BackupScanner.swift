@@ -133,9 +133,14 @@ public actor BackupScanner {
             let byID = Dictionary(results.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             for item in batch {
                 // The entry may have changed while the server answered: only apply the verdict
-                // to the checksums it was given for.
+                // to the checksums it was given for. Its state is the one before this check.
                 guard var entry = await index.entry(for: item.assetID), entry.checksums == item.dictionary else { continue }
-                entry.state = Self.verdict(for: item, results: byID)
+                if let (state, serverIDs) = Self.verdict(for: item, results: byID, previous: entry.state) {
+                    entry.state = state
+                    entry.serverIDs = serverIDs
+                } else if !Self.wasSeenOnServer(entry.state) {
+                    entry.state = .pending(reason: .notChecked)
+                }
                 await record(entry, for: item.assetID)
             }
             batch = []
@@ -183,10 +188,9 @@ public actor BackupScanner {
                             BackupEntry(modificationDate: asset.modificationDate, checksums: [:], state: .failed(reason: reason)),
                             for: id)
                     } else if let entry, Self.isCurrent(entry, for: asset, resources: resources) {
-                        // Already hashed: ask the server again (it may have the file by now), no reads.
-                        if entry.state == .pending(reason: .notChecked) || entry.state == .pending(reason: .needsUpload) {
-                            try await enqueue(id, resources, entry.checksums)
-                        }
+                        // Already hashed: ask the server again, no reads. It may have the file by now,
+                        // or have deleted or restored what it had.
+                        if Self.isRechecked(entry.state) { try await enqueue(id, resources, entry.checksums) }
                     } else {
                         try await probeServer()
                         let (checksums, state) = try await hash(asset, resources: resources)
@@ -246,14 +250,55 @@ public actor BackupScanner {
 
     private static func checkID(_ assetID: String, _ type: DeviceResourceType) -> String { "\(assetID)|\(type.rawValue)" }
 
-    /// Backed up only when the server has every resource; then the photo's (or video's) server ID is kept.
-    /// A trashed server copy still counts as on the server. A missing answer leaves the item unchecked.
-    private static func verdict(for item: Hashed, results: [String: BulkUploadCheckResult]) -> BackupState {
-        let answers = item.checksums.map { results[checkID(item.assetID, $0.type)] }
-        guard answers.allSatisfy({ $0 != nil }) else { return .pending(reason: .notChecked) }
-        guard answers.allSatisfy({ $0!.isDuplicate }) else { return .pending(reason: .needsUpload) }
-        guard let serverID = answers.first??.serverAssetID else { return .pending(reason: .notChecked) }
-        return .backedUp(serverAssetID: serverID)
+    /// Hashed items whose checksums are sent to the server again on every scan.
+    private static func isRechecked(_ state: BackupState) -> Bool {
+        switch state {
+        case .pending(reason: .notChecked), .pending(reason: .needsUpload), .backedUp, .deletedOnServer: true
+        case .pending(reason: .waitingForWiFi), .failed: false
+        }
+    }
+
+    /// Bloom has seen the item on the server, so missing copies there mean it was deleted there.
+    private static func wasSeenOnServer(_ state: BackupState) -> Bool {
+        switch state {
+        case .backedUp, .deletedOnServer: true
+        case .pending, .failed: false
+        }
+    }
+
+    /// The new state and per-resource server IDs from the server's answers, given the state before
+    /// the check (option C):
+    /// - every resource a duplicate, none trashed: backed up, with the photo's (or video's) server ID;
+    /// - otherwise, if a copy is in the server's trash or the item was seen on the server before:
+    ///   deleted on the server, per resource trashed or gone;
+    /// - otherwise (never seen there, nothing trashed): needs upload.
+    /// A Live Photo is on the server only while both resources are. `serverIDs` holds the IDs of the
+    /// copies the server has now (trashed ones included); a gone copy's old ID is dropped, as nothing
+    /// can be done with it. Returns `nil` when an answer or a duplicate's ID is missing: no verdict.
+    private static func verdict(
+        for item: Hashed, results: [String: BulkUploadCheckResult], previous: BackupState
+    ) -> (BackupState, [DeviceResourceType: String])? {
+        guard let main = item.checksums.first?.type else { return nil }
+        var trashed: Set<DeviceResourceType> = []
+        var gone: Set<DeviceResourceType> = []
+        var serverIDs: [DeviceResourceType: String] = [:]
+        for (type, _) in item.checksums {
+            guard let answer = results[checkID(item.assetID, type)] else { return nil }
+            if answer.isDuplicate {
+                guard let id = answer.serverAssetID else { return nil }
+                serverIDs[type] = id
+                if answer.isTrashed { trashed.insert(type) }
+            } else {
+                gone.insert(type)
+            }
+        }
+        if trashed.isEmpty, gone.isEmpty, let id = serverIDs[main] {
+            return (.backedUp(serverAssetID: id), serverIDs)
+        }
+        if !trashed.isEmpty || wasSeenOnServer(previous) {
+            return (.deletedOnServer(trashed: trashed, gone: gone), serverIDs)
+        }
+        return (.pending(reason: .needsUpload), serverIDs)
     }
 
     /// Reads and hashes `resources`. Returns `.pending(.notChecked)` with all checksums on success,
