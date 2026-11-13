@@ -83,6 +83,10 @@ public struct AssetViewer: View {
             pager.disabled(trashInteractionBlocked)
                 .modifier(ViewerDismissTransform(motion: dismissMotion))
                 .environment(\.viewerChromeInsets, chromeVisible ? chromeLayout.insets : EdgeInsets())
+                .environment(\.viewerVideoPlayback, ViewerVideoPlayback { playing in
+                    guard chromeVisible == playing else { return }
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { chromeVisible = !playing }
+                })
         }
         .onGeometryChange(for: ViewerChromeLayout.Screen.self) { proxy in
             ViewerChromeLayout.Screen(height: proxy.frame(in: .global).maxY, safeArea: proxy.safeAreaInsets)

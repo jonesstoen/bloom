@@ -11,6 +11,9 @@ struct VideoPlaybackView: View {
     @State private var player: AVPlayer
     @State private var failed = false
     @Environment(\.viewerChromeInsets) private var chromeInsets
+    @Environment(\.viewerVideoPlayback) private var playback
+    /// Whether this page last told the viewer it is playing, so leaving the page undoes it.
+    @State private var reportedPlaying = false
 
     init(request: MediaRequest, isActive: Bool = true) {
         self.request = request
@@ -35,8 +38,19 @@ struct VideoPlaybackView: View {
             }
         }
         .onAppear { updatePlayback(isActive) }
-        .onChange(of: isActive) { _, active in updatePlayback(active) }
-        .onDisappear { player.pause() }
+        .onChange(of: isActive) { _, active in
+            updatePlayback(active)
+            if !active { report(playing: false) }
+        }
+        .onReceive(player.publisher(for: \.timeControlStatus)) { status in
+            // Waiting to play (buffering) counts as playing: the bars shouldn't flicker back.
+            guard isActive else { return }
+            report(playing: status != .paused)
+        }
+        .onDisappear {
+            player.pause()
+            report(playing: false)
+        }
     }
 
     @ViewBuilder
@@ -47,6 +61,12 @@ struct VideoPlaybackView: View {
         #else
         VideoPlayer(player: player)
         #endif
+    }
+
+    private func report(playing: Bool) {
+        guard reportedPlaying != playing else { return }
+        reportedPlaying = playing
+        playback.changed(playing)
     }
 
     private func updatePlayback(_ active: Bool) {

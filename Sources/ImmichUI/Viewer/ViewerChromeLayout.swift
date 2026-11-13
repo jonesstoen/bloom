@@ -30,3 +30,13 @@ extension EnvironmentValues {
     /// Zero while the bars are hidden.
     @Entry var viewerChromeInsets = EdgeInsets()
 }
+
+/// Tells the viewer when the current page's video starts or stops playing, so the bars fade out
+/// during playback and come back when it pauses or ends, like Photos.
+struct ViewerVideoPlayback {
+    var changed: @MainActor (Bool) -> Void = { _ in }
+}
+
+extension EnvironmentValues {
+    @Entry var viewerVideoPlayback = ViewerVideoPlayback()
+}
