@@ -45,7 +45,8 @@ ImmichAPI  client generated from openapi.json (swift-openapi-generator)
   horizontal paging and zoomed panning; drag presentation updates in small isolated modifiers.
   An upward swipe at normal zoom opens inline metadata below a reduced media viewport. Down on
   that viewport closes information first; the info button also toggles it. Media pauses while
-  information is shown, and existing share/edit actions remain available.
+  information is shown, and existing share/edit actions remain available. Pulling down on the
+  information at its scroll top also closes it; gestures started farther down only scroll.
 - **Search and Collections** call the service directly through their own small models.
   Search loads people and place suggestions concurrently, publishing each row independently.
   One failed request leaves the other row available; cancellation suppresses late results/errors.

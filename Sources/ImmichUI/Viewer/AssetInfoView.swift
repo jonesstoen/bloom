@@ -6,6 +6,7 @@ public struct AssetInfoView: View {
     let asset: Asset
     let onClose: (() -> Void)?
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var infoPull = ViewerInfoPull()
 
     public init(asset: Asset, onClose: (() -> Void)? = nil) {
         self.asset = asset
@@ -33,6 +34,16 @@ public struct AssetInfoView: View {
             .padding(.vertical, 16)
         }
         .scrollIndicators(.hidden)
+        .scrollBounceBehavior(.always, axes: .vertical)
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            geometry.contentOffset.y + geometry.contentInsets.top
+        } action: { _, offset in
+            if infoPull.updateOffset(offset) { onClose?() }
+        }
+        .onScrollPhaseChange { _, phase in
+            if phase == .tracking { infoPull.begin() }
+            else if phase == .idle { infoPull.end() }
+        }
     }
 
     private var heading: some View {
