@@ -287,17 +287,28 @@ public struct LiveImmichService: ImmichService {
         }
     }
 
-    /// Runs `operation` and translates generated-client and transport errors into `ImmichServiceError`.
+    /// Translates service failures while preserving cancellation from the client or transport.
     static func mapErrors<T>(_ operation: () async throws -> T) async throws -> T {
         do {
             return try await operation()
+        } catch is CancellationError {
+            throw CancellationError()
         } catch let error as ImmichServiceError {
             throw error
         } catch let error as ClientError {
-            throw map(error.underlyingError)
+            throw mappedError(error.underlyingError)
         } catch {
-            throw map(error)
+            throw mappedError(error)
         }
+    }
+
+    private static func mappedError(_ error: any Error) -> any Error {
+        // URLSession cancellation can arrive directly or wrapped by the generated client.
+        let nsError = error as NSError
+        if error is CancellationError || (nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled) {
+            return CancellationError()
+        }
+        return map(error)
     }
 
     private static func map(_ error: any Error) -> ImmichServiceError {
