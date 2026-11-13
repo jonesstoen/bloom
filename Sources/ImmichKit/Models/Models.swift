@@ -320,10 +320,3 @@ public struct MapMarker: Sendable, Hashable, Identifiable, Codable {
 
     public var assetId: String { id }
 }
-
-extension String {
-    var nilIfBlank: String? {
-        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-}

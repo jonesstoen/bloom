@@ -353,6 +353,21 @@ private struct ViewerItem: Identifiable {
     let selectedID: String
 }
 
+/// A soft blur behind the status bar for Months and Years, which have no header: the content
+/// scrolls up under it, like Photos.
+private struct StatusBarFade: View {
+    var body: some View {
+        Rectangle()
+            .fill(.regularMaterial)
+            .mask(LinearGradient(colors: [.black, .black.opacity(0.8), .clear], startPoint: .top, endPoint: .bottom))
+            // Grows up over the status bar from a few points below it.
+            .frame(height: 10)
+            .ignoresSafeArea(edges: .top)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
 // MARK: - Previews
 
 #Preview("Library") {
@@ -386,19 +401,4 @@ private struct ViewerItem: Identifiable {
         LibraryGridView(service: mock)
     }
     .task { await mock.setFailure(.network("The request timed out.")) }
-}
-
-/// A soft blur behind the status bar for Months and Years, which have no header: the content
-/// scrolls up under it, like Photos.
-private struct StatusBarFade: View {
-    var body: some View {
-        Rectangle()
-            .fill(.regularMaterial)
-            .mask(LinearGradient(colors: [.black, .black.opacity(0.8), .clear], startPoint: .top, endPoint: .bottom))
-            // Grows up over the status bar from a few points below it.
-            .frame(height: 10)
-            .ignoresSafeArea(edges: .top)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-    }
 }

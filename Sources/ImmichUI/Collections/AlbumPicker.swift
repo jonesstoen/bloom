@@ -1,11 +1,6 @@
 import ImmichKit
 import SwiftUI
 
-extension Notification.Name {
-    /// An album was created or photos were added: album lists reload.
-    static let bloomAlbumsDidChange = Notification.Name("bloomAlbumsDidChange")
-}
-
 /// "Add to Album": the albums to pick from, creating a new one, and the outcome.
 @MainActor
 @Observable
