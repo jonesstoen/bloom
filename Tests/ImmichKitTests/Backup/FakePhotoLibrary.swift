@@ -11,6 +11,8 @@ final class FakePhotoLibrary: PhotoLibrarySource, @unchecked Sendable {
 
     private let lock = NSLock()
     private var _access: PhotoAccess
+    private var _accessAfterRequest: PhotoAccess
+    private var _authorizationRequests = 0
     private var _albums: [DeviceAlbum] = []
     private var _albumAssets: [String: Set<String>] = [:]
     private var _assets: [String: DeviceAsset] = [:]
@@ -22,7 +24,11 @@ final class FakePhotoLibrary: PhotoLibrarySource, @unchecked Sendable {
     private var _batchLookups: [Int] = []
     private var _dateLookups: [Int] = []
 
-    init(access: PhotoAccess = .full) { _access = access }
+    /// `accessAfterRequest` is what the user answers when asked (used when `access` is `.notDetermined`).
+    init(access: PhotoAccess = .full, accessAfterRequest: PhotoAccess = .full) {
+        _access = access
+        _accessAfterRequest = accessAfterRequest
+    }
 
     // Configuration
 
@@ -43,6 +49,10 @@ final class FakePhotoLibrary: PhotoLibrarySource, @unchecked Sendable {
     /// Make reads of this resource fail with `error`, regardless of `allowNetwork`.
     func failReads(of resource: DeviceResource, with error: Error) { lock.withLock { _failures[resource] = error } }
 
+    /// How many times the user was asked for access.
+    var authorizationRequests: Int { lock.withLock { _authorizationRequests } }
+    func setAccessAfterRequest(_ access: PhotoAccess) { lock.withLock { _accessAfterRequest = access } }
+
     var reads: [ReadCall] { lock.withLock { _reads } }
     /// Calls to `asset(_:)`.
     var singleLookups: Int { lock.withLock { _singleLookups } }
@@ -54,6 +64,13 @@ final class FakePhotoLibrary: PhotoLibrarySource, @unchecked Sendable {
     // PhotoLibrarySource
 
     func authorization() async -> PhotoAccess { lock.withLock { _access } }
+    func requestAuthorization() async -> PhotoAccess {
+        lock.withLock {
+            _authorizationRequests += 1
+            if _access == .notDetermined { _access = _accessAfterRequest }
+            return _access
+        }
+    }
     func albums() async -> [DeviceAlbum] { lock.withLock { _albums } }
     func assetIDs(inAlbum id: String) async -> Set<String> { lock.withLock { _albumAssets[id] ?? [] } }
     func asset(_ id: String) async -> DeviceAsset? {

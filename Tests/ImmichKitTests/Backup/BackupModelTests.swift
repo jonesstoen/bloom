@@ -191,6 +191,90 @@ final class BackupModelTests: XCTestCase {
         XCTAssertEqual(requests, 0)
     }
 
+    func testFirstLoadAsksForAccessAndScansWhenGranted() async {
+        let library = makeLibrary(access: .notDetermined)
+        let model = makeModel(library)
+        await model.load()
+        XCTAssertEqual(library.authorizationRequests, 1)
+        XCTAssertEqual(model.access, .full)
+        XCTAssertEqual(model.albums.map(\.title), ["Recents", "Holiday"])
+        model.setSelection(BackupSelection(included: ["recents"]))
+        XCTAssertTrue(model.canCheck)
+        await model.settle()
+        XCTAssertEqual(model.counts.total, 4)
+    }
+
+    func testFirstLoadAsksForAccessAndDoesNotScanWhenDenied() async {
+        let library = makeLibrary(access: .notDetermined)
+        library.setAccessAfterRequest(.denied)
+        let service = MockImmichService(library: MockLibrary(assetCount: 1, years: 1))
+        let model = makeModel(library, service: service)
+        await model.load()
+        XCTAssertEqual(library.authorizationRequests, 1)
+        XCTAssertEqual(model.access, .denied)
+        XCTAssertTrue(model.albums.isEmpty)
+        model.setSelection(BackupSelection(included: ["recents"]))
+        XCTAssertFalse(model.canCheck)
+        await model.scan()
+        await model.settle()
+        XCTAssertFalse(model.isScanning)
+        XCTAssertEqual(model.counts, BackupCounts())
+        let requests = await checkRequests(service)
+        XCTAssertEqual(requests, 0)
+    }
+
+    func testAnUndecidedAccessNeverScans() async {
+        // The request leaves the answer open (as when the prompt is dismissed some other way).
+        let library = makeLibrary(access: .notDetermined)
+        library.setAccessAfterRequest(.notDetermined)
+        let model = makeModel(library)
+        await model.load()
+        XCTAssertEqual(model.access, .notDetermined)
+        model.setSelection(BackupSelection(included: ["recents"]))
+        XCTAssertFalse(model.canCheck)
+        await model.scan()
+        await model.settle()
+        XCTAssertEqual(model.counts, BackupCounts())
+        XCTAssertEqual(library.batchLookups, [])
+    }
+
+    func testAlreadyGrantedAccessIsNotAskedAgain() async {
+        let library = makeLibrary(access: .full)
+        let model = makeModel(library)
+        await model.load()
+        await model.load()
+        XCTAssertEqual(library.authorizationRequests, 0)
+        XCTAssertEqual(model.access, .full)
+    }
+
+    func testTheNewestChoiceIsTheOneSavedWhenChoicesComeInQuickly() async {
+        let library = makeLibrary(count: 4)
+        let directory = makeDirectory()
+        let model = makeModel(library, directory: directory)
+        // Both land while the index is still loading.
+        model.setSelection(BackupSelection(included: ["recents"]))
+        model.setSelection(BackupSelection(included: ["holiday"]))
+        await model.settle()
+        XCTAssertEqual(model.selection, BackupSelection(included: ["holiday"]))
+        let saved = await BackupIndex(directory: directory).selection()
+        XCTAssertEqual(saved, BackupSelection(included: ["holiday"]))
+        XCTAssertEqual(model.counts.total, 2)
+    }
+
+    func testStopLeavesNothingSavingAfterwards() async {
+        let library = makeLibrary(count: 4)
+        let directory = makeDirectory()
+        let model = makeModel(library, directory: directory)
+        model.setSelection(BackupSelection(included: ["recents"]))
+        model.setSelection(BackupSelection(included: ["holiday"]))
+        await model.stop()
+        // Nothing may write once stop() has returned: the directory can be removed now.
+        try? FileManager.default.removeItem(at: directory)
+        await model.settle()
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+    }
+
     func testLimitedAccessStillScans() async {
         let model = makeModel(makeLibrary(access: .limited))
         await model.load()

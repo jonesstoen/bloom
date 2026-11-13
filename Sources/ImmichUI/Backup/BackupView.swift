@@ -19,7 +19,8 @@ struct BackupView: View {
             case .limited:
                 limitedSection
                 content
-            default:
+            case .full, .notDetermined, nil:
+                // Not yet known, or the system prompt is up: show the content, no scan is possible.
                 content
             }
             Section {} footer: {

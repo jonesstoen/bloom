@@ -75,8 +75,11 @@ final class BackupModel {
         // A choice made while this was loading is newer than what the index has saved so far.
         let saved = await index.selection()
         if rescan == nil { selection = saved }
-        access = await source.authorization()
-        guard access != .denied else {
+        var current = await source.authorization()
+        // The first time, iOS asks the user here; Photos shows up in Settings only after that.
+        if current == .notDetermined { current = await source.requestAuthorization() }
+        access = current
+        guard canRead else {
             albums = []
             counts = BackupCounts()
             failedItems = []
@@ -87,7 +90,10 @@ final class BackupModel {
     }
 
     /// Whether Check Now makes sense: photo access and at least one included album.
-    var canCheck: Bool { access != .denied && !selection.included.isEmpty }
+    var canCheck: Bool { canRead && !selection.included.isEmpty }
+
+    /// Whether Bloom may read the photo library (fully or in part).
+    var canRead: Bool { access == .full || access == .limited }
 
     /// Photos waiting to be uploaded (those that failed are listed apart).
     var remaining: Int { counts.pending }
@@ -123,11 +129,12 @@ final class BackupModel {
         guard !isStopped else { return }
         if let scanTask { await scanTask.value; return }
         access = await source.authorization()
-        guard access != .denied else { return }
+        guard canRead else { return }
         let scanner = await makeScanner()
         // Another caller may have started a scan while this one was suspended.
         if let scanTask { await scanTask.value; return }
-        guard !isStopped else { return }
+        // A rescan that was replaced while it got ready must not start a scan the next one has to cancel.
+        guard !isStopped, !Task.isCancelled else { return }
 
         error = nil
         isScanning = true
@@ -185,6 +192,9 @@ final class BackupModel {
         if let failure, !(failure is CancellationError) {
             error = Self.message(for: failure)
         }
+        // Before the first await: a late progress callback must not bring `progress` back or
+        // overwrite the final counts.
+        generation += 1
         progress = nil
         if let result { counts = result } else { await refreshCounts() }
         await refreshFailures()
@@ -220,18 +230,26 @@ final class BackupModel {
     func setSelection(_ new: BackupSelection) {
         guard new != selection else { return }
         selection = new
-        rescan?.task.cancel()
+        // Each rescan waits for the one it replaces, so saves happen in the order of the choices
+        // and `stop()` (which awaits the newest) waits for all of them.
+        let previous = rescan?.task
+        previous?.cancel()
+        scanTask?.cancel()
         let id = UUID()
         let task = Task { [weak self] in
-            await self?.applySelection(new)
+            await previous?.value
+            await self?.applySelection()
             if self?.rescan?.id == id { self?.rescan = nil }
         }
         rescan = (id, task)
     }
 
-    private func applySelection(_ new: BackupSelection) async {
+    private func applySelection() async {
         let index = await ensureIndex()
-        await index.setSelection(new)
+        // Replaced by a newer choice (or stopped) while the index loaded: that one saves.
+        guard !Task.isCancelled else { return }
+        // The latest choice, not the one that started this task.
+        await index.setSelection(selection)
         do { try await index.save() } catch { self.error = Self.message(for: error) }
         guard !Task.isCancelled else { return }
         scanTask?.cancel()
@@ -292,6 +310,7 @@ struct PreviewPhotoLibrary: PhotoLibrarySource {
     private var allIDs: [String] { (0..<photoCount).map { "preview-\($0)" } }
 
     func authorization() async -> PhotoAccess { access }
+    func requestAuthorization() async -> PhotoAccess { access }
 
     func albums() async -> [DeviceAlbum] {
         [

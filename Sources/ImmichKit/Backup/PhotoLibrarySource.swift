@@ -57,6 +57,8 @@ public struct DeviceAlbum: Sendable, Hashable, Identifiable {
 
 public enum PhotoAccess: Sendable {
     case full, limited, denied
+    /// The user hasn't been asked yet.
+    case notDetermined
 }
 
 public enum PhotoLibraryReadError: Error, Equatable {
@@ -67,6 +69,8 @@ public enum PhotoLibraryReadError: Error, Equatable {
 /// Read-only view of the device photo library. Backup never changes the library.
 public protocol PhotoLibrarySource: Sendable {
     func authorization() async -> PhotoAccess
+    /// Asks the user if they haven't decided yet; returns the resulting access.
+    func requestAuthorization() async -> PhotoAccess
     func albums() async -> [DeviceAlbum]
     func assetIDs(inAlbum id: String) async -> Set<String>
     func asset(_ id: String) async -> DeviceAsset?

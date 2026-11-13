@@ -8,9 +8,18 @@ public struct PhotoKitLibrarySource: PhotoLibrarySource {
     public init() {}
 
     public func authorization() async -> PhotoAccess {
-        switch PHPhotoLibrary.authorizationStatus(for: .readWrite) {
+        Self.access(for: PHPhotoLibrary.authorizationStatus(for: .readWrite))
+    }
+
+    public func requestAuthorization() async -> PhotoAccess {
+        Self.access(for: await PHPhotoLibrary.requestAuthorization(for: .readWrite))
+    }
+
+    private static func access(for status: PHAuthorizationStatus) -> PhotoAccess {
+        switch status {
         case .authorized: .full
         case .limited: .limited
+        case .notDetermined: .notDetermined
         default: .denied
         }
     }
