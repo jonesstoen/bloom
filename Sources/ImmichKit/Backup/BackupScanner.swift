@@ -268,7 +268,8 @@ public actor BackupScanner {
             } catch PhotoLibraryReadError.needsNetwork {
                 return (checksums, .pending(reason: .waitingForWiFi))
             } catch {
-                if error is CancellationError || Task.isCancelled { throw error }
+                // Callback-based readers can return their own error when a request is cancelled.
+                if error is CancellationError || Task.isCancelled { throw CancellationError() }
                 let reason = tr("Couldn't read %@: %@", resource.filename, error.localizedDescription)
                 return (checksums, .failed(reason: reason))
             }
