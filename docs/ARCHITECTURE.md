@@ -34,6 +34,8 @@ ImmichAPI  client generated from openapi.json (swift-openapi-generator)
   each side. Visited models keep favorite/detail state while releasing media outside that window.
   Viewer and selection sharing use the same original-to-disk downloader with guarded redirects.
   Prepared files remain owned until sharing ends; failures and cancellation remove partial files.
+  A downward one-finger pan closes the viewer at normal zoom. Direction and zoom gating preserve
+  horizontal paging and zoomed panning; drag presentation updates in small isolated modifiers.
 - **Search and Collections** call the service directly through their own small models.
 
 ## Talking to Immich

@@ -7,7 +7,7 @@ import SwiftUI
 ///
 /// On iOS: swipe left and right between items (a lazy paging scroll view, so it handles
 /// thousands of items), pinch or double-tap to zoom, tap to hide or show the bars, and swipe
-/// down to close (the interactive dismissal of the zoom transition the grid presents it with).
+/// down to close. A vertical recognizer complements the grid's zoom presentation transition.
 /// Videos start playing when their page becomes current.
 public struct AssetViewer: View {
     let assets: [Asset]
@@ -25,6 +25,7 @@ public struct AssetViewer: View {
     @State private var chromeVisible = true
     @State private var showsInfo = false
     @State private var shareActive = false
+    @State private var dismissMotion = ViewerDismissMotion()
     @State private var showsAccessibleMenu = false
     @State private var trashConfirmationSubmitted = false
     @State private var trash: ViewerTrashModel
@@ -60,6 +61,13 @@ public struct AssetViewer: View {
 
     private var trashInteractionBlocked: Bool { trash.pendingAsset != nil || trash.isBusy }
 
+    private var dismissInteractionBlocked: Bool {
+        trashInteractionBlocked || trash.error != nil || showsInfo
+            || showsAccessibleMenu || currentIndex == nil
+    }
+
+    private var currentPhotoIsZoomed: Bool { currentModel?.isLivePhotoZoomed == true }
+
     private var currentID: String { selectedID ?? initialID }
 
     private var currentIndex: Int? { indexByID[currentID] }
@@ -72,12 +80,19 @@ public struct AssetViewer: View {
         ZStack {
             Color.black.ignoresSafeArea()
             pager.disabled(trashInteractionBlocked)
+                .modifier(ViewerDismissTransform(motion: dismissMotion))
         }
         .overlay(alignment: .top) {
-            if chromeVisible { topBar.transition(.opacity).disabled(trashInteractionBlocked) }
+            if chromeVisible {
+                topBar.transition(.opacity).disabled(trashInteractionBlocked)
+                    .modifier(ViewerDismissChromeOpacity(motion: dismissMotion))
+            }
         }
         .overlay(alignment: .bottom) {
-            if chromeVisible { bottomBar.transition(.opacity).disabled(trashInteractionBlocked) }
+            if chromeVisible {
+                bottomBar.transition(.opacity).disabled(trashInteractionBlocked)
+                    .modifier(ViewerDismissChromeOpacity(motion: dismissMotion))
+            }
         }
         .overlay {
             if trash.isBusy {
@@ -93,8 +108,15 @@ public struct AssetViewer: View {
         #if os(iOS)
         .statusBarHidden(!chromeVisible)
         .interactiveDismissDisabled(trashInteractionBlocked)
+        .onChange(of: dismissInteractionBlocked) { _, blocked in
+            if blocked { resetDismissDrag() }
+        }
+        .onChange(of: currentPhotoIsZoomed) { _, zoomed in
+            if zoomed { resetDismissDrag() }
+        }
         #endif
         .onChange(of: selectedID, initial: true) { _, id in
+            resetDismissDrag()
             showsInfo = false
             store.stopLivePhotos()
             if let id, let index = indexByID[id] {
@@ -176,6 +198,11 @@ public struct AssetViewer: View {
             .allowsHitTesting(!trashInteractionBlocked)
             .ignoresSafeArea()
             .onAppear { proxy.scrollTo(initialID) }
+            .gesture(ViewerDismissGesture(isZoomed: currentPhotoIsZoomed,
+                                          blocked: dismissInteractionBlocked,
+                                          onChanged: updateDismissDrag,
+                                          onEnded: endDismissDrag,
+                                          onCancelled: resetDismissDrag))
         }
         #else
         VStack {
@@ -188,6 +215,29 @@ public struct AssetViewer: View {
             }.padding()
         }
         #endif
+    }
+
+    private func updateDismissDrag(_ translation: CGSize) {
+        guard !dismissInteractionBlocked, !currentPhotoIsZoomed else { return }
+        if dismissMotion.offset == 0 { store.stopLivePhotos() }
+        dismissMotion.offset = max(0, translation.height)
+    }
+
+    private func endDismissDrag(_ translation: CGSize) {
+        guard !dismissInteractionBlocked, !currentPhotoIsZoomed,
+              ViewerGesture.shouldDismiss(x: translation.width, y: translation.height, zoom: 1) else {
+            resetDismissDrag()
+            return
+        }
+        store.stopLivePhotos()
+        dismiss()
+    }
+
+    private func resetDismissDrag() {
+        guard dismissMotion.offset != 0 else { return }
+        withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.85)) {
+            dismissMotion.offset = 0
+        }
     }
 
     private func page(_ asset: Asset) -> some View {

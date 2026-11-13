@@ -154,6 +154,10 @@ public final class ViewerAssetModel {
 }
 
 enum ViewerGesture {
+    static func canStartDismiss(x: Double, y: Double, isZoomed: Bool, blocked: Bool) -> Bool {
+        !blocked && !isZoomed && y > 0 && y > abs(x) * 1.5
+    }
+
     static func shouldDismiss(x: Double, y: Double, zoom: Double) -> Bool {
         zoom == 1 && y > 100 && y > abs(x) * 1.5
     }
