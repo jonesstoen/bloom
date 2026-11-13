@@ -48,6 +48,9 @@ ImmichAPI  client generated from openapi.json (swift-openapi-generator)
   information is shown, and existing share/edit actions remain available. Pulling down on the
   information at its scroll top also closes it; gestures started farther down only scroll.
 - **Search and Collections** call the service directly through their own small models.
+  Album grids opt into the Library's existing multi-selection toolbar: sharing is available in
+  view-only mode; favorites and adding to an album still require Allow Changes. Album grids do
+  not enable trash or removal from the album.
   Search loads people and place suggestions concurrently, publishing each row independently.
   One failed request leaves the other row available; cancellation suppresses late results/errors.
 

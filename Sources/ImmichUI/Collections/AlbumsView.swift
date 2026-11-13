@@ -129,7 +129,7 @@ public struct AlbumDetailView: View {
         _model = State(initialValue: LibraryGridModel(service: service, options: options, loader: loader))
     }
 
-    public var body: some View { LibraryGridView(model: model, title: album.name) }
+    public var body: some View { LibraryGridView(model: model, title: album.name, allowsSelection: true) }
 }
 
 #Preview("Albums") { NavigationStack { AlbumsView(service: MockImmichService.preview) } }

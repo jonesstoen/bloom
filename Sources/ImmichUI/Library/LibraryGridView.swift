@@ -36,6 +36,7 @@ public struct LibraryGridView: View {
     private let scrollToNewestTrigger: Int
     private let allowsTrash: Bool
     private let allowsRestore: Bool
+    private let allowsSelection: Bool
     private let onRestore: (@MainActor ([Asset]) async throws -> RestoreResult)?
     private let onSelect: (Asset) -> Void
 
@@ -53,14 +54,16 @@ public struct LibraryGridView: View {
     ///   - onSelect: called when an asset is tapped (opens the viewer).
     ///   - scrollToNewestTrigger: changing it scrolls to the newest photos (the tab was tapped again).
     ///   - chrome: state shared with the tab bar, so the Years / Months / All switcher can sit in it.
+    ///   - allowsSelection: enables selection actions in a pushed grid, such as an album.
     public init(model: LibraryGridModel, title: String = tr("Library"), headerStyle: HeaderStyle = .navigationBar,
                 accessory: AnyView? = nil, chrome: LibraryChrome? = nil, scrollToNewestTrigger: Int = 0,
-                allowsTrash: Bool = false, allowsRestore: Bool = false,
+                allowsTrash: Bool = false, allowsRestore: Bool = false, allowsSelection: Bool = false,
                 onRestore: (@MainActor ([Asset]) async throws -> RestoreResult)? = nil, onSelect: @escaping (Asset) -> Void = { _ in }) {
         _model = State(initialValue: model)
         _selection = State(initialValue: LibrarySelectionModel(library: model, onRestore: onRestore))
         self.allowsTrash = allowsTrash
         self.allowsRestore = allowsRestore
+        self.allowsSelection = allowsSelection
         self.onRestore = onRestore
         self.title = title
         self.headerStyle = headerStyle
@@ -70,9 +73,9 @@ public struct LibraryGridView: View {
         self.onSelect = onSelect
     }
 
-    public init(service: any ImmichService, title: String = tr("Library"), headerStyle: HeaderStyle = .navigationBar, allowsTrash: Bool = false, allowsRestore: Bool = false,
+    public init(service: any ImmichService, title: String = tr("Library"), headerStyle: HeaderStyle = .navigationBar, allowsTrash: Bool = false, allowsRestore: Bool = false, allowsSelection: Bool = false,
                 onRestore: (@MainActor ([Asset]) async throws -> RestoreResult)? = nil, onSelect: @escaping (Asset) -> Void = { _ in }) {
-        self.init(model: LibraryGridModel(service: service), title: title, headerStyle: headerStyle, allowsTrash: allowsTrash, allowsRestore: allowsRestore, onRestore: onRestore, onSelect: onSelect)
+        self.init(model: LibraryGridModel(service: service), title: title, headerStyle: headerStyle, allowsTrash: allowsTrash, allowsRestore: allowsRestore, allowsSelection: allowsSelection, onRestore: onRestore, onSelect: onSelect)
     }
 
     private var usesLargeTitle: Bool {
@@ -117,19 +120,22 @@ public struct LibraryGridView: View {
             .navigationTitle(title)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
-            .navigationBarBackButtonHidden(canRestore && mutationBlocked)
+            .navigationBarBackButtonHidden((canRestore || allowsSelection) && mutationBlocked)
             .toolbar(usesLargeTitle ? .hidden : .automatic, for: .navigationBar)
             .toolbar {
-                if canRestore && selection.isSelecting {
+                if (canRestore || allowsSelection) && selection.isSelecting {
                     ToolbarItem(placement: .principal) { LibrarySelectionCount(selection: selection) }
                 }
                 if !usesLargeTitle {
                     ToolbarItem(placement: .topBarTrailing) {
-                        if canRestore {
+                        if canRestore || allowsSelection {
                             if selection.isSelecting { LibrarySelectionCancelButton(selection: selection) }
                             else {
-                                Button(tr("Select")) { selection.start() }
-                                    .disabled(model.phase != .loaded || model.isEmpty || mutationBlocked)
+                                HStack {
+                                    Button(tr("Select")) { selection.start() }
+                                        .disabled(model.phase != .loaded || model.isEmpty || mutationBlocked)
+                                    if allowsSelection { optionsMenu }
+                                }
                             }
                         } else { optionsMenu }
                     }
@@ -148,7 +154,7 @@ public struct LibraryGridView: View {
                 }
             }
             .overlay(alignment: .bottom) {
-                if (usesLargeTitle || canRestore) && (selection.isSelecting || (model.phase == .loaded && !model.isEmpty)) {
+                if (usesLargeTitle || canRestore || allowsSelection) && (selection.isSelecting || (model.phase == .loaded && !model.isEmpty)) {
                     Group {
                         if selection.isSelecting {
                             LibrarySelectionToolbar(selection: selection, allowsTrash: canMoveToTrash, allowsRestore: canRestore)
