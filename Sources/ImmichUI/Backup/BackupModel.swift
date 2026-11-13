@@ -56,6 +56,7 @@ final class BackupModel {
     @ObservationIgnored private var scanTask: Task<Void, Never>?
     @ObservationIgnored private var rescan: (id: UUID, task: Task<Void, Never>)?
     @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var progressGate = BackupProgressGate()
     @ObservationIgnored private var isStopped = false
     @ObservationIgnored private var selectionRevision = 0
     @ObservationIgnored private var savedSelectionRevision = 0
@@ -170,18 +171,28 @@ final class BackupModel {
         error = nil
         isScanning = true
         progress = Progress(done: 0, total: counts.total)
+        progressGate = BackupProgressGate()
         generation += 1
         let current = generation
         scanTask = Task { [weak self] in
             var result: BackupCounts?
             var failure: Error?
+            // A single consumer with one pending snapshot avoids a task backlog for large libraries.
+            let (updates, continuation) = AsyncStream<(BackupCounts, Int)>.makeStream(bufferingPolicy: .bufferingNewest(1))
+            let delivery = Task { [weak self] in
+                for await (counts, handled) in updates {
+                    self?.apply(counts, handled: handled, generation: current)
+                }
+            }
             do {
-                result = try await scanner.scan { [weak self] counts, handled in
-                    Task { @MainActor in self?.apply(counts, handled: handled, generation: current) }
+                result = try await scanner.scan { counts, handled in
+                    continuation.yield((counts, handled))
                 }
             } catch {
                 failure = error
             }
+            continuation.finish()
+            await delivery.value
             await self?.finishScan(result: result, failure: failure)
         }
         await scanTask?.value
@@ -217,6 +228,7 @@ final class BackupModel {
 
     private func apply(_ counts: BackupCounts, handled: Int, generation current: Int) {
         guard isScanning, current == generation, handled >= (progress?.done ?? 0) else { return }
+        guard progressGate.shouldPublish(at: .now) else { return }
         self.counts = counts
         progress = Progress(done: handled, total: max(counts.total, handled))
     }

@@ -48,9 +48,9 @@ struct BackupView: View {
 
     @ViewBuilder private var content: some View {
         albumsSection
-        countsSection
-        checkSection
-        failedSection
+        BackupCountsSection(model: model)
+        BackupCheckSection(model: model)
+        BackupFailedItemsSection(model: model)
         cellularSection
     }
 
@@ -105,7 +105,22 @@ struct BackupView: View {
         }
     }
 
-    private var countsSection: some View {
+    private var cellularSection: some View {
+        Section {
+            @Bindable var model = model
+            Toggle(tr("Photos over Cellular"), isOn: $model.settings.photosOnCellular)
+            Toggle(tr("Videos over Cellular"), isOn: $model.settings.videosOnCellular)
+        } footer: {
+            Text(tr("Photos that exist only in iCloud are checked on Wi-Fi, unless you allow cellular here."))
+        }
+    }
+}
+
+/// Observe changing counts here instead of rebuilding the whole Backup list.
+private struct BackupCountsSection: View {
+    let model: BackupModel
+
+    var body: some View {
         Section {
             LabeledContent(tr("Total")) { count(model.counts.total) }
             LabeledContent(tr("On Server")) { count(model.counts.backedUp) }
@@ -133,8 +148,13 @@ struct BackupView: View {
             .monospacedDigit()
             .foregroundStyle(.secondary)
     }
+}
 
-    private var checkSection: some View {
+/// Progress changes only rebuild this section.
+private struct BackupCheckSection: View {
+    let model: BackupModel
+
+    var body: some View {
         Section {
             if let progress = model.progress {
                 VStack(alignment: .leading, spacing: 8) {
@@ -160,7 +180,16 @@ struct BackupView: View {
         }
     }
 
-    @ViewBuilder private var failedSection: some View {
+    private func number(_ value: Int) -> String {
+        value.formatted(.number.locale(Localization.locale))
+    }
+}
+
+/// Keep both the failure list and its live count footer out of the parent observation.
+private struct BackupFailedItemsSection: View {
+    let model: BackupModel
+
+    var body: some View {
         if !model.failedItems.isEmpty {
             Section {
                 ForEach(model.failedItems) { item in
@@ -177,20 +206,24 @@ struct BackupView: View {
             }
         }
     }
+}
 
-    private var cellularSection: some View {
-        Section {
-            @Bindable var model = model
-            Toggle(tr("Photos over Cellular"), isOn: $model.settings.photosOnCellular)
-            Toggle(tr("Videos over Cellular"), isOn: $model.settings.videosOnCellular)
-        } footer: {
-            Text(tr("Photos that exist only in iCloud are checked on Wi-Fi, unless you allow cellular here."))
-        }
-    }
+#Preview("Backup counts") {
+    let model = BackupModel.preview(selected: ["recents"])
+    List { BackupCountsSection(model: model) }
+        .task { await model.load() }
+}
 
-    private func number(_ value: Int) -> String {
-        value.formatted(.number.locale(Localization.locale))
-    }
+#Preview("Backup check") {
+    let model = BackupModel.preview(selected: ["recents"])
+    List { BackupCheckSection(model: model) }
+        .task { await model.load() }
+}
+
+#Preview("Backup problems") {
+    let model = BackupModel.preview(selected: ["recents"])
+    List { BackupFailedItemsSection(model: model) }
+        .task { await model.load() }
 }
 
 #Preview("Backup") {
