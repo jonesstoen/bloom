@@ -76,6 +76,30 @@ enum SelectionShareFiles {
         }
     }
 
+    /// Awaits a preparation task and forwards the caller's cancellation to it. Returns nil when
+    /// the caller or the task was cancelled, removing the files if the worker finished anyway
+    /// (cancellation can race with it returning a completed batch). Other errors are rethrown.
+    /// Main-actor isolated so the cancellation check and the caller's use of the result run
+    /// without a suspension in between.
+    @MainActor
+    static func awaitPreparation(_ task: Task<PreparedShare, any Error>) async throws -> PreparedShare? {
+        do {
+            let prepared = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
+            if Task.isCancelled || task.isCancelled {
+                remove(prepared.directory)
+                return nil
+            }
+            return prepared
+        } catch {
+            if error is CancellationError || Task.isCancelled || task.isCancelled { return nil }
+            throw error
+        }
+    }
+
     static func remove(_ directory: URL) {
         try? FileManager.default.removeItem(at: directory)
     }

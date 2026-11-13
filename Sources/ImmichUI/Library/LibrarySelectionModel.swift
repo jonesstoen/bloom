@@ -215,22 +215,12 @@ public final class LibrarySelectionModel {
         }
         shareTask = task
         do {
-            let prepared = try await withTaskCancellationHandler {
-                try await task.value
-            } onCancel: {
-                task.cancel()
-            }
-            // Cancellation can race with the worker returning its completed batch.
-            if Task.isCancelled || task.isCancelled {
-                SelectionShareFiles.remove(prepared.directory)
-            } else {
+            if let prepared = try await SelectionShareFiles.awaitPreparation(task) {
                 preparedDirectory = prepared.directory
                 sharedFiles = prepared
             }
         } catch {
-            if !Task.isCancelled && !task.isCancelled && !(error is CancellationError) {
-                self.error = tr("Couldn't prepare these items for sharing. Please try again.")
-            }
+            self.error = tr("Couldn't prepare these items for sharing. Please try again.")
         }
         shareTask = nil
         isPreparingShare = false

@@ -46,22 +46,15 @@ final class ViewerShareModel {
             }
         }
         do {
-            let prepared = try await withTaskCancellationHandler {
-                try await task.value
-            } onCancel: {
-                task.cancel()
-            }
-            guard preparationID == id, !Task.isCancelled, !task.isCancelled else {
+            guard let prepared = try await SelectionShareFiles.awaitPreparation(task) else { return }
+            guard preparationID == id else {
                 SelectionShareFiles.remove(prepared.directory)
                 return
             }
             preparedDirectory = prepared.directory
             sharedFiles = prepared
         } catch {
-            guard preparationID == id else { return }
-            if !(error is CancellationError), !Task.isCancelled, !task.isCancelled {
-                failed = true
-            }
+            if preparationID == id { failed = true }
         }
     }
 
