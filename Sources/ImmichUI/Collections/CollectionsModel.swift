@@ -24,6 +24,7 @@ public final class CollectionsModel {
     public private(set) var loadedPinnedCovers = false
     @ObservationIgnored public let service: any ImmichService
     @ObservationIgnored public let loader: ImageLoader
+    @ObservationIgnored private var reloadAlbumsAfterLoad = false
 
     public init(service: any ImmichService, loader: ImageLoader? = nil) {
         self.service = service
@@ -31,17 +32,34 @@ public final class CollectionsModel {
     }
 
     public func loadAlbums() async {
-        guard !loadingAlbums else { return }
+        guard !loadingAlbums else {
+            reloadAlbumsAfterLoad = true
+            return
+        }
         loadingAlbums = true
-        albumsError = nil
         defer { loadingAlbums = false }
-        do {
-            let result = try await service.albums()
-            try Task.checkCancellation()
-            albums = result
-            loadedAlbums = true
-        } catch is CancellationError { return }
-        catch { albumsError = tr("Couldn't load albums. Please try again.") }
+        repeat {
+            // Changes during a request must refresh its potentially stale response.
+            reloadAlbumsAfterLoad = false
+            albumsError = nil
+            do {
+                let result = try await service.albums()
+                try Task.checkCancellation()
+                albums = result
+                loadedAlbums = true
+            } catch is CancellationError {
+                if reloadAlbumsAfterLoad {
+                    // A separate change notification outlives the cancelled caller.
+                    // Start after this call releases loadingAlbums; a newer load wins.
+                    Task {
+                        guard self.reloadAlbumsAfterLoad else { return }
+                        await self.loadAlbums()
+                    }
+                }
+                return
+            }
+            catch { albumsError = tr("Couldn't load albums. Please try again.") }
+        } while reloadAlbumsAfterLoad && !Task.isCancelled
     }
 
     public func loadPeople() async {
