@@ -30,6 +30,8 @@ ImmichAPI  client generated from openapi.json (swift-openapi-generator)
   Photo, video). Originals for sharing are downloaded to a temporary file.
   Decoded previews and playback are retained only for the current item and two neighbours on
   each side. Visited models keep favorite/detail state while releasing media outside that window.
+  Viewer and selection sharing use the same original-to-disk downloader with guarded redirects.
+  Prepared files remain owned until sharing ends; failures and cancellation remove partial files.
 - **Search and Collections** call the service directly through their own small models.
 
 ## Talking to Immich

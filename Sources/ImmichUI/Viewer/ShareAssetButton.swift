@@ -8,23 +8,38 @@ import UIKit
 /// share sheet (save to Photos, AirDrop, Messages, …).
 struct ShareAssetButton: View {
     let asset: Asset
-    let service: any ImmichService
     var onPrepare: () -> Void = {}
     var onBusyChanged: (Bool) -> Void = { _ in }
-    @State private var isPreparing = false
-    @State private var file: SharedFile?
-    @State private var failed = false
+    @State private var model: ViewerShareModel
+    @State private var preparationTask: Task<Void, Never>?
+
+    init(
+        asset: Asset, service: any ImmichService, downloader: OriginalFileDownloader = .live,
+        onPrepare: @escaping () -> Void = {},
+        onBusyChanged: @escaping (Bool) -> Void = { _ in }
+    ) {
+        self.asset = asset
+        self.onPrepare = onPrepare
+        self.onBusyChanged = onBusyChanged
+        _model = State(initialValue: ViewerShareModel(service: service, downloader: downloader))
+    }
 
     var body: some View {
+        @Bindable var model = model
         Button {
-            guard !isPreparing, file == nil else { return }
-            isPreparing = true
-            onBusyChanged(true)
+            guard !model.isBusy else { return }
+            let selectedAsset = asset
             onPrepare()
-            Task { await prepare() }
+            preparationTask = Task {
+                await model.prepare(asset: selectedAsset)
+                #if !os(iOS)
+                // This button has no share-sheet presentation on macOS.
+                if !Task.isCancelled { model.finishSharing() }
+                #endif
+            }
         } label: {
             ZStack {
-                if isPreparing {
+                if model.isPreparing {
                     ProgressView()
                 } else {
                     Image(systemName: "square.and.arrow.up").font(.system(size: 19, weight: .medium))
@@ -35,69 +50,46 @@ struct ShareAssetButton: View {
         }
         .buttonStyle(.plain)
         .photosGlass(in: Circle())
-        .disabled(isPreparing)
+        .disabled(model.isPreparing)
         .accessibilityLabel(tr("Share"))
         #if os(iOS)
-        .sheet(item: $file, onDismiss: { onBusyChanged(false) }) { file in
-            ActivityView(items: [file.url])
+        .sheet(item: $model.sharedFiles, onDismiss: { model.finishSharing() }) { files in
+            ActivityView(items: files.urls, owner: model)
                 .presentationDetents([.medium, .large])
                 .ignoresSafeArea()
         }
         #endif
-        .alert(tr("Couldn't Share"), isPresented: $failed) {
+        .onChange(of: model.isBusy, initial: true) { _, busy in
+            onBusyChanged(busy)
+        }
+        .onDisappear {
+            preparationTask?.cancel()
+            preparationTask = nil
+            if model.isPreparing {
+                model.cancelPreparation()
+                onBusyChanged(model.isBusy)
+            }
+        }
+        .alert(tr("Couldn't Share"), isPresented: $model.failed) {
             Button(tr("OK"), role: .cancel) {}
         } message: {
             Text(tr("The original file couldn't be downloaded. Please try again."))
         }
-    }
-
-    private func prepare() async {
-        defer { isPreparing = false }
-        do {
-            let data = try await service.original(assetID: asset.id)
-            let prepared = SharedFile(url: try SharedFile.write(data, for: asset))
-            #if os(iOS)
-            file = prepared
-            #else
-            // This button has no share-sheet presentation on macOS.
-            _ = prepared
-            onBusyChanged(false)
-            #endif
-        } catch is CancellationError {
-            onBusyChanged(false)
-        } catch {
-            onBusyChanged(false)
-            failed = true
-        }
-    }
-}
-
-struct SharedFile: Identifiable {
-    let url: URL
-    var id: URL { url }
-
-    /// Writes the original under its file name in a temporary folder, replacing earlier shares.
-    static func write(_ data: Data, for asset: Asset) throws -> URL {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("ImmichShare", isDirectory: true)
-        try? FileManager.default.removeItem(at: folder)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let url = folder.appendingPathComponent(fileName(for: asset))
-        try data.write(to: url, options: .atomic)
-        return url
-    }
-
-    static func fileName(for asset: Asset) -> String {
-        let name = asset.originalFileName?
-            .replacingOccurrences(of: "/", with: "_")
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !name.isEmpty { return name }
-        return asset.id + (asset.isVideo ? ".mov" : ".jpg")
     }
 }
 
 #if os(iOS)
 private struct ActivityView: UIViewControllerRepresentable {
     let items: [Any]
+    let owner: ViewerShareModel
+
+    // Retain the files' owner even if the originating viewer disappears during sharing.
+    final class Coordinator {
+        let owner: ViewerShareModel
+        init(owner: ViewerShareModel) { self.owner = owner }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(owner: owner) }
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
         UIActivityViewController(activityItems: items, applicationActivities: nil)
@@ -108,7 +100,10 @@ private struct ActivityView: UIViewControllerRepresentable {
 #endif
 
 #Preview("Share button") {
-    ShareAssetButton(asset: MockLibrary.standard.assets[0], service: MockImmichService.preview)
+    ShareAssetButton(asset: MockLibrary.standard.assets[0], service: MockImmichService.preview,
+                     downloader: OriginalFileDownloader { request, destination in
+                         try MockImmichService.placeholderData(assetID: request.assetID, size: .preview).write(to: destination)
+                     })
         .padding()
         .background(.black)
 }

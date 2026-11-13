@@ -112,21 +112,26 @@ final class PhotosLookTests: XCTestCase {
         XCTAssertFalse(store.model(for: assets[0]) === store.model(for: assets[1]))
     }
 
-    func testSharedFileKeepsTheOriginalNameAndReplacesEarlierShares() throws {
-        var asset = MockLibrary.standard.assets[0]
-        asset.originalFileName = "IMG_0001.HEIC"
-        let first = try SharedFile.write(Data([1, 2, 3]), for: asset)
-        XCTAssertEqual(first.lastPathComponent, "IMG_0001.HEIC")
-        XCTAssertEqual(try Data(contentsOf: first), Data([1, 2, 3]))
+    func testSharePipelinePreservesOriginalExtensionAndSanitizesNames() async throws {
+        var first = MockLibrary.standard.assets[0]
+        first.originalFileName = "IMG_0001.HEIC"
+        var second = MockLibrary.standard.assets[1]
+        second.originalFileName = "../a/b.jpg"
+        let mock = MockImmichService(assets: [first, second])
+        let share = try await SelectionShareFiles.prepare(
+            assets: [first, second], service: mock,
+            downloader: OriginalFileDownloader { request, destination in
+                try Data(request.assetID.utf8).write(to: destination)
+            }, progress: { _ in }
+        )
+        defer { SelectionShareFiles.remove(share.directory) }
 
-        asset.originalFileName = "a/b.jpg"
-        let second = try SharedFile.write(Data([4]), for: asset)
-        XCTAssertEqual(second.lastPathComponent, "a_b.jpg")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: first.path))
-
-        asset.originalFileName = "  "
-        XCTAssertEqual(SharedFile.fileName(for: asset), asset.id + (asset.isVideo ? ".mov" : ".jpg"))
-        try? FileManager.default.removeItem(at: second.deletingLastPathComponent())
+        XCTAssertEqual(share.urls.map(\.lastPathComponent), ["IMG_0001.HEIC", ".._a_b.jpg"])
+        XCTAssertNotEqual(share.urls[0].pathComponents.dropLast().last, share.urls[1].pathComponents.dropLast().last)
+        for (url, asset) in zip(share.urls, [first, second]) {
+            XCTAssertTrue(url.standardizedFileURL.path.hasPrefix(share.directory.standardizedFileURL.path + "/"))
+            XCTAssertEqual(try Data(contentsOf: url), Data(asset.id.utf8))
+        }
     }
 
     func testThumbnailStripShowsAStableWindowAroundTheCurrentItem() {
