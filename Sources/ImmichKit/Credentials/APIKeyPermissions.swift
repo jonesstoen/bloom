@@ -12,3 +12,21 @@ public enum APIKeyPermissions {
     /// Added for Allow Changes: favorites, moving to and restoring from trash, new albums and adding to them.
     public static let changes = ["asset.update", "asset.delete", "album.create", "albumAsset.create"]
 }
+
+/// The access a user chooses to give Bloom when creating the key. New levels (for example
+/// backing up) add their permissions here, and the sign-in screen lists them.
+public enum APIKeyAccess: String, CaseIterable, Identifiable, Sendable {
+    /// Browse, search, play and share. The key can't change anything on the server.
+    case view
+    /// Also favorites, moving to and restoring from trash, and albums (with Allow Changes).
+    case organize
+
+    public var id: String { rawValue }
+
+    public var permissions: [String] {
+        switch self {
+        case .view: APIKeyPermissions.readOnly
+        case .organize: APIKeyPermissions.readOnly + APIKeyPermissions.changes
+        }
+    }
+}

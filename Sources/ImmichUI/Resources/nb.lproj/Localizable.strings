@@ -239,9 +239,11 @@
 "This server uses http, so your API key and photos are sent unencrypted. On your own network that's usually fine, but on other Wi-Fi networks (hotels, cafés, work) others can read the key and get full access to your library. Use https or Tailscale if you can." = "Denne serveren bruker http, så API-nøkkelen og bildene sendes ukryptert. På ditt eget nettverk går det som regel bra, men på andre Wi-Fi-nett (hotell, kafé, jobb) kan andre lese nøkkelen og få full tilgang til biblioteket ditt. Bruk https eller Tailscale hvis du kan.";
 "Send Your API Key Unencrypted?" = "Sende API-nøkkelen ukryptert?";
 "Connect Anyway" = "Koble til likevel";
-"In Immich on the web, open Account Settings › API Keys and create a new key." = "Åpne Kontoinnstillinger › API-nøkler i Immich på nettet, og lag en ny nøkkel.";
-"Select only these permissions:" = "Velg bare disse tillatelsene:";
-"To use Allow Changes (favorites, trash, albums), also:" = "For å bruke Tillat endringer (favoritter, papirkurv, album) også:";
-"Enter the server address and paste the key below." = "Skriv inn serveradressen og lim inn nøkkelen nedenfor.";
-"Before You Start" = "Før du begynner";
-"Even if it leaks, a key with only these permissions can't delete or share your library. Bloom keeps it only in the Keychain on this device." = "En nøkkel med bare disse tillatelsene kan ikke slette eller dele biblioteket ditt, selv om den skulle komme på avveie. Bloom lagrer den bare i nøkkelringen på denne enheten.";
+"Access" = "Tilgang";
+"Which API Key?" = "Hvilken API-nøkkel?";
+"View Only" = "Bare se";
+"View and Organize" = "Se og endre";
+"Create it in Immich under Account Settings › API Keys and select:" = "Lag den i Immich under Kontoinnstillinger › API-nøkler, og kryss av for:";
+"Bloom keeps the key only in the Keychain on this device." = "Bloom lagrer nøkkelen bare i nøkkelringen på denne enheten.";
+"Browse, search, play videos and share. The key can't change, delete or upload anything, even if it leaks." = "Bla, søk, se video og del. Nøkkelen kan ikke endre, slette eller laste opp noe, selv om den skulle komme på avveie.";
+"Also favorites, moving to Recently Deleted and restoring, and albums. Turn on Allow Changes in the account menu after signing in. Nothing is deleted permanently." = "I tillegg favoritter, flytte til Nylig slettet og gjenopprette, og album. Slå på Tillat endringer i kontomenyen etter innlogging. Ingenting slettes for godt.";

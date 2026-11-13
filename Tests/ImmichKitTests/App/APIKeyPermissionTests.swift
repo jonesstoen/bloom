@@ -57,3 +57,11 @@ final class APIKeyPermissionTests: XCTestCase {
         XCTAssertFalse(readOnly.contains { $0.hasSuffix(".delete") || $0.hasSuffix(".update") || $0.hasSuffix(".create") || $0 == "all" })
     }
 }
+
+final class APIKeyAccessTests: XCTestCase {
+    func testLevelsBuildOnEachOther() {
+        XCTAssertEqual(APIKeyAccess.view.permissions, APIKeyPermissions.readOnly)
+        XCTAssertEqual(Set(APIKeyAccess.organize.permissions), Set(APIKeyPermissions.readOnly + APIKeyPermissions.changes))
+        XCTAssertFalse(APIKeyAccess.organize.permissions.contains("all"))
+    }
+}

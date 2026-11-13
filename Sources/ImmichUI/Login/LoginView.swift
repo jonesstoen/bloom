@@ -7,6 +7,7 @@ import SwiftUI
 public struct LoginView: View {
     @State private var model: LoginModel
     @FocusState private var focus: Field?
+    @State private var access: APIKeyAccess = .view
 
     private enum Field: Hashable { case server, apiKey }
 
@@ -55,11 +56,11 @@ public struct LoginView: View {
 
     private var header: some View {
         Section {
-            VStack(spacing: 12) {
+            VStack(spacing: 8) {
                 BloomMark()
-                    .frame(width: 76, height: 76)
+                    .frame(width: 56, height: 56)
                 Text(tr("Bloom"))
-                    .font(.largeTitle.bold())
+                    .font(.title.bold())
                 Text(tr("Sign in to your Immich server to browse your photos and videos."))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -111,27 +112,43 @@ public struct LoginView: View {
         }
     }
 
-    /// How to make a key with only the permissions Bloom needs, before the fields that ask for it.
+    /// Which key to create: the access level, what it means, and the permissions to select in Immich.
     private var keyGuide: some View {
         Section {
-            Label(tr("In Immich on the web, open Account Settings › API Keys and create a new key."),
-                  systemImage: "1.circle")
-            Label {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(tr("Select only these permissions:"))
-                    permissionList(APIKeyPermissions.readOnly)
-                    Text(tr("To use Allow Changes (favorites, trash, albums), also:"))
-                        .foregroundStyle(.secondary)
-                    permissionList(APIKeyPermissions.changes)
+            Picker(tr("Access"), selection: $access) {
+                ForEach(APIKeyAccess.allCases) { level in
+                    Text(Self.title(of: level)).tag(level)
                 }
-            } icon: {
-                Image(systemName: "2.circle")
             }
-            Label(tr("Enter the server address and paste the key below."), systemImage: "3.circle")
+            .pickerStyle(.segmented)
+            .listRowSeparator(.hidden)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(Self.summary(of: access))
+                Text(tr("Create it in Immich under Account Settings › API Keys and select:"))
+                    .foregroundStyle(.secondary)
+                permissionList(access.permissions)
+            }
+            .font(.subheadline)
         } header: {
-            Text(tr("Before You Start"))
+            Text(tr("Which API Key?"))
         } footer: {
-            Text(tr("Even if it leaks, a key with only these permissions can't delete or share your library. Bloom keeps it only in the Keychain on this device."))
+            Text(tr("Bloom keeps the key only in the Keychain on this device."))
+        }
+    }
+
+    static func title(of access: APIKeyAccess) -> String {
+        switch access {
+        case .view: tr("View Only")
+        case .organize: tr("View and Organize")
+        }
+    }
+
+    static func summary(of access: APIKeyAccess) -> String {
+        switch access {
+        case .view:
+            tr("Browse, search, play videos and share. The key can't change, delete or upload anything, even if it leaks.")
+        case .organize:
+            tr("Also favorites, moving to Recently Deleted and restoring, and albums. Turn on Allow Changes in the account menu after signing in. Nothing is deleted permanently.")
         }
     }
 
