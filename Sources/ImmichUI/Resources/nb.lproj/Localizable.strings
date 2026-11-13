@@ -227,7 +227,6 @@
 "Yesterday" = "I går";
 "Allow Changes" = "Tillat endringer";
 "Bloom only uses http on your own network or Tailscale. Use https for this server." = "Bloom bruker bare http på ditt eget nettverk eller Tailscale. Bruk https for denne serveren.";
-"Unencrypted, so only for a server on your own network or Tailscale." = "Ukryptert, så bare for en server på ditt eget nettverk eller Tailscale.";
 "Smart search isn't available on this Immich server (it may not be set up), so Bloom can't search what's in your photos. Showing only photos whose file name contains “%@”." = "Smart søk er ikke tilgjengelig på denne Immich-serveren (det er kanskje ikke satt opp), så Bloom kan ikke søke i hva som er på bildene. Viser bare bilder der filnavnet inneholder «%@».";
 "Smart Search Isn't Available" = "Smart søk er ikke tilgjengelig";
 "Bloom can't search what's in your photos, because smart search isn't set up or isn't working on your Immich server. No file names contain “%@”." = "Bloom kan ikke søke i hva som er på bildene, fordi smart søk ikke er satt opp eller ikke virker på Immich-serveren din. Ingen filnavn inneholder «%@».";
@@ -236,3 +235,8 @@
 "Face recognition is off" = "Ansiktsgjenkjenning er av";
 "No Photo Locations" = "Ingen bildesteder";
 "Photos with location data from the camera appear here." = "Bilder med stedsdata fra kameraet vises her.";
+"Unencrypted: anyone on the same Wi-Fi can read your API key. Only use this at home, or use https or Tailscale." = "Ukryptert: alle på samme Wi-Fi kan lese API-nøkkelen din. Bruk dette bare hjemme, eller bruk https eller Tailscale.";
+"Plain http, encrypted by Tailscale or kept on this device." = "Vanlig http, kryptert av Tailscale eller bare på denne enheten.";
+"This server uses http, so your API key and photos are sent unencrypted. On your own network that's usually fine, but on other Wi-Fi networks (hotels, cafés, work) others can read the key and get full access to your library. Use https or Tailscale if you can." = "Denne serveren bruker http, så API-nøkkelen og bildene sendes ukryptert. På ditt eget nettverk går det som regel bra, men på andre Wi-Fi-nett (hotell, kafé, jobb) kan andre lese nøkkelen og få full tilgang til biblioteket ditt. Bruk https eller Tailscale hvis du kan.";
+"Send Your API Key Unencrypted?" = "Sende API-nøkkelen ukryptert?";
+"Connect Anyway" = "Koble til likevel";

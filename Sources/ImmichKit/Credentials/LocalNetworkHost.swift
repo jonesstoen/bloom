@@ -15,6 +15,19 @@ enum LocalNetworkHost {
         return [".local", ".lan", ".home.arpa", ".internal", ".ts.net"].contains { host.hasSuffix($0) }
     }
 
+    /// This device or Tailscale: plain http here is never readable by others on the Wi-Fi, unlike
+    /// a private address or `.local` name, which on a hotel or café network belongs to whoever runs it.
+    static func isTunnelOrLoopback(_ host: String) -> Bool {
+        let host = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        if let v4 = ipv4(host) { return v4[0] == 127 || (v4[0] == 100 && (64...127).contains(v4[1])) }
+        if host.contains(":") {
+            if host == "::1" { return true }
+            let groups = host.split(separator: ":", omittingEmptySubsequences: false).prefix(3)
+            return groups.map { $0.lowercased() } == ["fd7a", "115c", "a1e0"]
+        }
+        return host == "localhost" || host.hasSuffix(".ts.net")
+    }
+
     /// Plain dotted decimal only. Resolvers disagree on parts with a leading zero (inet_aton reads
     /// "0127" as octal 87, macOS getaddrinfo as decimal 127), so such hosts are not trusted as an
     /// address; they count as a name and, having no local suffix, as not local.
@@ -56,6 +69,13 @@ extension ServerCredentials {
     /// https, or http to a host on the user's own network or Tailscale. Anything else would send
     /// the API key across the internet as plain text, so Bloom refuses it.
     public var protectsAPIKey: Bool { Self.protectsAPIKey(serverURL) }
+
+    /// Plain http to a private address or local name: allowed, but anyone else on the same network
+    /// can read the API key, so the user has to agree to it when signing in.
+    public static func exposesAPIKeyOnLocalNetwork(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "http", let host = url.host else { return false }
+        return LocalNetworkHost.isLocal(host) && !LocalNetworkHost.isTunnelOrLoopback(host)
+    }
 
     public static func protectsAPIKey(_ url: URL) -> Bool {
         switch url.scheme?.lowercased() {

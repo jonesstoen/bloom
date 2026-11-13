@@ -20,11 +20,14 @@ public final class LoginModel {
         didSet { clearError() }
     }
     public private(set) var phase: Phase = .editing
+    /// Waiting for the user to agree to sending the key unencrypted on the local network.
+    public private(set) var asksForUnencryptedConsent = false
 
     @ObservationIgnored private let tester: ConnectionTester
     @ObservationIgnored private let store: CredentialStore
     @ObservationIgnored private let onConnect: @MainActor (ServerCredentials) -> Void
     @ObservationIgnored private var task: Task<Void, Never>?
+    @ObservationIgnored private var consentedServer: URL?
 
     /// - Parameters:
     ///   - store: where the credentials are saved after a successful test.
@@ -62,6 +65,25 @@ public final class LoginModel {
         return !ServerCredentials.protectsAPIKey(url)
     }
 
+    /// Plain http to a private address or local name (not Tailscale): needs the user's consent.
+    public var exposesKeyOnLocalNetwork: Bool {
+        guard let url = ServerCredentials.normalizedServerURL(from: server) else { return false }
+        return ServerCredentials.exposesAPIKeyOnLocalNetwork(url)
+    }
+
+    /// Plain http over Tailscale or to this device: encrypted by the tunnel, or never on a network.
+    public var isTunnelHTTP: Bool { isUnencrypted && !isRefusedHTTP && !exposesKeyOnLocalNetwork }
+
+    public func confirmUnencrypted() {
+        consentedServer = ServerCredentials.normalizedServerURL(from: server)
+        asksForUnencryptedConsent = false
+        connect()
+    }
+
+    public func declineUnencrypted() {
+        asksForUnencryptedConsent = false
+    }
+
     public var canConnect: Bool {
         !isConnecting
             && !server.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -77,6 +99,10 @@ public final class LoginModel {
     /// Tests the connection, saves on success and calls `onConnect`. Awaitable for tests.
     public func connectNow() async {
         guard !isConnecting else { return }
+        if exposesKeyOnLocalNetwork, consentedServer != ServerCredentials.normalizedServerURL(from: server) {
+            asksForUnencryptedConsent = true
+            return
+        }
         phase = .connecting
         do {
             let info = try await tester.connect(server: server, apiKey: apiKey, store: store)

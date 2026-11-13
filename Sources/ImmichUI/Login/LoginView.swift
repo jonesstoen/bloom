@@ -40,6 +40,15 @@ public struct LoginView: View {
             .scrollDismissesKeyboard(.interactively)
             #endif
             .animation(.default, value: model.phase)
+            .confirmationDialog(tr("Send Your API Key Unencrypted?"), isPresented: Binding(
+                get: { model.asksForUnencryptedConsent },
+                set: { if !$0 { model.declineUnencrypted() } }
+            ), titleVisibility: .visible) {
+                Button(tr("Connect Anyway"), role: .destructive) { model.confirmUnencrypted() }
+                Button(tr("Cancel"), role: .cancel) { model.declineUnencrypted() }
+            } message: {
+                Text(consentDialogMessage)
+            }
         }
     }
 
@@ -90,8 +99,12 @@ public struct LoginView: View {
                     Label(tr("Bloom only uses http on your own network or Tailscale. Use https for this server."),
                           systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
-                } else if model.isUnencrypted {
-                    Label(tr("Unencrypted, so only for a server on your own network or Tailscale."), systemImage: "lock.open")
+                } else if model.exposesKeyOnLocalNetwork {
+                    Label(tr("Unencrypted: anyone on the same Wi-Fi can read your API key. Only use this at home, or use https or Tailscale."),
+                          systemImage: "lock.open.fill")
+                        .foregroundStyle(.orange)
+                } else if model.isTunnelHTTP {
+                    Label(tr("Plain http, encrypted by Tailscale or kept on this device."), systemImage: "lock")
                 }
                 Text(tr("Create an API key in the Immich web app under Account Settings › API Keys. It is stored in the Keychain on this device."))
             }
@@ -145,6 +158,10 @@ public struct LoginView: View {
             }
             .disabled(!model.canConnect)
         }
+    }
+
+    private var consentDialogMessage: String {
+        tr("This server uses http, so your API key and photos are sent unencrypted. On your own network that's usually fine, but on other Wi-Fi networks (hotels, cafés, work) others can read the key and get full access to your library. Use https or Tailscale if you can.")
     }
 
     private func connect() {
