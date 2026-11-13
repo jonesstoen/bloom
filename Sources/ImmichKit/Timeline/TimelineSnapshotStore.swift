@@ -126,7 +126,7 @@ enum TimelineSnapshotValidation {
             let bucket = month.bucket
             guard !bucket.id.isEmpty, bucket.id.utf8.count <= 512,
                   (1...9999).contains(bucket.year), (1...12).contains(bucket.month),
-                  bucket.count >= 0, bucket.count <= 5_000_000 - count,
+                  bucket.count >= 0, bucket.count <= TimeBucket.maxAssets - count,
                   monthIDs.insert(bucket.id).inserted,
                   bucketDates.insert("\(bucket.year)-\(bucket.month)").inserted else { return false }
             count += bucket.count

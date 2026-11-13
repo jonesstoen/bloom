@@ -72,10 +72,14 @@ public struct LiveImmichService: ImmichService {
         switch output {
         case .ok(let ok):
             guard case .json(let dtos) = ok.body else { throw ImmichServiceError.invalidResponse }
+            var total = 0
             return try dtos.map { dto in
-                guard let bucket = TimeBucket(key: dto.timeBucket, count: dto.count) else {
+                // Each count is range-checked by TimeBucket; the running total keeps sums from overflowing.
+                guard let bucket = TimeBucket(key: dto.timeBucket, count: dto.count),
+                      bucket.count <= TimeBucket.maxAssets - total else {
                     throw ImmichServiceError.invalidResponse
                 }
+                total += bucket.count
                 return bucket
             }
         case .undocumented(let status, _):

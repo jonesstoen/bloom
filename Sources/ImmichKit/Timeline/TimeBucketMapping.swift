@@ -9,7 +9,7 @@ extension Asset {
         let required = [
             dto.fileCreatedAt.count, dto.duration.count, dto.isFavorite.count, dto.isImage.count,
             dto.isTrashed.count, dto.livePhotoVideoId.count, dto.localOffsetHours.count,
-            dto.ratio.count, dto.thumbhash.count, dto.visibility.count,
+            dto.ratio.count, dto.thumbhash.count, dto.visibility.count, dto.projectionType.count,
         ]
         let optional = [dto.city?.count, dto.country?.count, dto.latitude?.count, dto.longitude?.count]
         guard required.allSatisfy({ $0 == count }), optional.allSatisfy({ $0 == nil || $0 == count }) else {

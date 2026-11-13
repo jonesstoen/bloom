@@ -112,6 +112,16 @@ final class TimeBucketMappingTests: XCTestCase {
         }
     }
 
+    func testShortProjectionColumnIsInvalidResponseNotACrash() throws {
+        var dto = try JSONDecoder().decode(
+            Components.Schemas.TimeBucketAssetResponseDto.self, from: Data(Self.bucketJSON.utf8)
+        )
+        dto.projectionType = []
+        XCTAssertThrowsError(try Asset.assets(from: dto)) { error in
+            XCTAssertEqual(error as? ImmichServiceError, .invalidResponse)
+        }
+    }
+
     func testBadTimestampIsInvalidResponse() throws {
         var dto = try JSONDecoder().decode(
             Components.Schemas.TimeBucketAssetResponseDto.self, from: Data(Self.bucketJSON.utf8)
@@ -125,6 +135,11 @@ final class TimeBucketMappingTests: XCTestCase {
         XCTAssertEqual(TimeBucket(key: "2023-12-01T00:00:00.000Z", count: 1)?.month, 12)
         XCTAssertNil(TimeBucket(key: "2024-13-01", count: 1))
         XCTAssertNil(TimeBucket(key: "garbage", count: 1))
+        XCTAssertNil(TimeBucket(key: "2024-03-01", count: -1), "negative counts would break the grid index")
+        XCTAssertNil(TimeBucket(key: "2024-03-01", count: Int.max), "huge counts would overflow sums")
+        XCTAssertNil(TimeBucket(key: "0000-03-01", count: 1))
+        XCTAssertNil(TimeBucket(key: "99999999-03-01", count: 1))
+        XCTAssertNotNil(TimeBucket(key: "2024-03-01", count: TimeBucket.maxAssets))
         XCTAssertEqual(TimeBucket.key(year: 987, month: 7), "0987-07-01")
         XCTAssertEqual(TimeBucket(id: "x", year: 2024, month: 2, count: 0).startDate, utc(2024, 2, 1, 0))
     }
@@ -158,6 +173,21 @@ final class LiveTimelineRequestTests: XCTestCase {
         XCTAssertEqual(q["visibility"], "timeline")
         XCTAssertEqual(q["withStacked"], "true")
         XCTAssertNil(q["albumId"])
+    }
+
+    func testHostileBucketCountsAreRejected() async throws {
+        let half = Int.max / 2 + 1
+        for body in [#"[{"timeBucket":"2024-03-01","count":\#(half)},{"timeBucket":"2024-01-01","count":\#(half)}]"#,
+                     #"[{"timeBucket":"2024-03-01","count":-5}]"#,
+                     #"[{"timeBucket":"2024-03-01","count":4000000},{"timeBucket":"2024-01-01","count":4000000}]"#] {
+            let (service, _) = try service { _ in (200, "application/json", body) }
+            do {
+                _ = try await service.timeBuckets(options: .library)
+                XCTFail("accepted \(body)")
+            } catch {
+                XCTAssertEqual(error as? ImmichServiceError, .invalidResponse, body)
+            }
+        }
     }
 
     func testTimeBucketRequestPassesKeyAndFilters() async throws {

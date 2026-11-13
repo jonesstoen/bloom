@@ -16,10 +16,17 @@ public struct TimeBucket: Sendable, Hashable, Identifiable, Codable {
         self.count = count
     }
 
-    /// Builds a bucket from the server key (`"YYYY-MM-DD"` or a full ISO timestamp). `nil` if unparseable.
+    /// Most assets one month or a whole library may report. Server counts feed integer sums and
+    /// layout heights, so an absurd count must be refused instead of overflowing (a crash).
+    /// The same limit applies to cached snapshots (`TimelineSnapshotValidation`).
+    public static let maxAssets = 5_000_000
+
+    /// Builds a bucket from the server key (`"YYYY-MM-DD"` or a full ISO timestamp). `nil` if
+    /// unparseable, or if the year or count is out of range.
     public init?(key: String, count: Int) {
         let parts = key.prefix(10).split(separator: "-")
-        guard parts.count == 3, let year = Int(parts[0]), let month = Int(parts[1]), (1...12).contains(month)
+        guard parts.count == 3, let year = Int(parts[0]), let month = Int(parts[1]),
+              (1...9999).contains(year), (1...12).contains(month), (0...Self.maxAssets).contains(count)
         else { return nil }
         self.init(id: key, year: year, month: month, count: count)
     }
