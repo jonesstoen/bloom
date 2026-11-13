@@ -47,10 +47,13 @@ extension LiveImmichService {
     public func mediaRequest(_ kind: MediaRequest.Kind, assetID: String) async throws -> MediaRequest {
         guard !assetID.isEmpty else { throw ImmichServiceError.invalidResponse }
         guard credentials.protectsAPIKey else { throw ImmichServiceError.insecureConnection }
-        let base = credentials.apiBaseURL.appendingPathComponent("assets").appendingPathComponent(assetID)
-        let url = switch kind {
-        case .original: base.appendingPathComponent("original")
-        case .videoPlayback: base.appendingPathComponent("video").appendingPathComponent("playback")
+        // The ID is escaped like every other path segment: these requests carry the API key.
+        let suffix = switch kind {
+        case .original: "original"
+        case .videoPlayback: "video/playback"
+        }
+        guard let url = URL(string: credentials.apiBaseURL.absoluteString + "/assets/\(Self.pathComponent(assetID))/\(suffix)") else {
+            throw ImmichServiceError.invalidResponse
         }
         return MediaRequest(
             kind: kind, assetID: assetID, url: url,

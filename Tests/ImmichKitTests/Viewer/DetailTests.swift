@@ -363,6 +363,12 @@ final class LiveDetailTests: XCTestCase {
         XCTAssertEqual(original.url.absoluteString, "https://photos.example.com/api/assets/a1/original")
         XCTAssertFalse(original.description.contains("\"k\""))
         XCTAssertTrue(transport.requests.isEmpty, "building a media request does not contact the server")
+        // IDs come from the server; they stay one escaped segment and can't reach another endpoint.
+        let hostile = try await service.mediaRequest(.original, assetID: "x/../../users/me?y#z")
+        XCTAssertEqual(hostile.url.absoluteString, "https://photos.example.com/api/assets/x%2F..%2F..%2Fusers%2Fme%3Fy%23z/original")
+        let dots = try await service.mediaRequest(.videoPlayback, assetID: "..")
+        XCTAssertEqual(dots.url.absoluteString, "https://photos.example.com/api/assets/%2E%2E/video/playback")
+        XCTAssertEqual(LiveImmichService.pathComponent("."), "%2E")
 
         let live = Asset(id: "a1", kind: .image, takenAt: Date(), livePhotoVideoId: "motion")
         let liveRequest = try await service.playbackRequest(for: live)

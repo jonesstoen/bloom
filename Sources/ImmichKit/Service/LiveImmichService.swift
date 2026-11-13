@@ -219,8 +219,11 @@ public struct LiveImmichService: ImmichService {
         }
     }
 
+    /// One path segment from an ID. "/", "?" and "#" are escaped so an ID can't add segments or
+    /// a query, and "." / ".." are escaped so it can't step up to another endpoint.
     static func pathComponent(_ value: String) -> String {
-        value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#"))) ?? value
+        if value == "." || value == ".." { return String(repeating: "%2E", count: value.count) }
+        return value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#"))) ?? value
     }
 
     static func visibility(_ value: TimelineOptions.Visibility) -> Components.Schemas.AssetVisibility {
