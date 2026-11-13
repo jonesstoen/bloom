@@ -126,7 +126,7 @@ final class PhotosLookTests: XCTestCase {
         )
         defer { SelectionShareFiles.remove(share.directory) }
 
-        XCTAssertEqual(share.urls.map(\.lastPathComponent), ["IMG_0001.HEIC", ".._a_b.jpg"])
+        XCTAssertEqual(share.urls.map(\.lastPathComponent), ["IMG_0001.HEIC", "_a_b.jpg"], "no hidden (leading-dot) names")
         XCTAssertNotEqual(share.urls[0].pathComponents.dropLast().last, share.urls[1].pathComponents.dropLast().last)
         for (url, asset) in zip(share.urls, [first, second]) {
             XCTAssertTrue(url.standardizedFileURL.path.hasPrefix(share.directory.standardizedFileURL.path + "/"))

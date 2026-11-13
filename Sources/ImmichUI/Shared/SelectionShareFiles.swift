@@ -104,14 +104,41 @@ enum SelectionShareFiles {
         try? FileManager.default.removeItem(at: directory)
     }
 
-    private static func safeName(for asset: Asset) -> String {
-        let name = (asset.originalFileName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "\\", with: "_")
-            .replacingOccurrences(of: "\0", with: "_")
-        guard name.isEmpty || name == "." || name == ".." else { return name }
+    /// A file name for the share sheet. Original names come from whoever uploaded the photo (for
+    /// shared albums, another person), so invisible and direction-changing characters are removed:
+    /// "IMG\u{202E}gpj.exe" would otherwise show as "IMGexe.jpg". Separators become "_", leading
+    /// dots (hidden files) are dropped, and the name stays within the 255-byte file-name limit.
+    static func safeName(for asset: Asset) -> String {
+        let unsafe: Set<Unicode.GeneralCategory> = [.control, .format, .lineSeparator, .paragraphSeparator,
+                                                    .surrogate, .privateUse, .unassigned]
+        var scalars = String.UnicodeScalarView()
+        // Zero-width (non-)joiners are format characters too, but harmless and needed for emoji
+        // sequences and some scripts.
+        let joiners: Set<Unicode.Scalar> = ["\u{200C}", "\u{200D}"]
+        for scalar in (asset.originalFileName ?? "").unicodeScalars
+        where joiners.contains(scalar) || !unsafe.contains(scalar.properties.generalCategory) {
+            scalars.append("/\\:".unicodeScalars.contains(scalar) ? "_" : scalar)
+        }
+        var name = String(scalars).trimmingCharacters(in: .whitespacesAndNewlines)
+        while name.hasPrefix(".") { name.removeFirst() }
+        name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.utf8.count > maxNameBytes { name = truncated(name) }
+        guard name.isEmpty else { return name }
         let fileExtension = asset.mimeType.flatMap { UTType(mimeType: $0)?.preferredFilenameExtension }
             ?? (asset.isVideo ? "mov" : "jpg")
         return "original." + fileExtension
+    }
+
+    /// Well under the 255-byte limit of APFS, leaving room for the system's own suffixes.
+    static let maxNameBytes = 200
+
+    /// Shortens the stem and keeps a short extension, cutting on character boundaries.
+    private static func truncated(_ name: String) -> String {
+        let ext = (name as NSString).pathExtension
+        let keepsExtension = !ext.isEmpty && ext.utf8.count <= 16
+        var stem = keepsExtension ? String(name.dropLast(ext.count + 1)) : name
+        let budget = maxNameBytes - (keepsExtension ? ext.utf8.count + 1 : 0)
+        while stem.utf8.count > budget { stem.removeLast() }
+        return keepsExtension ? stem + "." + ext : stem
     }
 }
