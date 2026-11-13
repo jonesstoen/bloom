@@ -1,8 +1,11 @@
 import Foundation
 
-/// Confirmed trash moves and items whose server state could not be established.
-/// A failed ID must never be treated as permanently deleted or retried automatically.
-public struct TrashResult: Sendable, Equatable {
+/// The outcome of a write that affects several assets (move to trash, restore).
+///
+/// `confirmedIDs` are the assets whose new server state is confirmed. `failedIDs` are the ones
+/// whose state could not be established: never treat them as done (for trash: never as
+/// permanently deleted) and never retry them automatically.
+public struct WriteResult: Sendable, Equatable {
     public let confirmedIDs: [String]
     public let failedIDs: [String]
 
@@ -11,6 +14,12 @@ public struct TrashResult: Sendable, Equatable {
         self.failedIDs = failedIDs
     }
 }
+
+/// Confirmed trash moves and items whose server state could not be established.
+public typealias TrashResult = WriteResult
+
+/// Only identities whose current server state confirms restoration are successful.
+public typealias RestoreResult = WriteResult
 
 public enum TrashError: Error, Sendable, Equatable, LocalizedError {
     case unavailable

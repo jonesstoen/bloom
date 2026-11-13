@@ -91,7 +91,7 @@ them (`LibraryScale.zoom`).
 | `ImmichAPI/` | Generated Immich client (do not edit by hand; see README) | `openapi-generator-config.yaml` |
 | `ImmichKit/Service/` | Talking to the server: the `ImmichService` protocol, the live service with its read, search and write operations | `ImmichService.swift`, `LiveImmichService.swift` |
 | `ImmichKit/Models/` | Plain domain types (`Asset`, `Album`, `Person`, details) | `Models.swift` |
-| `ImmichKit/Editing/` | Results and rules of changes: trash, restore, albums, Allow Changes | `EditingPermission.swift`, `TrashResult.swift`, `AlbumEditing.swift` |
+| `ImmichKit/Editing/` | Results and rules of changes: trash, restore, albums, Allow Changes | `EditingPermission.swift`, `WriteResult.swift`, `AlbumEditing.swift` |
 | `ImmichKit/Timeline/` | Month buckets and the timeline actor | `Timeline.swift` |
 | `ImmichKit/ImageCache/` | Thumbnail memory/disk cache, loader, prefetcher | `ImageLoader.swift` |
 | `ImmichKit/Credentials/` | Server URL + API key in the Keychain, connection test | `CredentialStore.swift` |
