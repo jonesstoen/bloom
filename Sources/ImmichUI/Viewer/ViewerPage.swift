@@ -20,6 +20,8 @@ struct ViewerPage: View {
         ZStack {
             if model.asset.isVideo, let request = model.playback {
                 VideoPlaybackView(request: request, isActive: isActive && livePlaybackAllowed)
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: onTap)
             } else if let image = model.displayImage {
                 #if os(iOS)
                 ZoomableImage(image: image, isActive: isActive,

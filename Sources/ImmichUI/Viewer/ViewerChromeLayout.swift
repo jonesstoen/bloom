@@ -1,34 +1,24 @@
 import SwiftUI
 
-/// The space the viewer's own bars cover, beyond the safe area. Videos pass it to the system player
-/// as extra safe area, so its scrubber sits above the thumbnail strip and buttons instead of behind
-/// them (measured on iOS 26: the transport bar moves by exactly the extra inset while the picture
-/// and the centre buttons stay put).
+/// Where the viewer's bottom bar (thumbnail strip and buttons) starts, in global coordinates, so a
+/// video page can put its controls just above it, like Photos. `nil` while the bars are hidden.
 struct ViewerChromeLayout: Equatable {
-    struct Screen: Equatable {
-        var height: CGFloat = 0
-        var safeArea = EdgeInsets()
-    }
-
-    var screen = Screen()
-    var topBarBottom: CGFloat = 0
     var bottomBarTop: CGFloat = 0
 
-    /// Small gap so the system controls don't touch the bars.
-    static let gap: CGFloat = 8
+    /// Space between the video controls and the thumbnail strip.
+    static let gap: CGFloat = 10
 
-    var insets: EdgeInsets {
-        let top = topBarBottom > 0 ? max(0, topBarBottom - screen.safeArea.top + Self.gap) : 0
-        let safeBottom = screen.height - screen.safeArea.bottom
-        let bottom = bottomBarTop > 0 && screen.height > 0 ? max(0, safeBottom - bottomBarTop + Self.gap) : 0
-        return EdgeInsets(top: top, leading: 0, bottom: bottom, trailing: 0)
+    /// Bottom padding inside a view whose bottom edge is at `containerBottom` (global), so its
+    /// bottom-aligned content ends `gap` above the bar. `nil` if the bar hasn't been measured.
+    static func padding(containerBottom: CGFloat, barTop: CGFloat?) -> CGFloat? {
+        guard let barTop, barTop > 0, containerBottom > 0 else { return nil }
+        return max(0, containerBottom - barTop + gap)
     }
 }
 
 extension EnvironmentValues {
-    /// Extra insets for content that draws its own controls under the viewer's bars (videos).
-    /// Zero while the bars are hidden.
-    @Entry var viewerChromeInsets = EdgeInsets()
+    /// The global y where the viewer's bottom bar starts, or `nil` while the bars are hidden.
+    @Entry var viewerBottomBarTop: CGFloat?
 }
 
 /// Tells the viewer when the current page's video starts or stops playing, so the bars fade out

@@ -23,7 +23,7 @@ public struct AssetViewer: View {
     /// The pages the pager builds (see `ViewerPageWindow`).
     @State private var pageWindow: Range<Int>
     @State private var chromeVisible = true
-    /// Where the bars end, measured, so the system video controls can stay clear of them.
+    /// Where the bottom bar starts, measured, so video controls can sit just above it.
     @State private var chromeLayout = ViewerChromeLayout()
     @State private var showsInfo = false
     @State private var shareActive = false
@@ -82,19 +82,15 @@ public struct AssetViewer: View {
             Color.black.ignoresSafeArea()
             pager.disabled(trashInteractionBlocked)
                 .modifier(ViewerDismissTransform(motion: dismissMotion))
-                .environment(\.viewerChromeInsets, chromeVisible ? chromeLayout.insets : EdgeInsets())
+                .environment(\.viewerBottomBarTop, chromeVisible && chromeLayout.bottomBarTop > 0 ? chromeLayout.bottomBarTop : nil)
                 .environment(\.viewerVideoPlayback, ViewerVideoPlayback { playing in
                     guard chromeVisible == playing else { return }
                     withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { chromeVisible = !playing }
                 })
         }
-        .onGeometryChange(for: ViewerChromeLayout.Screen.self) { proxy in
-            ViewerChromeLayout.Screen(height: proxy.frame(in: .global).maxY, safeArea: proxy.safeAreaInsets)
-        } action: { chromeLayout.screen = $0 }
         .overlay(alignment: .top) {
             if chromeVisible {
                 topBar.transition(.opacity).disabled(trashInteractionBlocked)
-                    .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { chromeLayout.topBarBottom = $0 }
                     .modifier(ViewerDismissChromeOpacity(motion: dismissMotion))
             }
         }

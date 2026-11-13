@@ -2,32 +2,20 @@ import SwiftUI
 import XCTest
 @testable import ImmichUI
 
-/// The system video controls get the space the viewer's bars cover beyond the safe area.
+/// Video controls sit a small gap above the viewer's bottom bar, measured in global coordinates.
 final class ViewerChromeLayoutTests: XCTestCase {
-    func testInsetsCoverTheBarsBeyondTheSafeArea() {
-        var layout = ViewerChromeLayout()
-        // iPhone 17 Pro: 874 pt tall, 62 pt status area, 34 pt home indicator.
-        layout.screen = .init(height: 874, safeArea: EdgeInsets(top: 62, leading: 0, bottom: 34, trailing: 0))
-        layout.topBarBottom = 130
-        layout.bottomBarTop = 660
-        let insets = layout.insets
-        XCTAssertEqual(insets.top, 130 - 62 + ViewerChromeLayout.gap)
-        XCTAssertEqual(insets.bottom, (874 - 34) - 660 + ViewerChromeLayout.gap)
+    func testControlsEndAGapAboveTheBar() {
+        // A page reaching the bottom of an 874 pt screen, the bar (strip + buttons) from y 690.
+        XCTAssertEqual(ViewerChromeLayout.padding(containerBottom: 874, barTop: 690), 874 - 690 + ViewerChromeLayout.gap)
     }
 
-    func testNothingMeasuredMeansNoExtraInsets() {
-        XCTAssertEqual(ViewerChromeLayout().insets, EdgeInsets())
-        var layout = ViewerChromeLayout()
-        layout.screen = .init(height: 874, safeArea: EdgeInsets(top: 62, leading: 0, bottom: 34, trailing: 0))
-        XCTAssertEqual(layout.insets, EdgeInsets())
+    func testHiddenOrUnmeasuredBarsGiveNoControls() {
+        XCTAssertNil(ViewerChromeLayout.padding(containerBottom: 874, barTop: nil))
+        XCTAssertNil(ViewerChromeLayout.padding(containerBottom: 874, barTop: 0))
+        XCTAssertNil(ViewerChromeLayout.padding(containerBottom: 0, barTop: 690))
     }
 
-    func testBarsInsideTheSafeAreaNeverGiveNegativeInsets() {
-        var layout = ViewerChromeLayout()
-        layout.screen = .init(height: 874, safeArea: EdgeInsets(top: 62, leading: 0, bottom: 34, trailing: 0))
-        layout.topBarBottom = 20
-        layout.bottomBarTop = 870
-        XCTAssertGreaterThanOrEqual(layout.insets.top, 0)
-        XCTAssertGreaterThanOrEqual(layout.insets.bottom, 0)
+    func testABarBelowThePageNeverGivesNegativePadding() {
+        XCTAssertEqual(ViewerChromeLayout.padding(containerBottom: 600, barTop: 700), 0)
     }
 }
