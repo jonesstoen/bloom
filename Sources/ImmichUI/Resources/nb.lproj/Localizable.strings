@@ -242,8 +242,6 @@
 "Access" = "Tilgang";
 "View Only" = "Bare se";
 "View and Organize" = "Se og endre";
-"Bloom keeps the key only in the Keychain on this device." = "Bloom lagrer nøkkelen bare i nøkkelringen på denne enheten.";
-"How to Create the Key" = "Slik lager du nøkkelen";
 "Open Immich on the web and go to Account Settings › API Keys." = "Åpne Immich på nettet og gå til Kontoinnstillinger › API-nøkler.";
 "Create a new key and name it, for example Bloom." = "Lag en ny nøkkel og gi den et navn, for eksempel Bloom.";
 "Select only the permissions below." = "Kryss bare av for tillatelsene nedenfor.";
@@ -251,8 +249,15 @@
 "After signing in, turn on Allow Changes in the account menu." = "Slå på Tillat endringer i kontomenyen etter innlogging.";
 "Permissions" = "Tillatelser";
 "Browse, search, play videos and share" = "Bla, søke, se video og dele";
-"Also favorites, Recently Deleted and albums" = "I tillegg favoritter, Nylig slettet og album";
 "Can't change, delete or upload anything" = "Kan ikke endre, slette eller laste opp noe";
 "Can't upload anything" = "Kan ikke laste opp noe";
 "A key with only these permissions can't change, delete or upload anything, even if it leaks." = "En nøkkel med bare disse tillatelsene kan ikke endre, slette eller laste opp noe, selv om den skulle komme på avveie.";
 "Bloom only moves items to Recently Deleted, where they can be restored. But a leaked key with asset.delete could delete items permanently, so choose View Only if you don't need changes." = "Bloom flytter bare til Nylig slettet, der alt kan gjenopprettes. Men en nøkkel med asset.delete som kommer på avveie, kan slette for godt, så velg Bare se hvis du ikke trenger å endre noe.";
+"How to Create the Key in Immich" = "Slik lager du nøkkelen i Immich";
+"You create the key yourself in Immich on the web. Bloom keeps it only in the Keychain on this device." = "Du lager nøkkelen selv i Immich på nettet. Bloom lagrer den bare i nøkkelringen på denne enheten.";
+"Everything in View Only, plus favorites, trash and albums" = "Alt i Bare se, pluss favoritter, papirkurv og album";
+"Bloom can't create the key for you. You make it yourself in Immich on the web and paste it into Bloom. This page only explains how." = "Bloom kan ikke lage nøkkelen for deg. Du lager den selv i Immich på nettet og limer den inn i Bloom. Denne siden forklarer bare hvordan.";
+"Steps" = "Slik gjør du det";
+"For Viewing" = "For å se";
+"Also for Changes" = "I tillegg for endringer";
+"Create the Key in Immich" = "Lag nøkkelen i Immich";

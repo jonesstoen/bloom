@@ -8,6 +8,11 @@ struct KeySetupView: View {
     var body: some View {
         Form {
             Section {
+                Label(tr("Bloom can't create the key for you. You make it yourself in Immich on the web and paste it into Bloom. This page only explains how."),
+                      systemImage: "info.circle")
+                    .foregroundStyle(.secondary)
+            }
+            Section {
                 step(1, tr("Open Immich on the web and go to Account Settings › API Keys."))
                 step(2, tr("Create a new key and name it, for example Bloom."))
                 step(3, tr("Select only the permissions below."))
@@ -15,24 +20,34 @@ struct KeySetupView: View {
                 if access == .organize {
                     step(5, tr("After signing in, turn on Allow Changes in the account menu."))
                 }
-            }
-            Section {
-                ForEach(access.permissions, id: \.self) { permission in
-                    Text(verbatim: permission)
-                        .font(.body.monospaced())
-                        .textSelection(.enabled)
-                }
             } header: {
-                Text(tr("Permissions"))
+                Text(tr("Steps"))
             } footer: {
                 Text(Self.refusesInDetail(access))
             }
+            permissionSection(APIKeyPermissions.readOnly,
+                              header: access == .organize ? tr("For Viewing") : tr("Permissions"))
+            if access == .organize {
+                permissionSection(APIKeyPermissions.changes, header: tr("Also for Changes"))
+            }
         }
         .formStyle(.grouped)
-        .navigationTitle(Self.title(of: access))
+        .navigationTitle(tr("Create the Key in Immich"))
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+    }
+
+    private func permissionSection(_ permissions: [String], header: String) -> some View {
+        Section {
+            ForEach(permissions, id: \.self) { permission in
+                Text(verbatim: permission)
+                    .font(.body.monospaced())
+                    .textSelection(.enabled)
+            }
+        } header: {
+            Text(header)
+        }
     }
 
     private func step(_ number: Int, _ text: String) -> some View {
@@ -50,7 +65,7 @@ struct KeySetupView: View {
     static func allows(_ access: APIKeyAccess) -> String {
         switch access {
         case .view: tr("Browse, search, play videos and share")
-        case .organize: tr("Also favorites, Recently Deleted and albums")
+        case .organize: tr("Everything in View Only, plus favorites, trash and albums")
         }
     }
 

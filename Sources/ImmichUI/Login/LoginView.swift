@@ -133,13 +133,13 @@ public struct LoginView: View {
             } icon: {
                 Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
             }
-            NavigationLink(tr("How to Create the Key")) {
+            NavigationLink(tr("How to Create the Key in Immich")) {
                 KeySetupView(access: access)
             }
         } header: {
             Text(tr("Access"))
         } footer: {
-            Text(tr("Bloom keeps the key only in the Keychain on this device."))
+            Text(tr("You create the key yourself in Immich on the web. Bloom keeps it only in the Keychain on this device."))
         }
     }
 
