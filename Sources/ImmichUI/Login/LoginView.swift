@@ -24,8 +24,8 @@ public struct LoginView: View {
         NavigationStack {
             Form {
                 header
-                keyGuide
                 fields
+                keyGuide
                 if let error = model.error {
                     errorSection(error)
                 }
@@ -112,52 +112,35 @@ public struct LoginView: View {
         }
     }
 
-    /// Which key to create: the access level, what it means, and the permissions to select in Immich.
+    /// Which key to create: the access level and, in short, what such a key can and can't do.
+    /// The steps and the exact permissions are one tap away, so the form stays short.
     private var keyGuide: some View {
         Section {
             Picker(tr("Access"), selection: $access) {
                 ForEach(APIKeyAccess.allCases) { level in
-                    Text(Self.title(of: level)).tag(level)
+                    Text(KeySetupView.title(of: level)).tag(level)
                 }
             }
             .pickerStyle(.segmented)
-            .listRowSeparator(.hidden)
-            VStack(alignment: .leading, spacing: 8) {
-                Text(Self.summary(of: access))
-                Text(tr("Create it in Immich under Account Settings › API Keys and select:"))
-                    .foregroundStyle(.secondary)
-                permissionList(access.permissions)
+            .labelsHidden()
+            Label {
+                Text(KeySetupView.allows(access))
+            } icon: {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
             }
-            .font(.subheadline)
+            Label {
+                Text(KeySetupView.refuses(access))
+            } icon: {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+            }
+            NavigationLink(tr("How to Create the Key")) {
+                KeySetupView(access: access)
+            }
         } header: {
-            Text(tr("Which API Key?"))
+            Text(tr("Access"))
         } footer: {
             Text(tr("Bloom keeps the key only in the Keychain on this device."))
         }
-    }
-
-    static func title(of access: APIKeyAccess) -> String {
-        switch access {
-        case .view: tr("View Only")
-        case .organize: tr("View and Organize")
-        }
-    }
-
-    static func summary(of access: APIKeyAccess) -> String {
-        switch access {
-        case .view:
-            tr("Browse, search, play videos and share. The key can't change, delete or upload anything, even if it leaks.")
-        case .organize:
-            tr("Also favorites, moving to Recently Deleted and restoring, and albums. Turn on Allow Changes in the account menu after signing in. Nothing is deleted permanently.")
-        }
-    }
-
-    private func permissionList(_ permissions: [String]) -> some View {
-        Text(verbatim: permissions.joined(separator: "  "))
-            .font(.caption.monospaced())
-            .foregroundStyle(.secondary)
-            .textSelection(.enabled)
-            .fixedSize(horizontal: false, vertical: true)
     }
 
     private func errorSection(_ error: LoginError) -> some View {

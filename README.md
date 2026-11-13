@@ -99,7 +99,7 @@ not "all". A leaked read-only key can't delete, edit or share anything.
 | Browsing, search, map, memories, videos, sharing originals | `asset.read`, `asset.view`, `asset.download`, `album.read`, `person.read`, `map.read`, `memory.read` |
 | Also for **Allow Changes** (favorites, trash and restore, new albums, add to album) | `asset.update`, `asset.delete`, `album.create`, `albumAsset.create` |
 
-The lists live in `APIKeyPermissions` (ImmichKit) and are shown at the top of the sign-in screen;
+The lists live in `APIKeyPermissions` (ImmichKit) and are shown on the sign-in screen (Access, and How to Create the Key);
 `APIKeyPermissionTests` checks them against the OpenAPI spec. Without a permission the matching
 feature shows an error, and the rest of the app keeps working.
 
