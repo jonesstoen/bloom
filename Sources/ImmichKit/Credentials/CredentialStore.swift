@@ -81,7 +81,11 @@ public struct KeychainStorage: SecureStorage {
 
     public func set(_ data: Data, for account: String) throws {
         let query = baseQuery(account: account)
-        let update: [String: Any] = [kSecValueData as String: data]
+        var update: [String: Any] = [kSecValueData as String: data]
+        #if os(iOS)
+        // Also tightens an item saved by an older build with a weaker accessibility class.
+        update[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        #endif
         let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
         switch status {
         case errSecSuccess:
