@@ -28,15 +28,18 @@ final class ViewerPlaceholderTests: XCTestCase {
     }
 
     func testLoadedThumbnailBytesShowWhileThePreviewLoads() async throws {
-        let mock = MockImmichService(library: .standard, latency: .milliseconds(300))
+        // Each mock request takes 500 ms, so the in-memory thumbnail has ample time to decode even
+        // on a loaded machine. The order is what is tested: whatever appears first must be the
+        // thumbnail, not the preview. (A 250 ms wall-clock window here failed under load.)
+        let mock = MockImmichService(library: .standard, latency: .milliseconds(500))
         let loader = ImageLoader(service: mock, disk: nil)
         _ = try await loader.data(for: thumbnailKey)
         let model = ViewerAssetModel(asset: asset, service: mock, loader: loader)
         let load = Task { await model.load() }
-        let deadline = ContinuousClock.now + .milliseconds(250)
+        let deadline = ContinuousClock.now + .seconds(5)
         while model.displayImage == nil, ContinuousClock.now < deadline { await Task.yield() }
         XCTAssertNotNil(model.displayImage, "the thumbnail in memory shows while the preview downloads")
-        XCTAssertNil(model.image)
+        XCTAssertNil(model.image, "the thumbnail must appear before the preview")
         await load.value
         XCTAssertNotNil(model.image)
     }
