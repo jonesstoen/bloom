@@ -72,6 +72,20 @@ struct GridCellIndex {
     /// The month (bucket id) containing a loaded asset.
     func monthID(ofAsset assetID: String) -> String? { monthIDByAssetID[assetID] }
 
+    /// Viewer pages stay within contiguous loaded months, in the exact grid order.
+    /// Reuse the indexed arrays instead of flattening days again on the tap path.
+    func viewerAssets(around assetID: String) -> [Asset] {
+        guard let monthID = monthIDByAssetID[assetID], let index = monthIndexByID[monthID] else { return [] }
+        var lower = index
+        var upper = index
+        while lower > 0 && months[lower - 1].isLoaded { lower -= 1 }
+        while upper + 1 < months.count && months[upper + 1].isLoaded { upper += 1 }
+        var result: [Asset] = []
+        result.reserveCapacity(monthCellCounts[lower...upper].reduce(0, +))
+        for assets in monthAssets[lower...upper] { result.append(contentsOf: assets) }
+        return result
+    }
+
     /// The month containing cell `index` and the position within it.
     private func cell(at index: Int) -> (month: Int, offset: Int)? {
         guard index >= 0, index < cellCount else { return nil }

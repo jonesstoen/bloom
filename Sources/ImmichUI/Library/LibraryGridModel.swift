@@ -137,12 +137,7 @@ public final class LibraryGridModel {
 
     /// Only expose contiguous loaded months, so paging never jumps across an unloaded gap.
     public func viewerAssets(around assetID: String) -> [Asset] {
-        guard let index = months.firstIndex(where: { $0.assets.contains(where: { $0.id == assetID }) }) else { return [] }
-        var lower = index
-        var upper = index
-        while lower > 0 && months[lower - 1].isLoaded { lower -= 1 }
-        while upper + 1 < months.count && months[upper + 1].isLoaded { upper += 1 }
-        return months[lower...upper].flatMap(\.assets)
+        cells.viewerAssets(around: assetID)
     }
 
     // MARK: Loading
