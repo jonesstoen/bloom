@@ -138,22 +138,57 @@ final class VideoTransport {
         if player.timeControlStatus == .paused { player.play() } else { player.pause() }
     }
 
+    // Smooth scrubbing (Apple QA1820): one seek at a time, each to wherever the finger is when
+    // the previous one finishes. Starting a seek per drag event cancels the one before, so over the
+    // network no frame appeared until the finger stopped and the video jumped.
+    @ObservationIgnored private var seeking = false
+    @ObservationIgnored private var resumesAfterScrubbing = false
+
     func scrub(to fraction: Double) {
         guard duration > 0 else { return }
-        let seconds = min(1, max(0, fraction)) * duration
-        scrubbing = seconds
-        player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        if scrubbing == nil {
+            resumesAfterScrubbing = player.timeControlStatus != .paused
+            player.pause()
+        }
+        scrubbing = min(1, max(0, fraction)) * duration
+        if !seeking { seekToFinger(exact: false) }
     }
 
     func endScrubbing() {
-        if let scrubbing { current = scrubbing }
+        guard let target = scrubbing else { return }
+        current = target
         scrubbing = nil
+        // Land exactly where the finger let go, then carry on if it was playing.
+        let resume = resumesAfterScrubbing
+        resumesAfterScrubbing = false
+        player.seek(to: Self.time(target), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+            guard finished else { return }
+            Task { @MainActor in if resume { self?.player.play() } }
+        }
     }
+
+    /// While dragging, a frame near the finger (within a quarter second) is good enough and much
+    /// faster to reach than an exact one, so the picture keeps up.
+    private func seekToFinger(exact: Bool) {
+        guard let target = scrubbing else { return }
+        seeking = true
+        let tolerance = exact ? CMTime.zero : CMTime(seconds: 0.25, preferredTimescale: 600)
+        player.seek(to: Self.time(target), toleranceBefore: tolerance, toleranceAfter: tolerance) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.seeking = false
+                if let latest = self.scrubbing, latest != target { self.seekToFinger(exact: false) }
+            }
+        }
+    }
+
+    private static func time(_ seconds: Double) -> CMTime { CMTime(seconds: seconds, preferredTimescale: 600) }
 
     func step(by seconds: Double) {
         guard duration > 0 else { return }
-        scrub(to: (current + seconds) / duration)
-        endScrubbing()
+        let target = min(duration, max(0, current + seconds))
+        current = target
+        player.seek(to: Self.time(target), toleranceBefore: .zero, toleranceAfter: .zero)
     }
 }
 
