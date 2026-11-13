@@ -109,9 +109,10 @@ public final class ViewerAssetModel {
         isLoaded = false
         error = nil
         defer { if generation == started { isLoading = false } }
-        if displayImage == nil, let data = await loader.memoryData(for: ImageKey(assetID: asset.id, size: .thumbnail)) {
+        if displayImage == nil, let data = await loader.memoryData(for: ImageKey(assetID: asset.id, size: .thumbnail)),
+           !Task.isCancelled {
             let thumbnail = await ThumbnailDecoder.decode(data)
-            if generation == started, image == nil { placeholder = thumbnail }
+            if !Task.isCancelled, generation == started, image == nil { placeholder = thumbnail }
         }
         do {
             try Task.checkCancellation()

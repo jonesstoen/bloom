@@ -29,11 +29,21 @@ public final class ThumbnailImageCache {
 /// Decodes encoded image data (JPEG/WebP/HEIC) off the main actor.
 public enum ThumbnailDecoder {
     /// Decodes `data`, downsampling so the long side is at most `maxPixelSize`
-    /// (applying the EXIF orientation). `nil` if the data is not an image.
+    /// (applying the EXIF orientation). `nil` for invalid images or cancelled callers.
     public static func decode(_ data: Data, maxPixelSize: Int = 512) async -> CGImage? {
-        await Task.detached(priority: .userInitiated) {
-            decodeNow(data, maxPixelSize: maxPixelSize)
-        }.value
+        guard !Task.isCancelled else { return nil }
+        let worker = Task.detached(priority: .userInitiated) {
+            guard !Task.isCancelled else { return nil as CGImage? }
+            let image = decodeNow(data, maxPixelSize: maxPixelSize)
+            // ImageIO's synchronous decode cannot be interrupted once it has begun.
+            return Task.isCancelled ? nil : image
+        }
+        return await withTaskCancellationHandler {
+            let image = await worker.value
+            return Task.isCancelled ? nil : image
+        } onCancel: {
+            worker.cancel()
+        }
     }
 
     static func decodeNow(_ data: Data, maxPixelSize: Int) -> CGImage? {
