@@ -127,6 +127,27 @@ final class BackupStagingTests: XCTestCase {
         XCTAssertEqual(contents(of: directory), [])
     }
 
+    /// Out of room halfway: the read is stopped, so the rest of the file isn't downloaded for nothing.
+    func testFailedStagingStopsTheRead() async throws {
+        let directory = makeDirectory()
+        let library = FakePhotoLibrary()
+        let margin = BackupStaging.margin
+        let resource = DeviceResource(type: .video, filename: "IMG_8.MOV")
+        library.setData(Array(repeating: Data(repeating: 7, count: 8), count: 20), for: resource)
+        let staging = BackupStaging(directory: directory, freeSpace: { margin + 40 }, recheckInterval: 16,
+                                    estimate: { _, _ in 10 })
+
+        do {
+            _ = try await staging.stage(resource, of: asset([resource], isVideo: true), from: library, allowNetwork: true)
+            XCTFail("Expected notEnoughSpace")
+        } catch let error as BackupStagingError {
+            XCTAssertEqual(error, .notEnoughSpace)
+        }
+        // Space runs out at 48 bytes, the sixth chunk; the reader stops at its next chunk.
+        XCTAssertEqual(library.deliveredChunks(of: resource), 6)
+        XCTAssertEqual(contents(of: directory), [])
+    }
+
     func testFailedReadRethrowsAndLeavesNoFile() async throws {
         let directory = makeDirectory()
         let library = FakePhotoLibrary()

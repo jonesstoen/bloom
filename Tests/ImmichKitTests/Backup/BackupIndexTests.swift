@@ -344,4 +344,71 @@ final class BackupIndexTests: XCTestCase {
         let reloaded = await BackupIndex(directory: directory).entry(for: "1")
         XCTAssertEqual(reloaded, uploaded)
     }
+
+    func testEntryWithoutNeedsLinkLoadsAsFalse() async throws {
+        let directory = makeDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        // What Task 1 wrote: `serverIDs`, but no `needsLink` key.
+        let json = """
+        {"entries":{"1":{"modificationDate":721692800,"checksums":["photo","aa","pairedVideo","bb"],\
+        "state":{"pending":{"reason":"needsUpload"}},"serverIDs":["photo","p-1","pairedVideo","v-1"]}},\
+        "selection":{"included":["A"],"excluded":[]}}
+        """
+        try Data(json.utf8).write(to: directory.appendingPathComponent("index.json"))
+
+        let entry = await BackupIndex(directory: directory).entry(for: "1")
+        XCTAssertEqual(entry, BackupEntry(
+            modificationDate: Date(timeIntervalSinceReferenceDate: 721_692_800),
+            checksums: [.photo: "aa", .pairedVideo: "bb"],
+            state: .pending(reason: .needsUpload),
+            serverIDs: [.photo: "p-1", .pairedVideo: "v-1"]))
+        XCTAssertEqual(entry?.needsLink, false)
+    }
+
+    func testNeedsLinkRoundTrips() async throws {
+        let directory = makeDirectory()
+        let index = BackupIndex(directory: directory)
+        var entry = sampleEntry(state: .pending(reason: .needsUpload))
+        entry.needsLink = true
+        await index.set(entry, for: "1")
+        try await index.save()
+        let reloaded = await BackupIndex(directory: directory).entry(for: "1")
+        XCTAssertEqual(reloaded?.needsLink, true)
+        XCTAssertEqual(reloaded, entry)
+    }
+
+    func testUpdateChangesOnlyTheSameVersionInsideTheIndex() async throws {
+        let directory = makeDirectory()
+        let index = BackupIndex(directory: directory)
+        let stored = sampleEntry(state: .pending(reason: .needsUpload))
+        await index.set(stored, for: "1")
+        try await index.save()
+        func change(_ entry: inout BackupEntry) {
+            entry.state = .backedUp(serverAssetID: "srv-9")
+            entry.serverIDs[.photo] = "srv-9"
+        }
+
+        let staleDate = await index.update("1", ifModificationDate: stored.modificationDate.addingTimeInterval(1),
+                                           checksums: stored.checksums, change)
+        let staleSums = await index.update("1", ifModificationDate: stored.modificationDate, checksums: [.photo: "aa"], change)
+        let missing = await index.update("2", ifModificationDate: stored.modificationDate, checksums: stored.checksums, change)
+        XCTAssertFalse(staleDate)
+        XCTAssertFalse(staleSums)
+        XCTAssertFalse(missing)
+        let unchanged = await index.entry(for: "1")
+        XCTAssertEqual(unchanged, stored)
+
+        // The change applies to what the index holds at that moment, not to a copy read earlier.
+        var meanwhile = stored
+        meanwhile.serverIDs = [.pairedVideo: "srv-8"]
+        await index.set(meanwhile, for: "1")
+        let wrote = await index.update("1", ifModificationDate: stored.modificationDate, checksums: stored.checksums, change)
+        XCTAssertTrue(wrote)
+        let current = await index.entry(for: "1")
+        XCTAssertEqual(current?.state, .backedUp(serverAssetID: "srv-9"))
+        XCTAssertEqual(current?.serverIDs, [.photo: "srv-9", .pairedVideo: "srv-8"])
+        try await index.saveIfChanged()
+        let reloaded = await BackupIndex(directory: directory).entry(for: "1")
+        XCTAssertEqual(reloaded, current)
+    }
 }

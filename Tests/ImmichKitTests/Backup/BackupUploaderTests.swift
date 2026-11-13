@@ -254,14 +254,6 @@ final class BackupUploaderTests: XCTestCase {
         await service.uploads.map(\.checksum)
     }
 
-    private func waitUntil(_ condition: @Sendable () async -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
-        let deadline = ContinuousClock.now + .seconds(20)
-        while !(await condition()) {
-            guard ContinuousClock.now < deadline else { return XCTFail("Timed out", file: file, line: line) }
-            try await Task.sleep(for: .milliseconds(5))
-        }
-    }
-
     // MARK: Uploading
 
     func testUploadsNewestFirstAndMarksBackedUp() async throws {
@@ -479,6 +471,7 @@ final class BackupUploaderTests: XCTestCase {
         let entry = await setup.index.entry(for: "l")
         XCTAssertEqual(entry?.state, .pending(reason: .needsUpload))
         XCTAssertEqual(entry?.serverIDs, [.photo: "P", .pairedVideo: "M"])
+        XCTAssertEqual(entry?.needsLink, true)
 
         await setup.service.setLinkFailure(nil)
         try await run(makeUploader(setup))
@@ -489,6 +482,105 @@ final class BackupUploaderTests: XCTestCase {
         XCTAssertEqual(links, ["P->M", "P->M"])
         let final = await state("l", setup.index)
         XCTAssertEqual(final, .backedUp(serverAssetID: "P"))
+        let cleared = await setup.index.entry(for: "l")?.needsLink
+        XCTAssertEqual(cleared, false)
+    }
+
+    /// The runner scans before every run: the scan must not take a split Live Photo for backed up.
+    func testFailedLinkSurvivesTheScanAndIsRetried() async throws {
+        let setup = await makeSetup(album: ["l"])
+        let sums = addAsset("l", to: setup.library, types: [.photo, .pairedVideo])
+        try await makeScanner(setup).scan { _, _ in }
+        await setup.service.setUploadResults([
+            AssetUploadResult(id: "M", status: .created), AssetUploadResult(id: "P", status: .duplicate),
+        ])
+        await setup.service.setLinkFailure(ImmichServiceError.unexpectedStatus(503))
+        let service = setup.service
+        try await run(makeUploader(setup), shouldPause: { await !service.links.isEmpty })
+
+        // Both halves are duplicates on the server now; the link is still missing.
+        let counts = try await makeScanner(setup).scan { _, _ in }
+        XCTAssertEqual(counts.backedUp, 0)
+        let scanned = await setup.index.entry(for: "l")
+        XCTAssertEqual(scanned?.state, .pending(reason: .needsUpload))
+        XCTAssertEqual(scanned?.needsLink, true)
+        XCTAssertEqual(scanned?.serverIDs, [.photo: "P", .pairedVideo: "M"])
+
+        await setup.service.setLinkFailure(nil)
+        try await run(makeUploader(setup))
+
+        let uploads = await uploadedChecksums(setup.service)
+        XCTAssertEqual(uploads, [sums[.pairedVideo]!, sums[.photo]!], "Nothing sent again")
+        let links = await setup.service.links.map { "\($0.photoID)->\($0.motionID)" }
+        XCTAssertEqual(links, ["P->M", "P->M"], "Exactly one re-link")
+        let final = await setup.index.entry(for: "l")
+        XCTAssertEqual(final?.state, .backedUp(serverAssetID: "P"))
+        XCTAssertEqual(final?.needsLink, false)
+        let after = try await makeScanner(setup).scan { _, _ in }
+        XCTAssertEqual(after.backedUp, 1)
+    }
+
+    /// Marked (and saved) before the first byte goes out, so an app stopped between the motion upload
+    /// and the link still links next time.
+    func testLivePhotoIsMarkedForLinkingBeforeAnythingIsSent() async throws {
+        let setup = await makeSetup(album: ["l"])
+        let sums = addAsset("l", to: setup.library, types: [.photo, .pairedVideo])
+        await queue("l", sums, in: setup.index)
+        await setup.service.setLatency(.seconds(3600))
+        let uploader = makeUploader(setup)
+        let service = setup.service
+        let task = Task { try await uploader.run(progress: { _ in }, shouldPause: { false }) }
+
+        await service.waitForUploads(1)
+        let saved = await BackupIndex(directory: setup.directory).entry(for: "l")
+        XCTAssertEqual(saved?.needsLink, true)
+        task.cancel()
+        _ = await task.result
+        let entry = await setup.index.entry(for: "l")
+        XCTAssertEqual(entry?.state, .pending(reason: .needsUpload))
+        XCTAssertEqual(entry?.needsLink, true)
+    }
+
+    func testPermanentLinkRefusalBecomesFailed() async throws {
+        let setup = await makeSetup(album: ["l"])
+        let sums = addAsset("l", to: setup.library, types: [.photo, .pairedVideo])
+        await queue("l", sums, in: setup.index)
+        await setup.service.setUploadResults([
+            AssetUploadResult(id: "M", status: .created), AssetUploadResult(id: "P", status: .duplicate),
+        ])
+        await setup.service.setLinkFailure(ImmichServiceError.unexpectedStatus(400))
+
+        try await run(makeUploader(setup))
+
+        let entry = await setup.index.entry(for: "l")
+        XCTAssertEqual(entry?.state, .failed(
+            reason: "Couldn't join the photo and video of this Live Photo on the server: The server answered with HTTP status 400."))
+        XCTAssertEqual(entry?.serverIDs, [.photo: "P", .pairedVideo: "M"])
+        XCTAssertEqual(entry?.needsLink, true, "Try Again links it")
+        let links = await setup.service.links.count
+        XCTAssertEqual(links, 1, "A refusal is not retried automatically")
+        XCTAssertEqual(setup.clock.totalSlept, .zero)
+    }
+
+    func testLinkNetworkLossHoldsTheRunAndServerErrorsBackOffPerItem() async throws {
+        for (error, holds) in [(ImmichServiceError.network("offline"), true), (.unexpectedStatus(502), false)] {
+            let setup = await makeSetup(album: ["a", "b"])
+            let a = addAsset("a", to: setup.library, types: [.photo, .pairedVideo], created: Self.date)
+            let b = addAsset("b", to: setup.library, types: [.photo, .pairedVideo], created: Self.date.addingTimeInterval(-60))
+            await queue("a", a, in: setup.index, serverIDs: [.photo: "PA"])
+            await queue("b", b, in: setup.index, serverIDs: [.photo: "PB"])
+            await setup.service.setLinkFailure(error)
+
+            try await run(makeUploader(setup))
+
+            let order = await setup.service.links.map(\.photoID)
+            let expected = holds
+                ? Array(repeating: "PA", count: 5) + Array(repeating: "PB", count: 5)
+                : Array(repeating: ["PA", "PB"], count: 5).flatMap { $0 }
+            XCTAssertEqual(order, expected, "\(error)")
+            let uploads = await setup.service.uploads.count
+            XCTAssertEqual(uploads, 2, "Each motion is sent once; retries only link")
+        }
     }
 
     // MARK: Sent back to the scanner
@@ -805,7 +897,7 @@ final class BackupUploaderTests: XCTestCase {
         let service = setup.service
         let task = Task { try await uploader.run(progress: { _ in }, shouldPause: { false }) }
 
-        try await waitUntil { await !service.uploads.isEmpty }
+        await service.waitForUploads(1)
         XCTAssertEqual(stagedFiles(setup).count, 1)
         task.cancel()
         let result = await task.result

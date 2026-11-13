@@ -199,6 +199,7 @@ public actor BackupUploader {
             return .done
         }
 
+        try await markForLinking(id, entry, resources)
         // A half with a server ID from the latest check is on the server (a duplicate, not trashed):
         // it is never sent again, its ID is used instead.
         let missing = Set(resources.map(\.type).filter { entry.serverIDs[$0] == nil })
@@ -220,6 +221,7 @@ public actor BackupUploader {
                 retries[id] = nil
                 await write(id, from: entry) {
                     $0.serverIDs.merge(learned) { _, new in new }
+                    $0.needsLink = false
                     if let serverID = $0.serverIDs[main.type] { $0.state = .backedUp(serverAssetID: serverID) }
                 }
             case .changed:
@@ -242,13 +244,16 @@ public actor BackupUploader {
                     await record(.failed(reason: reason))
                 }
             case let .link(error):
+                // Both halves are on the server and their IDs recorded, `needsLink` stays set: the next
+                // attempt (or Try Again) only links.
                 switch Self.classify(error) {
-                case .cancelled, .stop:
+                case .cancelled, .stop, .outOfSpace:
                     try await stop(with: error, record: record)
-                default:
-                    // Both halves are on the server and their IDs recorded: the next attempt only links.
+                case let .retry(holdsRun):
                     await record(.pending(reason: .needsUpload))
-                    if scheduleRetry(id, holdsRun: false) { outcome = .willRetry }
+                    if scheduleRetry(id, holdsRun: holdsRun) { outcome = .willRetry }
+                case .failed:
+                    await record(.failed(reason: Self.linkFailedReason(error)))
                 }
             }
         } catch {
@@ -351,8 +356,10 @@ public actor BackupUploader {
             let ids = serverIDs
             await write(id, from: entry) {
                 $0.serverIDs = ids
-                $0.state = Self.mainType(of: types).flatMap { ids[$0] }.map { .backedUp(serverAssetID: $0) }
-                    ?? .pending(reason: .needsUpload)
+                // Restored, but still to be joined: the run links it.
+                $0.state = $0.needsLink ? .pending(reason: .needsUpload)
+                    : Self.mainType(of: types).flatMap { ids[$0] }.map { .backedUp(serverAssetID: $0) }
+                        ?? .pending(reason: .needsUpload)
             }
             return
         }
@@ -389,6 +396,7 @@ public actor BackupUploader {
             await write(id, from: entry, needsUpload) // the run waits for Wi-Fi
             return
         }
+        try await markForLinking(id, entry, resources)
         let attempt = await send(
             asset, resources: resources, missing: gone, known: serverIDs, checksums: entry.checksums,
             allowsCellular: settings.allowsNetwork(for: asset, onCellular: true))
@@ -403,7 +411,11 @@ public actor BackupUploader {
         switch attempt.failure {
         case nil:
             let main = resources[0].type
-            await record(learnedIDs[main].map { .backedUp(serverAssetID: $0) } ?? .pending(reason: .needsUpload))
+            await write(id, from: entry) {
+                $0.serverIDs = learnedIDs
+                $0.needsLink = false
+                $0.state = learnedIDs[main].map { .backedUp(serverAssetID: $0) } ?? .pending(reason: .needsUpload)
+            }
         case .changed:
             await sendBack(id, from: entry)
         case let .stage(error, _), let .upload(error), let .link(error):
@@ -525,12 +537,18 @@ public actor BackupUploader {
 
     /// Applies `change` to the item's current entry if it still describes the version `snapshot` did
     /// (same modification date and checksums): the scanner may have recorded a newer one meanwhile.
-    /// The version check and the write are one step in the index.
+    /// The check and the change happen in one step inside the index, on the entry as it is then.
     private func write(_ id: String, from snapshot: BackupEntry, _ change: (inout BackupEntry) -> Void) async {
-        guard var current = await index.entry(for: id),
-              current.modificationDate == snapshot.modificationDate, current.checksums == snapshot.checksums else { return }
-        change(&current)
-        await index.set(current, for: id, ifModificationDate: snapshot.modificationDate, checksums: snapshot.checksums)
+        await index.update(id, ifModificationDate: snapshot.modificationDate, checksums: snapshot.checksums, change)
+    }
+
+    /// Before anything of a Live Photo is sent, records (and saves) that its halves may need joining, so
+    /// a link that fails or never happens (the app stopped in between) is still made later.
+    private func markForLinking(_ id: String, _ entry: BackupEntry, _ resources: [DeviceResource]) async throws {
+        guard !entry.needsLink, resources.contains(where: { Self.isMotion($0.type) }),
+              resources.contains(where: { !Self.isMotion($0.type) }) else { return }
+        await write(id, from: entry) { $0.needsLink = true }
+        try await index.saveIfChanged()
     }
 
     /// The item changed since it was hashed: the scanner hashes and checks it again.
@@ -544,6 +562,10 @@ public actor BackupUploader {
     // MARK: - Helpers
 
     static var notEnoughSpaceReason: String { tr("Not enough free space on the iPhone.") }
+
+    static func linkFailedReason(_ error: Error) -> String {
+        tr("Couldn't join the photo and video of this Live Photo on the server: %@", error.localizedDescription)
+    }
 
     private static func isQueued(_ state: BackupState) -> Bool {
         state == .pending(reason: .needsUpload) || state == .pending(reason: .waitingForWiFi)

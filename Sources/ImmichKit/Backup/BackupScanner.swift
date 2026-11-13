@@ -136,7 +136,12 @@ public actor BackupScanner {
                 // to the checksums it was given for. It holds what was known before this check.
                 guard var entry = await index.entry(for: item.assetID), entry.checksums == item.dictionary else { continue }
                 if let (state, serverIDs) = Self.verdict(for: item, results: byID, previous: entry) {
-                    entry.state = state
+                    // Both halves there but maybe not joined yet: stays queued, the uploader links them.
+                    if case .backedUp = state, entry.needsLink {
+                        entry.state = .pending(reason: .needsUpload)
+                    } else {
+                        entry.state = state
+                    }
                     entry.serverIDs = serverIDs
                 } else if !Self.wasSeenOnServer(entry.state) {
                     entry.state = .pending(reason: .notChecked)

@@ -56,7 +56,8 @@ extension LiveImmichService {
             return AssetUploadResult(id: body.id, status: kind)
         case 401, 403:
             throw ImmichServiceError.unauthorized
-        case 429:
+        case 408, 429:
+            // A timeout or rate limit: retried, not a refusal of the file.
             throw ImmichServiceError.unexpectedStatus(status)
         case 400..<500:
             throw BackupUploadError.rejected(status: status, message: serverMessage(in: data))

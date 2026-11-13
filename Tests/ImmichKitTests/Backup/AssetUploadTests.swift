@@ -191,7 +191,8 @@ final class AssetUploadTests: XCTestCase {
         XCTAssertThrowsError(try result(413, "not json")) {
             XCTAssertEqual($0 as? BackupUploadError, .rejected(status: 413, message: ""))
         }
-        for status in [429, 500, 502, 503] {
+        // 408 (request timeout) is retried like 429 and 5xx, not a refusal.
+        for status in [408, 429, 500, 502, 503] {
             XCTAssertThrowsError(try result(status)) { XCTAssertEqual($0 as? ImmichServiceError, .unexpectedStatus(status)) }
         }
         // The size cap is for success bodies: an oversize error page still maps by its status.

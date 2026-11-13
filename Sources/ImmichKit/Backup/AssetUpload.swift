@@ -52,7 +52,7 @@ public struct AssetUploadResult: Sendable, Equatable {
     }
 }
 
-/// The server refused this file for a reason retrying won't fix (HTTP 4xx other than 401, 403 and 429).
+/// The server refused this file for a reason retrying won't fix (HTTP 4xx other than 401, 403, 408 and 429).
 public enum BackupUploadError: Error, Equatable, Sendable {
     case rejected(status: Int, message: String)
 }

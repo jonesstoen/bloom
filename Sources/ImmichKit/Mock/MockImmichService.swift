@@ -119,6 +119,13 @@ public actor MockImmichService: ImmichService {
     private var uploadCalls = 0
     private var uploadFailure: (error: any Error, after: Int)?
     private var linkFailure: (any Error)?
+    private var uploadWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    /// Returns once `uploadAsset` has been called `count` times (failed calls included), so tests can
+    /// act while an upload is in flight without polling.
+    public func waitForUploads(_ count: Int) async {
+        if uploads.count >= count { return }
+        await withCheckedContinuation { uploadWaiters.append((count, $0)) }
+    }
     /// The next uploads answer with these results, one per call, in order. After that, an upload answers
     /// `.created` with a new UUID, or `.duplicate` with the earlier ID for a checksum uploaded before.
     public func setUploadResults(_ results: [AssetUploadResult]) { queuedUploadResults = results }
@@ -238,6 +245,9 @@ public actor MockImmichService: ImmichService {
     /// A successful upload adds the checksum to `serverChecksums`, so a later `checkBulkUpload` sees a duplicate.
     public func uploadAsset(_ request: AssetUploadRequest) async throws -> AssetUploadResult {
         uploads.append(request)
+        let reached = uploadWaiters.filter { $0.count <= uploads.count }
+        uploadWaiters.removeAll { $0.count <= uploads.count }
+        for waiter in reached { waiter.continuation.resume() }
         try await begin(.upload(request.checksum))
         uploadCalls += 1
         if let uploadFailure, uploadCalls > uploadFailure.after { throw uploadFailure.error }

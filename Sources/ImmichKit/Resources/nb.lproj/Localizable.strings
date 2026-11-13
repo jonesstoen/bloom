@@ -39,3 +39,4 @@
 "This item has no photo or video file that Bloom can back up." = "Dette objektet har ingen bilde- eller videofil som Bloom kan sikkerhetskopiere.";
 "Couldn't read %@: %@" = "Kunne ikke lese %@: %@";
 "Not enough free space on the iPhone." = "Ikke nok ledig plass på iPhone.";
+"Couldn't join the photo and video of this Live Photo on the server: %@" = "Kunne ikke koble sammen bildet og videoen i dette Live Photo-bildet på serveren: %@";

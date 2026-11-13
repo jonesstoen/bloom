@@ -23,21 +23,28 @@ public struct BackupEntry: Codable, Sendable, Equatable {
     /// The server asset ID of each resource Bloom knows to be on the server. Empty in indexes
     /// written before Phase 2 and filled in by the next re-check.
     public var serverIDs: [DeviceResourceType: String]
+    /// A Live Photo whose photo and motion video may not be joined on the server yet: set by the
+    /// uploader before it sends anything of a Live Photo and cleared once they are. While set, a scan
+    /// that finds both halves on the server keeps the item queued so the uploader links them.
+    /// `false` in indexes written before it existed.
+    public var needsLink: Bool
 
     public init(
         modificationDate: Date,
         checksums: [DeviceResourceType: String],
         state: BackupState,
-        serverIDs: [DeviceResourceType: String] = [:]
+        serverIDs: [DeviceResourceType: String] = [:],
+        needsLink: Bool = false
     ) {
         self.modificationDate = modificationDate
         self.checksums = checksums
         self.state = state
         self.serverIDs = serverIDs
+        self.needsLink = needsLink
     }
 
     private enum CodingKeys: String, CodingKey {
-        case modificationDate, checksums, state, serverIDs
+        case modificationDate, checksums, state, serverIDs, needsLink
     }
 
     public init(from decoder: Decoder) throws {
@@ -46,6 +53,7 @@ public struct BackupEntry: Codable, Sendable, Equatable {
         checksums = try container.decode([DeviceResourceType: String].self, forKey: .checksums)
         state = try container.decode(BackupState.self, forKey: .state)
         serverIDs = try container.decodeIfPresent([DeviceResourceType: String].self, forKey: .serverIDs) ?? [:]
+        needsLink = try container.decodeIfPresent(Bool.self, forKey: .needsLink) ?? false
     }
 }
 
@@ -109,9 +117,20 @@ public actor BackupIndex {
         _ entry: BackupEntry, for assetID: String,
         ifModificationDate date: Date, checksums: [DeviceResourceType: String]
     ) -> Bool {
-        guard let current = stored.entries[assetID], current.modificationDate == date, current.checksums == checksums else {
+        update(assetID, ifModificationDate: date, checksums: checksums) { $0 = entry }
+    }
+
+    /// Applies `change` to the stored entry for `assetID`, inside the index, if it still has modification
+    /// date `date` and `checksums` (the version the caller worked on). Returns whether it did.
+    @discardableResult
+    public func update(
+        _ assetID: String, ifModificationDate date: Date, checksums: [DeviceResourceType: String],
+        _ change: (inout BackupEntry) -> Void
+    ) -> Bool {
+        guard var entry = stored.entries[assetID], entry.modificationDate == date, entry.checksums == checksums else {
             return false
         }
+        change(&entry)
         set(entry, for: assetID)
         return true
     }

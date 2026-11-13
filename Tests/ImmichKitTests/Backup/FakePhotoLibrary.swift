@@ -20,6 +20,7 @@ final class FakePhotoLibrary: PhotoLibrarySource, @unchecked Sendable {
     private var _iCloudOnly: Set<DeviceResource> = []
     private var _failures: [DeviceResource: Error] = [:]
     private var _reads: [ReadCall] = []
+    private var _delivered: [DeviceResource: Int] = [:]
     private var _singleLookups = 0
     private var _batchLookups: [Int] = []
     private var _dateLookups: [Int] = []
@@ -54,6 +55,8 @@ final class FakePhotoLibrary: PhotoLibrarySource, @unchecked Sendable {
     func setAccessAfterRequest(_ access: PhotoAccess) { lock.withLock { _accessAfterRequest = access } }
 
     var reads: [ReadCall] { lock.withLock { _reads } }
+    /// Chunks of `resource` handed to `onData` so far, over all reads.
+    func deliveredChunks(of resource: DeviceResource) -> Int { lock.withLock { _delivered[resource] ?? 0 } }
     /// Calls to `asset(_:)`.
     var singleLookups: Int { lock.withLock { _singleLookups } }
     /// The number of IDs in each `assets(_:)` call.
@@ -100,6 +103,11 @@ final class FakePhotoLibrary: PhotoLibrarySource, @unchecked Sendable {
         }
         if let failure { throw failure }
         if iCloudOnly && !allowNetwork { throw PhotoLibraryReadError.needsNetwork }
-        for chunk in chunks { onData(chunk) }
+        // Like PhotoKit after `cancelDataRequest`: no more data once the read is cancelled.
+        for chunk in chunks {
+            try Task.checkCancellation()
+            onData(chunk)
+            lock.withLock { _delivered[resource, default: 0] += 1 }
+        }
     }
 }

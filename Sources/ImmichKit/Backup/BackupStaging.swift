@@ -80,7 +80,15 @@ public actor BackupStaging {
             let sink = try StagingSink(
                 url: url, freeSpace: freeSpace, firstCheck: expected + recheckInterval, interval: recheckInterval)
             defer { sink.close() }
-            try await source.read(resource, of: asset.id, allowNetwork: allowNetwork) { sink.write($0) }
+            // The read runs as its own task so a staging failure (no room, a write error) can stop it:
+            // PhotoKit then cancels the data request instead of downloading the rest of the file.
+            let reader = Task { try await source.read(resource, of: asset.id, allowNetwork: allowNetwork) { sink.write($0) } }
+            sink.onFailure { reader.cancel() }
+            do {
+                try await withTaskCancellationHandler { try await reader.value } onCancel: { reader.cancel() }
+            } catch {
+                throw sink.failure ?? error
+            }
             try Task.checkCancellation()
             let checksum = try sink.finish()
             return (url, checksum)
@@ -163,7 +171,19 @@ private final class StagingSink: @unchecked Sendable {
     private var sha = SHA1Stream()
     private var written: Int64 = 0
     private var nextCheck: Int64
-    private var failure: Error?
+    private var _failure: Error?
+    private var failureHandler: (@Sendable () -> Void)?
+
+    var failure: Error? { lock.withLock { _failure } }
+
+    /// Calls `handler` once at the first failure (at once if there already was one).
+    func onFailure(_ handler: @escaping @Sendable () -> Void) {
+        let failedAlready = lock.withLock {
+            failureHandler = handler
+            return _failure != nil
+        }
+        if failedAlready { handler() }
+    }
 
     init(url: URL, freeSpace: @escaping @Sendable () -> Int64, firstCheck: Int64, interval: Int64) throws {
         handle = try FileHandle(forWritingTo: url)
@@ -173,30 +193,32 @@ private final class StagingSink: @unchecked Sendable {
     }
 
     func write(_ data: Data) {
-        lock.withLock {
-            guard failure == nil else { return }
+        let handler: (@Sendable () -> Void)? = lock.withLock {
+            guard _failure == nil else { return nil }
             do {
                 try autoreleasepool { try handle.write(contentsOf: data) }
             } catch {
-                failure = error
-                return
+                _failure = error
+                return failureHandler
             }
             sha.update(data)
             written += Int64(data.count)
             // Larger than expected: the rest of this file and the body copy of all of it must still fit.
             if written >= nextCheck {
                 if freeSpace() < written + BackupStaging.margin {
-                    failure = BackupStagingError.notEnoughSpace
-                } else {
-                    nextCheck = written + interval
+                    _failure = BackupStagingError.notEnoughSpace
+                    return failureHandler
                 }
+                nextCheck = written + interval
             }
+            return nil
         }
+        handler?() // outside the lock: cancelling the read may call back into PhotoKit
     }
 
     func finish() throws -> String {
         try lock.withLock {
-            if let failure { throw failure }
+            if let _failure { throw _failure }
             return sha.base64()
         }
     }
