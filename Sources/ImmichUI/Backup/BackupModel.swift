@@ -439,4 +439,8 @@ struct PreviewPhotoLibrary: PhotoLibrarySource {
     ) async throws {
         onData(Data(resource.filename.utf8))
     }
+
+    func changes() -> AsyncStream<Void> { AsyncStream { $0.finish() } }
+
+    func thumbnailData(_ id: String, pixelSide: Int) async -> Data? { nil }
 }

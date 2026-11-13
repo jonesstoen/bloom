@@ -1,6 +1,11 @@
 #if canImport(Photos)
 import Foundation
 import Photos
+#if os(iOS)
+import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 
 /// `PhotoLibrarySource` on top of PhotoKit. Read-only by design: no change requests and no
 /// `performChanges` anywhere in this type. Not exercised by unit tests (needs a real library).
@@ -139,6 +144,47 @@ public struct PhotoKitLibrarySource: PhotoLibrarySource {
         }
     }
 
+    /// One element per library change. The observer is registered while the stream is alive and
+    /// unregistered when it ends.
+    public func changes() -> AsyncStream<Void> {
+        AsyncStream { continuation in
+            let observer = LibraryChangeObserver(continuation)
+            PHPhotoLibrary.shared().register(observer)
+            continuation.onTermination = { _ in PHPhotoLibrary.shared().unregisterChangeObserver(observer) }
+        }
+    }
+
+    /// A JPEG from what is on the device already: `.fastFormat`, no network.
+    public func thumbnailData(_ id: String, pixelSide: Int) async -> Data? {
+        guard let asset = Self.phAsset(id) else { return nil }
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .fastFormat
+        options.isNetworkAccessAllowed = false
+        options.isSynchronous = false
+        let side = CGFloat(pixelSide)
+        let once = ResumeOnce()
+
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Data?, Never>) in
+            PHImageManager.default().requestImage(
+                for: asset, targetSize: CGSize(width: side, height: side), contentMode: .aspectFill, options: options
+            ) { image, _ in
+                guard once.claim() else { return }
+                continuation.resume(returning: image.flatMap(Self.jpegData))
+            }
+        }
+    }
+
+    #if os(iOS)
+    private static func jpegData(_ image: UIImage) -> Data? { image.jpegData(compressionQuality: 0.8) }
+    #elseif os(macOS)
+    private static func jpegData(_ image: NSImage) -> Data? {
+        guard let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff) else { return nil }
+        return bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.8])
+    }
+    #else
+    private static func jpegData(_ image: Any) -> Data? { nil }
+    #endif
+
     // MARK: - Helpers
 
     private static func deviceAlbum(_ collection: PHAssetCollection) -> DeviceAlbum {
@@ -181,5 +227,19 @@ private final class RequestBox: @unchecked Sendable {
     private var id: PHAssetResourceDataRequestID?
     var value: PHAssetResourceDataRequestID? { lock.withLock { id } }
     func set(_ new: PHAssetResourceDataRequestID) { lock.withLock { id = new } }
+}
+
+/// Forwards each library change to the stream. Holds nothing but the continuation.
+private final class LibraryChangeObserver: NSObject, PHPhotoLibraryChangeObserver, Sendable {
+    private let continuation: AsyncStream<Void>.Continuation
+    init(_ continuation: AsyncStream<Void>.Continuation) { self.continuation = continuation }
+    func photoLibraryDidChange(_ changeInstance: PHChange) { continuation.yield() }
+}
+
+/// Lets only the first caller through, so a continuation is resumed once even if PhotoKit calls back twice.
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+    func claim() -> Bool { lock.withLock { defer { done = true }; return !done } }
 }
 #endif

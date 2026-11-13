@@ -90,4 +90,10 @@ public protocol PhotoLibrarySource: Sendable {
         allowNetwork: Bool,
         onData: @escaping @Sendable (Data) -> Void
     ) async throws
+    /// One element per change of the photo library, for as long as the stream is iterated.
+    /// The element carries no details; callers rescan.
+    func changes() -> AsyncStream<Void>
+    /// A small JPEG of the asset from what is already on the device (never downloads from iCloud),
+    /// or nil when there is none. `pixelSide` is the target size of the longer side, in pixels.
+    func thumbnailData(_ id: String, pixelSide: Int) async -> Data?
 }

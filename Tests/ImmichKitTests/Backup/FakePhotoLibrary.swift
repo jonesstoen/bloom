@@ -24,6 +24,8 @@ final class FakePhotoLibrary: PhotoLibrarySource, @unchecked Sendable {
     private var _singleLookups = 0
     private var _batchLookups: [Int] = []
     private var _dateLookups: [Int] = []
+    private var _thumbnails: [String: Data] = [:]
+    private var _changeListeners: [UUID: AsyncStream<Void>.Continuation] = [:]
 
     /// `accessAfterRequest` is what the user answers when asked (used when `access` is `.notDetermined`).
     init(access: PhotoAccess = .full, accessAfterRequest: PhotoAccess = .full) {
@@ -63,6 +65,18 @@ final class FakePhotoLibrary: PhotoLibrarySource, @unchecked Sendable {
     var batchLookups: [Int] { lock.withLock { _batchLookups } }
     /// The number of IDs in each `modificationDates(_:)` call.
     var dateLookups: [Int] { lock.withLock { _dateLookups } }
+
+    /// JPEG data returned by `thumbnailData(_:pixelSide:)`, by asset ID.
+    var thumbnails: [String: Data] {
+        get { lock.withLock { _thumbnails } }
+        set { lock.withLock { _thumbnails = newValue } }
+    }
+
+    /// Delivers one change to every stream handed out by `changes()` that is still being iterated.
+    func emitChange() {
+        let listeners = lock.withLock { Array(_changeListeners.values) }
+        for listener in listeners { listener.yield() }
+    }
 
     // PhotoLibrarySource
 
@@ -110,4 +124,17 @@ final class FakePhotoLibrary: PhotoLibrarySource, @unchecked Sendable {
             lock.withLock { _delivered[resource, default: 0] += 1 }
         }
     }
+
+    func changes() -> AsyncStream<Void> {
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        let id = UUID()
+        lock.withLock { _changeListeners[id] = continuation }
+        continuation.onTermination = { [weak self] _ in
+            guard let self else { return }
+            self.lock.withLock { _ = self._changeListeners.removeValue(forKey: id) }
+        }
+        return stream
+    }
+
+    func thumbnailData(_ id: String, pixelSide: Int) async -> Data? { lock.withLock { _thumbnails[id] } }
 }

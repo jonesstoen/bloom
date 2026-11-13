@@ -40,6 +40,30 @@ final class FakePhotoLibraryTests: XCTestCase {
         }
         XCTAssertEqual(fake.reads.count, 1)
     }
+
+    func testFakeChangesStreamDeliversEmittedChanges() async {
+        let fake = FakePhotoLibrary()
+        let stream = fake.changes()
+        fake.emitChange()
+        fake.emitChange()
+
+        var received = 0
+        for await _ in stream {
+            received += 1
+            if received == 2 { break }
+        }
+        XCTAssertEqual(received, 2)
+    }
+
+    func testFakeThumbnailReturnsConfiguredData() async {
+        let fake = FakePhotoLibrary()
+        fake.thumbnails["a"] = Data([9, 8, 7])
+
+        let known = await fake.thumbnailData("a", pixelSide: 120)
+        let unknown = await fake.thumbnailData("b", pixelSide: 120)
+        XCTAssertEqual(known, Data([9, 8, 7]))
+        XCTAssertNil(unknown)
+    }
 }
 
 private final class DataBox: @unchecked Sendable {

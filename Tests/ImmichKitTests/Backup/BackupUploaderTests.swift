@@ -113,6 +113,8 @@ private struct GatedLibrary: PhotoLibrarySource {
     func asset(_ id: String) async -> DeviceAsset? { await base.asset(id) }
     func assets(_ ids: [String]) async -> [DeviceAsset] { await base.assets(ids) }
     func modificationDates(_ ids: [String]) async -> [String: Date] { await base.modificationDates(ids) }
+    func changes() -> AsyncStream<Void> { base.changes() }
+    func thumbnailData(_ id: String, pixelSide: Int) async -> Data? { await base.thumbnailData(id, pixelSide: pixelSide) }
     func read(_ resource: DeviceResource, of assetID: String, allowNetwork: Bool,
               onData: @escaping @Sendable (Data) -> Void) async throws {
         guard assetID == self.assetID else {
