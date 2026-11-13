@@ -37,6 +37,8 @@ ImmichAPI  client generated from openapi.json (swift-openapi-generator)
   scanning and flattening the library's days again on the main actor.
   Decoded previews and playback are retained only for the current item and two neighbours on
   each side. Visited models keep favorite/detail state while releasing media outside that window.
+  Detail and motion retries reuse an existing decoded preview; asset details and playback
+  requests still refresh. Returning after preview eviction decodes the image again.
   Viewer and selection sharing use the same original-to-disk downloader with guarded redirects.
   Prepared files remain owned until sharing ends; failures and cancellation remove partial files.
   A downward one-finger pan closes the viewer at normal zoom. Direction and zoom gating preserve

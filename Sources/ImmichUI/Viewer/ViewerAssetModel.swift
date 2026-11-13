@@ -117,13 +117,16 @@ public final class ViewerAssetModel {
         do {
             try Task.checkCancellation()
             guard generation == started, retainsPreview else { return }
-            let data = try await loader.data(for: ImageKey(assetID: asset.id, size: .preview))
-            try Task.checkCancellation()
-            guard generation == started else { return }
-            let decoded = await ThumbnailDecoder.decode(data, maxPixelSize: 2560)
-            try Task.checkCancellation()
-            guard generation == started else { return }
-            image = decoded
+            // Detail or motion retries can reuse the sharp preview until the page releases it.
+            if image == nil {
+                let data = try await loader.data(for: ImageKey(assetID: asset.id, size: .preview))
+                try Task.checkCancellation()
+                guard generation == started else { return }
+                let decoded = await ThumbnailDecoder.decode(data, maxPixelSize: 2560)
+                try Task.checkCancellation()
+                guard generation == started else { return }
+                image = decoded
+            }
             let detail = try await service.asset(id: asset.id)
             try Task.checkCancellation()
             guard generation == started else { return }
