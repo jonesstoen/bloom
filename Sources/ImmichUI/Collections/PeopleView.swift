@@ -12,27 +12,12 @@ public struct PeopleView: View {
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                if model.people.isEmpty {
-                    if model.loadingPeople {
-                        ProgressView().frame(maxWidth: .infinity).padding(.vertical, 40)
-                    } else if let error = model.peopleError {
-                        ContentUnavailableView {
-                            Label(tr("Can't Load People"), systemImage: "exclamationmark.triangle")
-                        } description: { Text(error) } actions: {
-                            retryButton
-                        }
-                    } else if model.loadedPeople {
-                        ContentUnavailableView(tr("No People"), systemImage: "person.crop.circle",
-                                               description: Text(tr("People recognized by your Immich server appear here.")))
-                    }
-                } else {
-                    if let error = model.peopleError {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(error).font(.subheadline).foregroundStyle(.secondary)
-                            retryButton
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                CollectionLoadState(isEmpty: model.people.isEmpty, isLoading: model.loadingPeople,
+                                    hasLoaded: model.loadedPeople, error: model.peopleError,
+                                    errorTitle: tr("Can't Load People"),
+                                    emptyTitle: tr("No People"), emptySymbol: "person.crop.circle",
+                                    emptyDescription: tr("People recognized by your Immich server appear here."),
+                                    retry: { await model.loadPeople() }) {
                     LazyVGrid(columns: columns, alignment: .center, spacing: 24) {
                         ForEach(model.people) { person in
                             NavigationLink {
@@ -60,16 +45,6 @@ public struct PeopleView: View {
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: dynamicTypeSize.isAccessibilitySize ? 220 : 100),
                   spacing: 20, alignment: .top)]
-    }
-
-    private var retryButton: some View {
-        Button {
-            Task { await model.loadPeople() }
-        } label: {
-            Text(tr("Try Again"))
-                .frame(minHeight: 44)
-                .contentShape(Rectangle())
-        }
     }
 
     private func personCard(_ person: Person) -> some View {

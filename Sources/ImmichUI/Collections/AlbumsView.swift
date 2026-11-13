@@ -17,27 +17,12 @@ public struct AlbumsView: View {
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                if model.albums.isEmpty {
-                    if model.loadingAlbums {
-                        ProgressView().frame(maxWidth: .infinity).padding(.vertical, 40)
-                    } else if let error = model.albumsError {
-                        ContentUnavailableView {
-                            Label(tr("Can't Load Albums"), systemImage: "exclamationmark.triangle")
-                        } description: { Text(error) } actions: {
-                            retryButton
-                        }
-                    } else if model.loadedAlbums {
-                        ContentUnavailableView(tr("No Albums"), systemImage: "rectangle.stack",
-                                               description: Text(tr("Albums you create in Immich appear here.")))
-                    }
-                } else {
-                    if let error = model.albumsError {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(error).font(.subheadline).foregroundStyle(.secondary)
-                            retryButton
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                CollectionLoadState(isEmpty: model.albums.isEmpty, isLoading: model.loadingAlbums,
+                                    hasLoaded: model.loadedAlbums, error: model.albumsError,
+                                    errorTitle: tr("Can't Load Albums"),
+                                    emptyTitle: tr("No Albums"), emptySymbol: "rectangle.stack",
+                                    emptyDescription: tr("Albums you create in Immich appear here."),
+                                    retry: { await model.loadAlbums() }) {
                     LazyVGrid(columns: columns, alignment: .leading, spacing: 24) {
                         ForEach(model.albums) { album in
                             NavigationLink {
@@ -92,16 +77,6 @@ public struct AlbumsView: View {
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: dynamicTypeSize.isAccessibilitySize ? 280 : 150),
                   spacing: 16, alignment: .top)]
-    }
-
-    private var retryButton: some View {
-        Button {
-            Task { await model.loadAlbums() }
-        } label: {
-            Text(tr("Try Again"))
-                .frame(minHeight: 44)
-                .contentShape(Rectangle())
-        }
     }
 
     private func albumCard(_ album: Album) -> some View {
