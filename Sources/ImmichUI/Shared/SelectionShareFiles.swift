@@ -24,6 +24,7 @@ public struct OriginalFileDownloader: Sendable {
             throw ImmichServiceError.invalidResponse
         }
         try FileManager.default.moveItem(at: temporary, to: destination)
+        CacheProtection.protect(destination)
         try Task.checkCancellation()
     }
 }
@@ -42,7 +43,7 @@ enum SelectionShareFiles {
     ) async throws -> PreparedShare {
         let id = UUID()
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("BloomShare-\(id.uuidString)", isDirectory: true)
+            .appendingPathComponent("\(directoryPrefix)\(id.uuidString)", isDirectory: true)
         do {
             try Task.checkCancellation()
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -102,6 +103,18 @@ enum SelectionShareFiles {
 
     static func remove(_ directory: URL) {
         try? FileManager.default.removeItem(at: directory)
+    }
+
+    static let directoryPrefix = "BloomShare-"
+
+    /// Removes share folders left behind when the app was quit or crashed while sharing. Call only
+    /// when no share is being prepared or shown (at sign-in and sign-out).
+    static func removeLeftovers(in parent: URL = FileManager.default.temporaryDirectory) {
+        let files = FileManager.default
+        guard let children = try? files.contentsOfDirectory(at: parent, includingPropertiesForKeys: nil) else { return }
+        for child in children where child.lastPathComponent.hasPrefix(directoryPrefix) {
+            try? files.removeItem(at: child)
+        }
     }
 
     /// A file name for the share sheet. Original names come from whoever uploaded the photo (for

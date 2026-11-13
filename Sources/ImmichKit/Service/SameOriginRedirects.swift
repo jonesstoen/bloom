@@ -6,7 +6,18 @@ import Foundation
 /// redirect arrives as its 3xx response, which the service reports as an error.
 final class SameOriginRedirects: NSObject, URLSessionTaskDelegate, Sendable {
     /// The session every live service uses unless a test injects its own transport.
-    static let session = URLSession(configuration: .default, delegate: SameOriginRedirects(), delegateQueue: nil)
+    /// It keeps no HTTP cache and no cookies: authenticated responses would otherwise land in the
+    /// shared on-disk URLCache and outlive sign-out. Bloom caches images itself (DiskImageCache).
+    static let session = URLSession(configuration: configuration, delegate: SameOriginRedirects(), delegateQueue: nil)
+
+    static var configuration: URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.default
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        return configuration
+    }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {

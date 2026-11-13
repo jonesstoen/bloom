@@ -95,6 +95,7 @@ public final class RootModel {
             session?.library.stopPrefetching()
             await session?.snapshotStore?.invalidate()
             await session?.loader.invalidate()
+            if persistsImages { await Self.removeLeftoverFiles(keeping: nil) }
             session = nil
             error = nil
             phase = .signedOut
@@ -114,6 +115,17 @@ public final class RootModel {
         session = ImmichSession(service: service, disk: disk, snapshotStore: snapshots)
         error = nil
         phase = .signedIn
+        if persistsImages {
+            let current = Self.cacheDirectory(for: credentials)
+            Task.detached(priority: .utility) { await Self.removeLeftoverFiles(keeping: current) }
+        }
+    }
+
+    /// Other accounts' caches and share files from a quit or crashed app. Nothing is being shared
+    /// at sign-in or sign-out, so no share folder in use can be removed.
+    private nonisolated static func removeLeftoverFiles(keeping current: URL?) async {
+        CacheProtection.removeOtherAccounts(keeping: current)
+        SelectionShareFiles.removeLeftovers()
     }
 
     /// Hash the connection identity: no raw credentials appear in cache paths.

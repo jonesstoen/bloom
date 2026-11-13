@@ -55,7 +55,7 @@ public actor TimelineSnapshotStore {
               data.count <= byteLimit else { return }
         do {
             try files.createDirectory(at: directory, withIntermediateDirectories: true)
-            try data.write(to: url, options: .atomic)
+            try data.write(to: url, options: CacheProtection.writingOptions)
             try? files.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
             trim(keeping: url)
         } catch {

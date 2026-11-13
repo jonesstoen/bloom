@@ -68,7 +68,7 @@ public actor DiskImageCache {
         guard data.count <= byteLimit else { return }
         do {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-            try data.write(to: fileURL(for: key), options: .atomic)
+            try data.write(to: fileURL(for: key), options: CacheProtection.writingOptions)
         } catch {
             return
         }
