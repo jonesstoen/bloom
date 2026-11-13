@@ -89,20 +89,22 @@ them (`LibraryScale.zoom`).
 | Folder | What it holds | Start with |
 |---|---|---|
 | `ImmichAPI/` | Generated Immich client (do not edit by hand; see README) | `openapi-generator-config.yaml` |
-| `ImmichKit/Service/` | Talking to the server: the `ImmichService` protocol, the live service and its write operations, the mock service | `ImmichService.swift`, `LiveImmichService.swift` |
+| `ImmichKit/Service/` | Talking to the server: the `ImmichService` protocol, the live service with its read, search and write operations | `ImmichService.swift`, `LiveImmichService.swift` |
 | `ImmichKit/Models/` | Plain domain types (`Asset`, `Album`, `Person`, details) | `Models.swift` |
 | `ImmichKit/Editing/` | Results and rules of changes: trash, restore, albums, Allow Changes | `EditingPermission.swift`, `TrashResult.swift`, `AlbumEditing.swift` |
 | `ImmichKit/Timeline/` | Month buckets and the timeline actor | `Timeline.swift` |
 | `ImmichKit/ImageCache/` | Thumbnail memory/disk cache, loader, prefetcher | `ImageLoader.swift` |
 | `ImmichKit/Credentials/` | Server URL + API key in the Keychain, connection test | `CredentialStore.swift` |
-| `ImmichKit/Mock/` | The deterministic demo library used by tests and previews | `MockLibrary.swift` |
+| `ImmichKit/Lenient/` | Fallback decoders for older servers that omit fields the spec requires | `LenientDetail.swift` |
+| `ImmichKit/Search/` | Search query and result types | `SearchModels.swift` |
+| `ImmichKit/Mock/` | The mock service and the deterministic demo library used by tests and previews | `MockImmichService.swift`, `MockLibrary.swift` |
 | `ImmichUI/Root/` | Tabs, sign-in/out flow, About Bloom and the app icon picker | `ImmichRootView.swift` |
 | `ImmichUI/Library/` | The Library grid: exact layout, pinch, header, selection, Years/Months | `LibraryGridView.swift`, `LibraryGridScroll.swift`, `LibraryGridModel.swift`, `GridLayout.swift`, `MonthsLayout.swift` |
 | `ImmichUI/Collections/` | Collections tab: memories, pinned, albums, people, map, add to album | `CollectionsView.swift`, `CollectionSections.swift` |
 | `ImmichUI/Viewer/` | Full-screen viewer, info sheet, Live Photos | `AssetViewer.swift` |
 | `ImmichUI/Search/` | Search tab | `SearchView.swift` |
 | `ImmichUI/Login/` | Sign-in screen | `LoginView.swift` |
-| `ImmichUI/Shared/` | Small shared views (glass, the Bloom logo) and the Allow Changes setting | `Glass.swift`, `LibraryChanges.swift` |
+| `ImmichUI/Shared/` | Small shared views (glass, the Bloom logo), the Allow Changes setting and share-file preparation used by Library and Viewer | `Glass.swift`, `LibraryChanges.swift` |
 | `*/Resources/nb.lproj/` | Norwegian translations (keyed by the English text) | `Localizable.strings` |
 
 ## Tests
