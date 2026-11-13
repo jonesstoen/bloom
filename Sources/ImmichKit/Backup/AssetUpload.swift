@@ -91,9 +91,18 @@ public enum MultipartBody {
             + "filename=\"\(headerSafe(request.filename))\"\r\nContent-Type: \(headerSafe(request.mimeType))\r\n\r\n").utf8))
         let input = try FileHandle(forReadingFrom: request.fileURL)
         defer { try? input.close() }
-        while let chunk = try input.read(upToCount: chunkSize), !chunk.isEmpty {
-            try Task.checkCancellation()
-            try output.write(contentsOf: chunk)
+        // Each read hands back autoreleased bridged data; without a pool per chunk they pile up toward
+        // the size of the file, as nothing drains the pool while this synchronous loop runs.
+        var finished = false
+        while !finished {
+            try autoreleasepool {
+                guard let chunk = try input.read(upToCount: chunkSize), !chunk.isEmpty else {
+                    finished = true
+                    return
+                }
+                try Task.checkCancellation()
+                try output.write(contentsOf: chunk)
+            }
         }
         try output.write(contentsOf: Data("\r\n--\(boundary)--\r\n".utf8))
     }
@@ -103,11 +112,12 @@ public enum MultipartBody {
         String(max(0, Int(duration.rounded())))
     }
 
-    /// A value inside a quoted header parameter: no line breaks, and `"` as `%22`, so it can't end the
-    /// header or add another.
+    /// A value inside a quoted header parameter: no line breaks, `\` as `%5C` and `"` as `%22`, so it
+    /// can't end the quoted string, escape its closing quote, or add another header.
     private static func headerSafe(_ value: String) -> String {
         // By scalar: "\r\n" is a single Character that equals neither "\r" nor "\n".
         String(String.UnicodeScalarView(value.unicodeScalars.filter { $0 != "\r" && $0 != "\n" }))
+            .replacingOccurrences(of: "\\", with: "%5C")
             .replacingOccurrences(of: "\"", with: "%22")
     }
 }

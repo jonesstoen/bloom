@@ -20,7 +20,6 @@ extension LiveImmichService {
             try await SameOriginRedirects.session.upload(for: urlRequest, fromFile: bodyFile)
         }
         guard let http = response as? HTTPURLResponse else { throw ImmichServiceError.invalidResponse }
-        guard data.count <= Self.maxUploadResponseBytes else { throw ImmichServiceError.invalidResponse }
         return try Self.result(status: http.statusCode, data: data)
     }
 
@@ -47,7 +46,10 @@ extension LiveImmichService {
     static func result(status: Int, data: Data) throws -> AssetUploadResult {
         switch status {
         case 200, 201:
-            guard let body = try? JSONDecoder().decode(UploadResponse.self, from: data), !body.id.isEmpty,
+            // The cap applies to success bodies only: an oversize error page from a proxy is still
+            // reported by its status, not as an invalid response.
+            guard data.count <= maxUploadResponseBytes,
+                  let body = try? JSONDecoder().decode(UploadResponse.self, from: data), !body.id.isEmpty,
                   let kind = AssetUploadStatus(serverValue: body.status) else {
                 throw ImmichServiceError.invalidResponse
             }
@@ -70,7 +72,8 @@ extension LiveImmichService {
 
     /// `message` of an Immich error body: a string, or a list of strings for validation errors.
     private static func serverMessage(in data: Data) -> String {
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return "" }
+        guard data.count <= maxUploadResponseBytes,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return "" }
         let message: String
         if let text = object["message"] as? String {
             message = text

@@ -230,7 +230,7 @@ public actor MockImmichService: ImmichService {
             let trashed = trashedChecksums.contains(item.checksum)
             let known = trashed || serverChecksums.contains(item.checksum)
             return BulkUploadCheckResult(
-                id: item.id, isDuplicate: known, serverAssetID: known ? "server-\(item.checksum)" : nil, isTrashed: trashed,
+                id: item.id, isDuplicate: known, serverAssetID: known ? (uploadedIDs[item.checksum] ?? "server-\(item.checksum)") : nil, isTrashed: trashed,
                 isRejected: !known && rejectedChecksums.contains(item.checksum))
         }
     }

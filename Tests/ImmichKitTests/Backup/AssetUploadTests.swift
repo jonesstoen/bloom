@@ -101,6 +101,13 @@ final class AssetUploadTests: XCTestCase {
         XCTAssertTrue(string.contains("name=\"assetData\"; filename=\"a%22bX-Evil: 1.jpg\""))
     }
 
+    func testMultipartFilenameBackslashCannotEscapeTheClosingQuote() throws {
+        let actual = try body(of: request(filename: "ends-with-backslash\\"))
+        let string = String(decoding: actual, as: UTF8.self)
+        XCTAssertTrue(string.contains("name=\"assetData\"; filename=\"ends-with-backslash%5C\"\r\n"))
+        XCTAssertFalse(string.contains("backslash\\\""))
+    }
+
     func testMultipartStreamsLargeResource() throws {
         let file = directory.appendingPathComponent("big.bin")
         let chunk = Data((0..<255).map { UInt8($0) })
@@ -187,11 +194,53 @@ final class AssetUploadTests: XCTestCase {
         for status in [429, 500, 502, 503] {
             XCTAssertThrowsError(try result(status)) { XCTAssertEqual($0 as? ImmichServiceError, .unexpectedStatus(status)) }
         }
+        // The size cap is for success bodies: an oversize error page still maps by its status.
+        let huge = String(repeating: "x", count: LiveImmichService.maxUploadResponseBytes + 1)
+        XCTAssertThrowsError(try result(502, huge)) { XCTAssertEqual($0 as? ImmichServiceError, .unexpectedStatus(502)) }
+        XCTAssertThrowsError(try result(404, huge)) {
+            XCTAssertEqual($0 as? BackupUploadError, .rejected(status: 404, message: ""))
+        }
+        XCTAssertThrowsError(try result(201, #"{"id":"\#(id)","status":"created","pad":"\#(huge)"}"#)) {
+            XCTAssertEqual($0 as? ImmichServiceError, .invalidResponse)
+        }
         // A success without a usable body is not a success.
         XCTAssertThrowsError(try result(201, "{}")) { XCTAssertEqual($0 as? ImmichServiceError, .invalidResponse) }
         XCTAssertThrowsError(try result(201, #"{"id":"x","status":"weird"}"#)) {
             XCTAssertEqual($0 as? ImmichServiceError, .invalidResponse)
         }
+    }
+
+    func testBodyFileIsRemovedWhenTheWriteFails() async throws {
+        let service = try service()
+        let missing = AssetUploadRequest(
+            fileURL: directory.appendingPathComponent("missing.bin"), filename: "x.jpg", mimeType: "image/jpeg",
+            checksum: "c", createdAt: Date(), modifiedAt: Date(), isFavorite: false, duration: nil,
+            livePhotoVideoID: nil, allowsCellular: true)
+        do {
+            _ = try await service.uploadAsset(missing)
+            XCTFail("expected the write to fail")
+        } catch {
+            XCTAssertNil(error as? ImmichServiceError)
+        }
+        let left = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        XCTAssertTrue(left.filter { $0.hasSuffix(".multipart") }.isEmpty, "\(left)")
+    }
+
+    func testBodyFileIsRemovedWhenTheTaskIsCancelled() async throws {
+        let service = try service()
+        let upload = try request()
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await service.uploadAsset(upload)
+        }
+        do {
+            _ = try await task.value
+            XCTFail("expected cancellation")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "\(error)")
+        }
+        let left = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        XCTAssertTrue(left.filter { $0.hasSuffix(".multipart") }.isEmpty, "\(left)")
     }
 
     // MARK: Linking
@@ -221,6 +270,8 @@ final class AssetUploadTests: XCTestCase {
         XCTAssertEqual(uploads.map(\.checksum), [upload.checksum])
         let check = try await mock.checkBulkUpload([BulkUploadCheckItem(id: "a", checksum: upload.checksum)])
         XCTAssertEqual(check.first?.isDuplicate, true)
+        // The bulk check and the upload agree on the server's ID.
+        XCTAssertEqual(check.first?.serverAssetID, result.id)
         // The same file again is a duplicate with the same ID, like the server.
         let again = try await mock.uploadAsset(upload)
         XCTAssertEqual(again, AssetUploadResult(id: result.id, status: .duplicate))
