@@ -36,3 +36,5 @@
 "The server sent Bloom to a different address. Bloom doesn't follow it, so your API key stays with this server. Enter the address the server uses, for example with https://." = "Serveren sendte Bloom videre til en annen adresse. Bloom følger ikke etter, så API-nøkkelen blir hos denne serveren. Skriv inn adressen serveren bruker, for eksempel med https://.";
 "Unencrypted Address" = "Ukryptert adresse";
 "Bloom only uses http on your own network or Tailscale. Use https for this server." = "Bloom bruker bare http på ditt eget nettverk eller Tailscale. Bruk https for denne serveren.";
+"This item has no photo or video file that Bloom can back up." = "Dette objektet har ingen bilde- eller videofil som Bloom kan sikkerhetskopiere.";
+"Couldn't read %@: %@" = "Kunne ikke lese %@: %@";
