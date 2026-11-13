@@ -35,7 +35,16 @@ final class BackupModel {
     private(set) var failedItems: [FailedItem] = []
     private(set) var error: String?
     var settings: BackupSettings {
-        didSet { if settings != oldValue { settings.save(to: defaults) } }
+        didSet {
+            guard settings != oldValue else { return }
+            settings.save(to: defaults)
+            // The scanner works with the settings it was made with: check again with the new ones,
+            // so items waiting for Wi-Fi are tried once cellular is allowed.
+            if settings.photosOnCellular != oldValue.photosOnCellular
+                || settings.videosOnCellular != oldValue.videosOnCellular, !selection.included.isEmpty {
+                scheduleRescan()
+            }
+        }
     }
 
     @ObservationIgnored private let source: any PhotoLibrarySource
@@ -48,6 +57,8 @@ final class BackupModel {
     @ObservationIgnored private var rescan: (id: UUID, task: Task<Void, Never>)?
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var isStopped = false
+    /// The index couldn't be read when it was last used; it is reopened before the next attempt.
+    @ObservationIgnored private var indexWasUnavailable = false
 
     /// - Parameters:
     ///   - directory: where the account's `index.json` lives; the index is opened on first use.
@@ -72,6 +83,10 @@ final class BackupModel {
     /// Reads access, albums, the saved selection and the counts the index already knows.
     func load() async {
         let index = await ensureIndex()
+        if indexWasUnavailable {
+            indexWasUnavailable = false
+            if (try? await index.reload()) == nil { indexWasUnavailable = true }
+        }
         // A choice made while this was loading is newer than what the index has saved so far.
         let saved = await index.selection()
         if rescan == nil { selection = saved }
@@ -130,6 +145,7 @@ final class BackupModel {
         if let scanTask { await scanTask.value; return }
         access = await source.authorization()
         guard canRead else { return }
+        await reopenIndexIfNeeded()
         let scanner = await makeScanner()
         // Another caller may have started a scan while this one was suspended.
         if let scanTask { await scanTask.value; return }
@@ -189,9 +205,7 @@ final class BackupModel {
     }
 
     private func finishScan(result: BackupCounts?, failure: Error?) async {
-        if let failure, !(failure is CancellationError) {
-            error = Self.message(for: failure)
-        }
+        if let failure, !(failure is CancellationError) { report(failure) }
         // Before the first await: a late progress callback must not bring `progress` back or
         // overwrite the final counts.
         generation += 1
@@ -202,9 +216,27 @@ final class BackupModel {
         isScanning = false
     }
 
+    private func report(_ failure: Error) {
+        if case BackupIndexError.unavailable = failure { indexWasUnavailable = true }
+        error = Self.message(for: failure)
+    }
+
+    /// An index that couldn't be read (a locked device, say) stays unavailable until it is reloaded.
+    /// The reload replaces what the index holds in memory, so the choice on screen is put back.
+    private func reopenIndexIfNeeded() async {
+        guard indexWasUnavailable else { return }
+        let index = await ensureIndex()
+        indexWasUnavailable = false
+        do { try await index.reload() } catch { indexWasUnavailable = true }
+        await index.setSelection(selection)
+    }
+
     private static func message(for error: Error) -> String {
         if case BackupIndexError.unavailable = error {
             return tr("Bloom couldn't open its backup records. Unlock your device and try again.")
+        }
+        if case ImmichServiceError.unauthorized = error {
+            return tr("This API key can't check backups. Create a key with the View, Organize and Back Up permissions and sign in with it.")
         }
         return tr("Couldn't check your photos: %@", error.localizedDescription)
     }
@@ -228,8 +260,14 @@ final class BackupModel {
 
     /// Shows the choice at once, then saves it and checks again with the new selection.
     func setSelection(_ new: BackupSelection) {
-        guard new != selection else { return }
+        guard !isStopped, new != selection else { return }
         selection = new
+        scheduleRescan()
+    }
+
+    /// Saves the current selection and checks again, replacing a rescan or scan in progress.
+    private func scheduleRescan() {
+        guard !isStopped else { return }
         // Each rescan waits for the one it replaces, so saves happen in the order of the choices
         // and `stop()` (which awaits the newest) waits for all of them.
         let previous = rescan?.task
@@ -250,7 +288,7 @@ final class BackupModel {
         guard !Task.isCancelled else { return }
         // The latest choice, not the one that started this task.
         await index.setSelection(selection)
-        do { try await index.save() } catch { self.error = Self.message(for: error) }
+        do { try await index.save() } catch { report(error) }
         guard !Task.isCancelled else { return }
         scanTask?.cancel()
         await scanTask?.value
@@ -277,8 +315,12 @@ final class BackupModel {
     }
 
     private func refreshCounts() async {
+        // A scan that started or finished meanwhile has newer counts than this one will bring.
+        let before = generation
         let scanner = await makeScanner()
-        counts = await scanner.counts()
+        let fresh = await scanner.counts()
+        guard before == generation else { return }
+        counts = fresh
         await refreshFailures()
     }
 

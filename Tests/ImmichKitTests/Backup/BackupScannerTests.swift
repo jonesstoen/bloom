@@ -85,7 +85,15 @@ final class BackupScannerTests: XCTestCase {
             network: FixedNetwork(isOnCellular: cellular), settings: settings)
     }
 
+    /// The sizes of the checks that carry checksums. A scan that reads anything sends a one-item
+    /// probe first (see `testProbeComesBeforeTheFirstRead`); it is left out here.
     private func checkRequests(_ service: MockImmichService) async -> [Int] {
+        await service.requests.compactMap {
+            if case let .bulkUploadCheck(count) = $0 { return count } else { return nil }
+        }.dropFirst().map { $0 }
+    }
+
+    private func allCheckRequests(_ service: MockImmichService) async -> [Int] {
         await service.requests.compactMap {
             if case let .bulkUploadCheck(count) = $0 { return count } else { return nil }
         }
@@ -371,6 +379,55 @@ final class BackupScannerTests: XCTestCase {
         XCTAssertTrue(library.reads.isEmpty)
     }
 
+    func testProbeComesBeforeTheFirstRead() async throws {
+        let library = makeLibrary(album: ["1", "2"])
+        addAsset("1", to: library)
+        addAsset("2", to: library)
+        let service = MockImmichService()
+        let index = await makeIndex()
+
+        _ = try await makeScanner(library, service, index).scan { _, _ in }
+
+        let requests = await allCheckRequests(service)
+        XCTAssertEqual(requests, [1, 2], "one probe, then the checksums")
+    }
+
+    func testRejectedKeyFailsBeforeAnythingIsRead() async throws {
+        let library = makeLibrary(album: ["1", "2", "3"])
+        for id in ["1", "2", "3"] { addAsset(id, to: library) }
+        let service = MockImmichService()
+        await service.setFailure(.unauthorized)
+        let index = await makeIndex()
+
+        do {
+            _ = try await makeScanner(library, service, index).scan { _, _ in }
+            XCTFail("a key that can't check backups must stop the scan")
+        } catch ImmichServiceError.unauthorized {}
+        XCTAssertTrue(library.reads.isEmpty, "nothing is read or hashed before the probe passes")
+        let requests = await allCheckRequests(service)
+        XCTAssertEqual(requests, [1])
+    }
+
+    func testNothingToReadSendsNoProbe() async throws {
+        let library = makeLibrary(album: ["1"])
+        let sums = addAsset("1", to: library)
+        let service = MockImmichService()
+        let index = await makeIndex()
+        _ = try await makeScanner(library, service, index).scan { _, _ in }
+        await service.setServerChecksums([sums[.photo]!])
+        let before = await allCheckRequests(service).count
+
+        _ = try await makeScanner(library, service, index).scan { _, _ in } // already hashed
+        let after = await allCheckRequests(service).count
+        XCTAssertEqual(after - before, 1, "only the checksum request, no probe")
+
+        let empty = makeLibrary(album: [])
+        let none = MockImmichService()
+        _ = try await makeScanner(empty, none, await makeIndex()).scan { _, _ in }
+        let requests = await allCheckRequests(none)
+        XCTAssertEqual(requests, [])
+    }
+
     func testConcurrentScansShareOneRun() async throws {
         let library = makeLibrary(album: ["1", "2", "3"])
         for id in ["1", "2", "3"] { addAsset(id, to: library) }
@@ -460,7 +517,7 @@ final class BackupScannerTests: XCTestCase {
         let one = addAsset("1", to: library)
         addAsset("2", to: library)
         let service = MockImmichService()
-        await service.setFailure(.unauthorized)
+        await service.setBulkUploadFailure(.unauthorized, afterCalls: 1) // the probe passes
         let index = await makeIndex()
 
         do {
@@ -471,7 +528,7 @@ final class BackupScannerTests: XCTestCase {
         let entry = await index.entry(for: "1")
         XCTAssertEqual(entry?.state, .pending(reason: .notChecked))
 
-        await service.setFailure(nil)
+        await service.setBulkUploadFailure(nil)
         await service.setServerChecksums([one[.photo]!])
         let counts = try await makeScanner(library, service, index).scan { _, _ in }
 

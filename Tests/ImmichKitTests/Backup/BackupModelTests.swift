@@ -64,17 +64,20 @@ final class BackupModelTests: XCTestCase {
         _ library: FakePhotoLibrary,
         service: MockImmichService = MockImmichService(library: MockLibrary(assetCount: 1, years: 1)),
         directory: URL? = nil,
-        defaults: UserDefaults? = nil
+        defaults: UserDefaults? = nil,
+        cellular: Bool = false
     ) -> BackupModel {
         BackupModel(
             source: library, service: service, directory: directory ?? makeDirectory(),
-            network: FixedNetwork(isOnCellular: false), defaults: defaults ?? makeDefaults())
+            network: FixedNetwork(isOnCellular: cellular), defaults: defaults ?? makeDefaults())
     }
 
+    /// Checksum requests, not counting the one-item probe that a scan reading photos sends first.
     private func checkRequests(_ service: MockImmichService) async -> Int {
-        await service.requests.filter {
+        let all = await service.requests.filter {
             if case .bulkUploadCheck = $0 { return true } else { return false }
         }.count
+        return max(0, all - 1)
     }
 
     private var recents: DeviceAlbum { DeviceAlbum(id: "recents", title: "Recents", count: 4) }
@@ -315,6 +318,85 @@ final class BackupModelTests: XCTestCase {
         XCTAssertFalse(model.isScanning)
         await model.scan()
         XCTAssertFalse(model.isScanning, "no scan starts after stop()")
+    }
+
+    func testKeyWithoutBackupPermissionShowsASpecificMessage() async {
+        let library = makeLibrary(count: 3)
+        let service = MockImmichService(library: MockLibrary(assetCount: 1, years: 1))
+        await service.setFailure(.unauthorized)
+        let model = makeModel(library, service: service)
+        await model.load()
+        model.setSelection(BackupSelection(included: ["recents"]))
+        await model.settle()
+        XCTAssertEqual(
+            model.error,
+            "This API key can't check backups. Create a key with the View, Organize and Back Up permissions and sign in with it.")
+        XCTAssertTrue(library.reads.isEmpty, "nothing is read before the key is known to work")
+    }
+
+    func testCellularSwitchRechecksItemsWaitingForWiFi() async {
+        let library = makeLibrary(count: 2)
+        library.markICloudOnly(DeviceResource(type: .photo, filename: "a1.jpg"))
+        let model = makeModel(library, cellular: true)
+        await model.load()
+        model.setSelection(BackupSelection(included: ["recents"]))
+        await model.settle()
+        XCTAssertEqual(model.counts.waitingForWiFi, 1)
+
+        model.settings.photosOnCellular = true
+        await model.settle()
+
+        XCTAssertEqual(model.counts.waitingForWiFi, 0)
+        XCTAssertEqual(model.counts.total, 2)
+        XCTAssertEqual(model.remaining, 2)
+    }
+
+    func testCellularSwitchWithoutSelectionDoesNotScan() async {
+        let library = makeLibrary(count: 2)
+        let service = MockImmichService(library: MockLibrary(assetCount: 1, years: 1))
+        let model = makeModel(library, service: service, cellular: true)
+        await model.load()
+        model.settings.photosOnCellular = true
+        await model.settle()
+        XCTAssertTrue(library.reads.isEmpty)
+        XCTAssertFalse(model.isScanning)
+    }
+
+    func testSetSelectionAfterStopWritesNothing() async {
+        let directory = makeDirectory()
+        let model = makeModel(makeLibrary(), directory: directory)
+        await model.stop()
+        model.setSelection(BackupSelection(included: ["recents"]))
+        await model.settle()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+        XCTAssertEqual(model.selection, BackupSelection(), "the choice is ignored")
+    }
+
+    func testUnavailableIndexIsReopenedForTheNextScan() async throws {
+        let library = makeLibrary(count: 4)
+        let directory = makeDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let writer = BackupIndex(directory: directory)
+        try await writer.save()
+        let file = directory.appendingPathComponent("index.json")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: file.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path) }
+        try XCTSkipIf(FileManager.default.isReadableFile(atPath: file.path), "file is readable despite permissions (running as root)")
+
+        let model = makeModel(library, directory: directory)
+        await model.load()
+        model.setSelection(BackupSelection(included: ["recents"]))
+        await model.settle()
+        XCTAssertEqual(model.error, "Bloom couldn't open its backup records. Unlock your device and try again.")
+
+        // The device is unlocked again.
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+        await model.scan()
+
+        XCTAssertNil(model.error)
+        XCTAssertEqual(model.counts.total, 4)
+        let saved = await BackupIndex(directory: directory).selection()
+        XCTAssertEqual(saved, BackupSelection(included: ["recents"]), "the choice made meanwhile is kept")
     }
 
     func testCellularSettingsDefaultOffAndPersist() {

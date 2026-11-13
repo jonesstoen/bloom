@@ -75,7 +75,9 @@ public actor BackupScanner {
     /// Scans the current selection. `progress` gets the counts and the number of items handled so far,
     /// after each item; the total shrinks when selected items turn out to be gone from the library.
     /// Saves the index every `saveInterval` items, at the end, and when stopped by cancellation or an
-    /// error (which is then rethrown). Throws `BackupIndexError.unavailable` before reading anything
+    /// error (which is then rethrown). Before the first resource is read it sends one probe request to
+    /// the server (a single checksum, result ignored) so that a key without the right permission fails
+    /// before any work is done; scans that read nothing send no probe. Throws `BackupIndexError.unavailable` before reading anything
     /// when the index file couldn't be loaded.
     ///
     /// Only one scan runs at a time: a call made while one is running waits for it and returns its
@@ -144,6 +146,16 @@ public actor BackupScanner {
             batchChecksums += sums.count
         }
 
+        // Asked once, before the first resource is read: a key that may not check backups fails here
+        // instead of after hours of hashing (and iCloud downloads).
+        var probed = false
+        func probeServer() async throws {
+            guard !probed else { return }
+            let empty = SHA1Stream().base64()
+            _ = try await service.checkBulkUpload([BulkUploadCheckItem(id: "probe", checksum: empty)])
+            probed = true
+        }
+
         var handled = 0
         do {
             for start in stride(from: 0, to: ids.count, by: Self.fetchSize) {
@@ -173,6 +185,7 @@ public actor BackupScanner {
                             try await enqueue(id, resources, entry.checksums)
                         }
                     } else {
+                        try await probeServer()
                         let (checksums, state) = try await hash(asset, resources: resources)
                         await record(
                             BackupEntry(modificationDate: asset.modificationDate, checksums: checksums, state: state),

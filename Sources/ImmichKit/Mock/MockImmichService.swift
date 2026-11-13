@@ -91,6 +91,13 @@ public actor MockImmichService: ImmichService {
     public private(set) var serverChecksums: Set<String> = []
     /// The checksums the mock server already has; `checkBulkUpload` reports these as duplicates.
     public func setServerChecksums(_ checksums: Set<String>) { serverChecksums = checksums }
+    private var bulkUploadChecks = 0
+    private var bulkUploadFailure: (error: ImmichServiceError, after: Int)?
+    /// Makes `checkBulkUpload` throw `failure`, but only after `calls` calls have succeeded.
+    public func setBulkUploadFailure(_ failure: ImmichServiceError?, afterCalls calls: Int = 0) {
+        bulkUploadFailure = failure.map { ($0, calls) }
+        bulkUploadChecks = 0
+    }
     public func setServerFeatures(_ features: ServerFeatures) { self.features = features }
     /// Fails only the features request, like a server that no longer serves it.
     public func setServerFeaturesFailure(_ failure: ImmichServiceError?) { featuresFailure = failure }
@@ -186,6 +193,8 @@ public actor MockImmichService: ImmichService {
 
     public func checkBulkUpload(_ items: [BulkUploadCheckItem]) async throws -> [BulkUploadCheckResult] {
         try await begin(.bulkUploadCheck(items.count))
+        bulkUploadChecks += 1
+        if let bulkUploadFailure, bulkUploadChecks > bulkUploadFailure.after { throw bulkUploadFailure.error }
         return items.map { item in
             let known = serverChecksums.contains(item.checksum)
             return BulkUploadCheckResult(

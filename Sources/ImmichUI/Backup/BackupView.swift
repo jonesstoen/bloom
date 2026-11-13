@@ -38,6 +38,12 @@ struct BackupView: View {
             }
         }
         .task { await model.load() }
+        #if os(iOS)
+        // Keep the screen awake while a scan runs: auto-lock would suspend the app and stop a long first run.
+        .onAppear { UIApplication.shared.isIdleTimerDisabled = model.isScanning }
+        .onChange(of: model.isScanning) { _, scanning in UIApplication.shared.isIdleTimerDisabled = scanning }
+        .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
+        #endif
     }
 
     @ViewBuilder private var content: some View {
