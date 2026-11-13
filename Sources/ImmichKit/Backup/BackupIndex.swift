@@ -40,6 +40,7 @@ public actor BackupIndex {
     private let fileURL: URL
     private var stored = Stored()
     private var isAvailable = true
+    private var hasChanges = false
 
     /// Loads `index.json` from `directory`. A missing file starts empty; a corrupt one is moved
     /// aside to `index.json.corrupt` and the index starts empty; a file that exists but can't be
@@ -54,11 +55,19 @@ public actor BackupIndex {
 
     public func entry(for assetID: String) -> BackupEntry? { stored.entries[assetID] }
 
-    public func set(_ entry: BackupEntry, for assetID: String) { stored.entries[assetID] = entry }
+    public func set(_ entry: BackupEntry, for assetID: String) {
+        guard stored.entries[assetID] != entry else { return }
+        stored.entries[assetID] = entry
+        hasChanges = true
+    }
 
     public func selection() -> BackupSelection { stored.selection }
 
-    public func setSelection(_ s: BackupSelection) { stored.selection = s }
+    public func setSelection(_ s: BackupSelection) {
+        guard stored.selection != s else { return }
+        stored.selection = s
+        hasChanges = true
+    }
 
     /// Retries loading after the file couldn't be read. Replaces the in-memory state.
     public func reload() throws { try load() }
@@ -70,11 +79,20 @@ public actor BackupIndex {
         )
         let data = try JSONEncoder().encode(stored)
         try data.write(to: fileURL, options: CacheProtection.writingOptions)
+        hasChanges = false
+    }
+
+    /// A scanner checkpoint; unchanged records need no additional disk write.
+    func saveIfChanged() throws {
+        guard isAvailable else { throw BackupIndexError.unavailable }
+        guard hasChanges else { return }
+        try save()
     }
 
     /// Forgets everything and removes the file. Also makes an unavailable index usable again.
     public func clear() {
         stored = Stored()
+        hasChanges = false
         try? FileManager.default.removeItem(at: fileURL)
         isAvailable = true
     }
@@ -83,6 +101,7 @@ public actor BackupIndex {
         let result = Self.read(fileURL)
         stored = result.stored
         isAvailable = result.isAvailable
+        hasChanges = false
         if let error = result.error { throw error }
     }
 

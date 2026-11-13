@@ -108,6 +108,10 @@ final class BackupIndexTests: XCTestCase {
         try XCTSkipIf(FileManager.default.isReadableFile(atPath: file.path), "file is readable despite permissions (running as root)")
 
         let index = BackupIndex(directory: directory)
+        do {
+            try await index.saveIfChanged()
+            XCTFail("An unchanged unavailable index must still reject a checkpoint")
+        } catch BackupIndexError.unavailable {}
         await index.set(sampleEntry(), for: "1")
         let entry = await index.entry(for: "1")
         XCTAssertNotNil(entry) // in-memory edits are allowed, only persisting is blocked
@@ -167,4 +171,58 @@ final class BackupIndexTests: XCTestCase {
         XCTAssertEqual(attributes[.protectionKey] as? FileProtectionType, .complete)
         #endif
     }
+    func testUnchangedCheckpointDoesNotRewriteTheIndex() async throws {
+        let directory = makeDirectory()
+        let index = BackupIndex(directory: directory)
+        let entry = sampleEntry()
+        let selection = BackupSelection(included: ["A"])
+        await index.set(entry, for: "1")
+        await index.setSelection(selection)
+        try await index.save()
+        let file = directory.appendingPathComponent("index.json")
+        let marker = Date(timeIntervalSince1970: 1_000_000_000)
+        try FileManager.default.setAttributes([.modificationDate: marker], ofItemAtPath: file.path)
+
+        // Repeat scans can write the same server verdict and album selection into the index.
+        await index.set(entry, for: "1")
+        await index.setSelection(selection)
+        try await index.saveIfChanged()
+        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        XCTAssertEqual(attributes[.modificationDate] as? Date, marker,
+                       "An unchanged checkpoint must not rewrite the file")
+    }
+
+    func testChangedCheckpointPersistsEntriesAndSelection() async throws {
+        let directory = makeDirectory()
+        let index = BackupIndex(directory: directory)
+        try await index.save()
+        let entry = sampleEntry(state: .pending(reason: .needsUpload))
+        let selection = BackupSelection(included: ["B"], excluded: ["A"])
+        await index.set(entry, for: "1")
+        await index.setSelection(selection)
+        try await index.saveIfChanged()
+        let reloaded = BackupIndex(directory: directory)
+        let savedEntry = await reloaded.entry(for: "1")
+        let savedSelection = await reloaded.selection()
+        XCTAssertEqual(savedEntry, entry)
+        XCTAssertEqual(savedSelection, selection)
+    }
+
+    func testFailedCheckpointKeepsChangesForRetry() async throws {
+        let directory = makeDirectory()
+        let index = BackupIndex(directory: directory)
+        // A regular file blocks creation of the index directory, without permission assumptions.
+        try Data("blocker".utf8).write(to: directory)
+        let entry = sampleEntry()
+        await index.set(entry, for: "1")
+        do {
+            try await index.saveIfChanged()
+            XCTFail("The checkpoint must fail while a file blocks the directory")
+        } catch {}
+        try FileManager.default.removeItem(at: directory)
+        try await index.saveIfChanged()
+        let saved = await BackupIndex(directory: directory).entry(for: "1")
+        XCTAssertEqual(saved, entry, "A failed write must remain pending for the next checkpoint")
+    }
+
 }

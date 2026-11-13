@@ -74,7 +74,7 @@ public actor BackupScanner {
 
     /// Scans the current selection. `progress` gets the counts and the number of items handled so far,
     /// after each item; the total shrinks when selected items turn out to be gone from the library.
-    /// Saves the index every `saveInterval` items, at the end, and when stopped by cancellation or an
+    /// Saves changed records every `saveInterval` items, at the end, and when stopped by cancellation or an
     /// error (which is then rethrown). Before the first resource is read it sends one probe request to
     /// the server (a single checksum, result ignored) so that a key without the right permission fails
     /// before any work is done; scans that read nothing send no probe. Throws `BackupIndexError.unavailable` before reading anything
@@ -193,17 +193,17 @@ public actor BackupScanner {
                         if state == .pending(reason: .notChecked) { try await enqueue(id, resources, checksums) }
                     }
                     if batchChecksums >= Self.batchSize { try await flush() }
-                    if handled.isMultiple(of: Self.saveInterval) { try await index.save() }
+                    if handled.isMultiple(of: Self.saveInterval) { try await index.saveIfChanged() }
                 }
             }
             try await flush()
         } catch {
             // Keep what was learned: hashed items keep their checksums, so the next scan asks
             // the server without reading them again.
-            try? await index.save()
+            try? await index.saveIfChanged()
             throw error
         }
-        try await index.save()
+        try await index.saveIfChanged()
         return counts
     }
 
