@@ -47,6 +47,7 @@ final class BulkUploadCheckTests: XCTestCase {
             BulkUploadCheckResult(id: "0", isDuplicate: true, serverAssetID: "s1", isTrashed: false),
             BulkUploadCheckResult(id: "1", isDuplicate: false, serverAssetID: nil, isTrashed: false),
         ])
+        XCTAssertEqual(results.map(\.isRejected), [false, false], "a duplicate and an accept are not rejections")
     }
 
     func testRejectForUnsupportedFormatIsNotADuplicate() async throws {
@@ -54,6 +55,7 @@ final class BulkUploadCheckTests: XCTestCase {
         let results = try await service.checkBulkUpload([BulkUploadCheckItem(id: "0", checksum: "a")])
         XCTAssertEqual(results.map(\.isDuplicate), [false])
         XCTAssertEqual(results.first?.serverAssetID, nil)
+        XCTAssertEqual(results.map(\.isRejected), [true], "refused, not missing")
     }
 
     func testTrashedDuplicateIsReported() async throws {

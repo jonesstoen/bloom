@@ -133,9 +133,9 @@ public actor BackupScanner {
             let byID = Dictionary(results.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             for item in batch {
                 // The entry may have changed while the server answered: only apply the verdict
-                // to the checksums it was given for. Its state is the one before this check.
+                // to the checksums it was given for. It holds what was known before this check.
                 guard var entry = await index.entry(for: item.assetID), entry.checksums == item.dictionary else { continue }
-                if let (state, serverIDs) = Self.verdict(for: item, results: byID, previous: entry.state) {
+                if let (state, serverIDs) = Self.verdict(for: item, results: byID, previous: entry) {
                     entry.state = state
                     entry.serverIDs = serverIDs
                 } else if !Self.wasSeenOnServer(entry.state) {
@@ -266,21 +266,29 @@ public actor BackupScanner {
         }
     }
 
-    /// The new state and per-resource server IDs from the server's answers, given the state before
-    /// the check (option C):
+    /// The new state and per-resource server IDs from the server's answers, given what the entry knew
+    /// before the check (option C). A resource was *seen* on the server when the whole item was
+    /// (`backedUp` / `deletedOnServer`) or when the entry has a server ID for it (a Live Photo half
+    /// found earlier while the other half was missing).
     /// - every resource a duplicate, none trashed: backed up, with the photo's (or video's) server ID;
-    /// - otherwise, if a copy is in the server's trash or the item was seen on the server before:
-    ///   deleted on the server, per resource trashed or gone;
-    /// - otherwise (never seen there, nothing trashed): needs upload.
+    /// - a copy in the server's trash, or a seen resource gone (`accept`): deleted on the server, with
+    ///   every resource the server doesn't hold untrashed listed as trashed or gone;
+    /// - otherwise (nothing seen is missing, nothing trashed): needs upload.
     /// A Live Photo is on the server only while both resources are. `serverIDs` holds the IDs of the
     /// copies the server has now (trashed ones included); a gone copy's old ID is dropped, as nothing
-    /// can be done with it. Returns `nil` when an answer or a duplicate's ID is missing: no verdict.
+    /// can be done with it.
+    ///
+    /// Returns `nil` (no verdict) when an answer or a duplicate's ID is missing, or when the server
+    /// refused a resource for another reason (unsupported format) on an item seen there: a refusal
+    /// says nothing about deletion. A never-seen item with a refusal needs upload; the upload reports it.
     private static func verdict(
-        for item: Hashed, results: [String: BulkUploadCheckResult], previous: BackupState
+        for item: Hashed, results: [String: BulkUploadCheckResult], previous: BackupEntry
     ) -> (BackupState, [DeviceResourceType: String])? {
         guard let main = item.checksums.first?.type else { return nil }
+        let seenItem = wasSeenOnServer(previous.state)
         var trashed: Set<DeviceResourceType> = []
         var gone: Set<DeviceResourceType> = []
+        var rejected = false
         var serverIDs: [DeviceResourceType: String] = [:]
         for (type, _) in item.checksums {
             guard let answer = results[checkID(item.assetID, type)] else { return nil }
@@ -288,14 +296,20 @@ public actor BackupScanner {
                 guard let id = answer.serverAssetID else { return nil }
                 serverIDs[type] = id
                 if answer.isTrashed { trashed.insert(type) }
+            } else if answer.isRejected {
+                rejected = true
             } else {
                 gone.insert(type)
             }
         }
+        if rejected {
+            return seenItem || !previous.serverIDs.isEmpty ? nil : (.pending(reason: .needsUpload), serverIDs)
+        }
         if trashed.isEmpty, gone.isEmpty, let id = serverIDs[main] {
             return (.backedUp(serverAssetID: id), serverIDs)
         }
-        if !trashed.isEmpty || wasSeenOnServer(previous) {
+        let seenGone = seenItem ? !gone.isEmpty : gone.contains { previous.serverIDs[$0] != nil }
+        if !trashed.isEmpty || seenGone {
             return (.deletedOnServer(trashed: trashed, gone: gone), serverIDs)
         }
         return (.pending(reason: .needsUpload), serverIDs)

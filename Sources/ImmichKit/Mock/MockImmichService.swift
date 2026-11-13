@@ -91,6 +91,15 @@ public actor MockImmichService: ImmichService {
     public private(set) var serverChecksums: Set<String> = []
     /// The checksums the mock server already has; `checkBulkUpload` reports these as duplicates.
     public func setServerChecksums(_ checksums: Set<String>) { serverChecksums = checksums }
+    public private(set) var trashedChecksums: Set<String> = []
+    /// Checksums whose server copy is in the trash: reported as trashed duplicates, even if not in `serverChecksums`.
+    public func setTrashedChecksums(_ checksums: Set<String>) { trashedChecksums = checksums }
+    public private(set) var rejectedChecksums: Set<String> = []
+    /// Checksums the server refuses for a reason other than a duplicate (unsupported format).
+    public func setRejectedChecksums(_ checksums: Set<String>) { rejectedChecksums = checksums }
+    public private(set) var unansweredChecksums: Set<String> = []
+    /// Checksums `checkBulkUpload` leaves out of its answer.
+    public func setUnansweredChecksums(_ checksums: Set<String>) { unansweredChecksums = checksums }
     private var bulkUploadChecks = 0
     private var bulkUploadFailure: (error: ImmichServiceError, after: Int)?
     /// Makes `checkBulkUpload` throw `failure`, but only after `calls` calls have succeeded.
@@ -195,10 +204,12 @@ public actor MockImmichService: ImmichService {
         try await begin(.bulkUploadCheck(items.count))
         bulkUploadChecks += 1
         if let bulkUploadFailure, bulkUploadChecks > bulkUploadFailure.after { throw bulkUploadFailure.error }
-        return items.map { item in
-            let known = serverChecksums.contains(item.checksum)
+        return items.filter { !unansweredChecksums.contains($0.checksum) }.map { item in
+            let trashed = trashedChecksums.contains(item.checksum)
+            let known = trashed || serverChecksums.contains(item.checksum)
             return BulkUploadCheckResult(
-                id: item.id, isDuplicate: known, serverAssetID: known ? "server-\(item.checksum)" : nil, isTrashed: false)
+                id: item.id, isDuplicate: known, serverAssetID: known ? "server-\(item.checksum)" : nil, isTrashed: trashed,
+                isRejected: !known && rejectedChecksums.contains(item.checksum))
         }
     }
 

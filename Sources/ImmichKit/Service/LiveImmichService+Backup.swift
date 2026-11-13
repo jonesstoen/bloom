@@ -13,11 +13,14 @@ extension LiveImmichService {
             throw ImmichServiceError.invalidResponse
         }
         return response.results.map {
-            BulkUploadCheckResult(
+            let isDuplicate = $0.action == "reject" && $0.reason == "duplicate"
+            return BulkUploadCheckResult(
                 id: $0.id,
-                isDuplicate: $0.action == "reject" && $0.reason == "duplicate",
+                isDuplicate: isDuplicate,
                 serverAssetID: $0.assetId,
-                isTrashed: $0.isTrashed ?? false)
+                isTrashed: $0.isTrashed ?? false,
+                // Only `accept` means the server lacks the file and would take it.
+                isRejected: !isDuplicate && $0.action != "accept")
         }
     }
 

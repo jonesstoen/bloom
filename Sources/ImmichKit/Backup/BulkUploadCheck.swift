@@ -22,11 +22,15 @@ public struct BulkUploadCheckResult: Sendable, Equatable {
     public let serverAssetID: String?
     /// The existing server asset is in the trash.
     public let isTrashed: Bool
+    /// The server refused the file for a reason other than having it already (unsupported format).
+    /// Neither this nor `isDuplicate`: the server doesn't have it and would accept an upload.
+    public let isRejected: Bool
 
-    public init(id: String, isDuplicate: Bool, serverAssetID: String?, isTrashed: Bool) {
+    public init(id: String, isDuplicate: Bool, serverAssetID: String?, isTrashed: Bool, isRejected: Bool = false) {
         self.id = id
         self.isDuplicate = isDuplicate
         self.serverAssetID = serverAssetID
         self.isTrashed = isTrashed
+        self.isRejected = isRejected
     }
 }
