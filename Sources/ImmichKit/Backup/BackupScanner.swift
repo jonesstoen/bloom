@@ -270,17 +270,18 @@ public actor BackupScanner {
     /// before the check (option C). A resource was *seen* on the server when the whole item was
     /// (`backedUp` / `deletedOnServer`) or when the entry has a server ID for it (a Live Photo half
     /// found earlier while the other half was missing).
-    /// - every resource a duplicate, none trashed: backed up, with the photo's (or video's) server ID;
     /// - a copy in the server's trash, or a seen resource gone (`accept`): deleted on the server, with
-    ///   every resource the server doesn't hold untrashed listed as trashed or gone;
+    ///   the trashed resources and the gone (`accept`) ones listed; this wins over any refusal;
+    /// - a resource refused for another reason (unsupported format): no verdict for an item seen on
+    ///   the server as a whole, needs upload otherwise (the upload reports the refusal);
+    /// - every resource a duplicate, none trashed: backed up, with the photo's (or video's) server ID;
     /// - otherwise (nothing seen is missing, nothing trashed): needs upload.
     /// A Live Photo is on the server only while both resources are. `serverIDs` holds the IDs of the
     /// copies the server has now (trashed ones included); a gone copy's old ID is dropped, as nothing
     /// can be done with it.
     ///
-    /// Returns `nil` (no verdict) when an answer or a duplicate's ID is missing, or when the server
-    /// refused a resource for another reason (unsupported format) on an item seen there: a refusal
-    /// says nothing about deletion. A never-seen item with a refusal needs upload; the upload reports it.
+    /// Returns `nil` (no verdict) when an answer or a duplicate's ID is missing, or for the refusal case
+    /// above: a refusal says nothing about deletion.
     private static func verdict(
         for item: Hashed, results: [String: BulkUploadCheckResult], previous: BackupEntry
     ) -> (BackupState, [DeviceResourceType: String])? {
@@ -302,15 +303,16 @@ public actor BackupScanner {
                 gone.insert(type)
             }
         }
-        if rejected {
-            return seenItem || !previous.serverIDs.isEmpty ? nil : (.pending(reason: .needsUpload), serverIDs)
-        }
-        if trashed.isEmpty, gone.isEmpty, let id = serverIDs[main] {
-            return (.backedUp(serverAssetID: id), serverIDs)
-        }
+        // Deletion wins over a refusal: a trashed or seen-and-gone half is never uploaded automatically.
         let seenGone = seenItem ? !gone.isEmpty : gone.contains { previous.serverIDs[$0] != nil }
         if !trashed.isEmpty || seenGone {
             return (.deletedOnServer(trashed: trashed, gone: gone), serverIDs)
+        }
+        if rejected {
+            return seenItem ? nil : (.pending(reason: .needsUpload), serverIDs)
+        }
+        if gone.isEmpty, let id = serverIDs[main] {
+            return (.backedUp(serverAssetID: id), serverIDs)
         }
         return (.pending(reason: .needsUpload), serverIDs)
     }

@@ -876,6 +876,80 @@ final class BackupScannerTests: XCTestCase {
         let newEntry = await index.entry(for: "new")
         XCTAssertEqual(newEntry?.state, .pending(reason: .needsUpload))
     }
+
+    // MARK: Rejections next to other answers (fix round 2)
+
+    func testHalfSeenLivePhotoWithRejectedHalfStaysNeedsUpload() async throws {
+        let library = makeLibrary(album: ["live"])
+        let sums = addAsset("live", to: library, types: [.photo, .pairedVideo])
+        let service = MockImmichService()
+        await service.setServerChecksums([sums[.photo]!])
+        await service.setRejectedChecksums([sums[.pairedVideo]!])
+        let index = await makeIndex()
+
+        _ = try await makeScanner(library, service, index).scan { _, _ in }
+        let counts = try await makeScanner(library, service, index).scan { _, _ in }
+
+        assertInvariant(counts)
+        XCTAssertEqual(counts, BackupCounts(total: 1, backedUp: 0, pending: 1, failed: 0, deletedOnServer: 0, waitingForWiFi: 0))
+        let entry = await index.entry(for: "live")
+        XCTAssertEqual(entry?.state, .pending(reason: .needsUpload), "left to the uploader, which reports the refusal")
+        XCTAssertEqual(entry?.serverIDs, [.photo: "server-\(sums[.photo]!)"])
+    }
+
+    func testTrashedAndRejectedSeenItemIsDeletedOnServer() async throws {
+        let library = makeLibrary(album: ["live"])
+        let sums = addAsset("live", to: library, types: [.photo, .pairedVideo])
+        let service = MockImmichService()
+        await service.setServerChecksums(Set(sums.values))
+        let index = await makeIndex()
+        let first = try await makeScanner(library, service, index).scan { _, _ in }
+        XCTAssertEqual(first.backedUp, 1)
+
+        await service.setServerChecksums([])
+        await service.setTrashedChecksums([sums[.photo]!])
+        await service.setRejectedChecksums([sums[.pairedVideo]!])
+        let counts = try await makeScanner(library, service, index).scan { _, _ in }
+
+        assertInvariant(counts)
+        XCTAssertEqual(counts.deletedOnServer, 1)
+        let entry = await index.entry(for: "live")
+        XCTAssertEqual(entry?.state, .deletedOnServer(trashed: [.photo], gone: []))
+    }
+
+    func testTrashedAndRejectedNeverSeenItemIsDeletedOnServer() async throws {
+        let library = makeLibrary(album: ["live"])
+        let sums = addAsset("live", to: library, types: [.photo, .pairedVideo])
+        let service = MockImmichService()
+        await service.setTrashedChecksums([sums[.photo]!])
+        await service.setRejectedChecksums([sums[.pairedVideo]!])
+        let index = await makeIndex()
+
+        let counts = try await makeScanner(library, service, index).scan { _, _ in }
+
+        assertInvariant(counts)
+        XCTAssertEqual(counts.deletedOnServer, 1)
+        let entry = await index.entry(for: "live")
+        XCTAssertEqual(entry?.state, .deletedOnServer(trashed: [.photo], gone: []))
+        XCTAssertEqual(entry?.serverIDs, [.photo: "server-\(sums[.photo]!)"])
+    }
+
+    func testHalfSeenPurgedAndRejectedIsDeletedOnServer() async throws {
+        let library = makeLibrary(album: ["live"])
+        let sums = addAsset("live", to: library, types: [.photo, .pairedVideo])
+        let service = MockImmichService()
+        await service.setServerChecksums([sums[.photo]!])
+        await service.setRejectedChecksums([sums[.pairedVideo]!])
+        let index = await makeIndex()
+        _ = try await makeScanner(library, service, index).scan { _, _ in }
+
+        await service.setServerChecksums([]) // the photo half Bloom saw is purged
+        let counts = try await makeScanner(library, service, index).scan { _, _ in }
+
+        assertInvariant(counts)
+        let entry = await index.entry(for: "live")
+        XCTAssertEqual(entry?.state, .deletedOnServer(trashed: [], gone: [.photo]), "a seen half is never re-uploaded on its own")
+    }
 }
 
 /// A tiny locked box for collecting values from `@Sendable` closures.
