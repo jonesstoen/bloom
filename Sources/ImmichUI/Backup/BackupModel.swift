@@ -57,6 +57,11 @@ final class BackupModel {
     @ObservationIgnored private var rescan: (id: UUID, task: Task<Void, Never>)?
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var isStopped = false
+    @ObservationIgnored private var selectionRevision = 0
+    @ObservationIgnored private var savedSelectionRevision = 0
+    @ObservationIgnored private var selectionSaveError: String?
+
+    private var hasUnsavedSelection: Bool { selectionRevision != savedSelectionRevision }
     /// The index couldn't be read when it was last used; it is reopened before the next attempt.
     @ObservationIgnored private var indexWasUnavailable = false
 
@@ -82,6 +87,9 @@ final class BackupModel {
 
     /// Reads access, albums, the saved selection and the counts the index already knows.
     func load() async {
+        guard !isStopped else { return }
+        let loadingRevision = selectionRevision
+        let mayRestoreSelection = !hasUnsavedSelection
         let index = await ensureIndex()
         if indexWasUnavailable {
             indexWasUnavailable = false
@@ -89,7 +97,14 @@ final class BackupModel {
         }
         // A choice made while this was loading is newer than what the index has saved so far.
         let saved = await index.selection()
-        if rescan == nil { selection = saved }
+        if rescan == nil, mayRestoreSelection, !hasUnsavedSelection, loadingRevision == selectionRevision {
+            selection = saved
+        }
+        // An unlock/reopen retries the local choice, without starting another library scan.
+        if hasUnsavedSelection, rescan == nil, !isStopped {
+            scheduleRescan(scanning: false)
+            await rescan?.task.value
+        }
         var current = await source.authorization()
         // The first time, iOS asks the user here; Photos shows up in Settings only after that.
         if current == .notDetermined { current = await source.requestAuthorization() }
@@ -174,8 +189,10 @@ final class BackupModel {
 
     /// Stops the running scan. Hashed items keep their checksums, so the next scan carries on.
     func cancel() {
-        rescan?.task.cancel()
+        guard !isStopped else { return }
         scanTask?.cancel()
+        if hasUnsavedSelection { scheduleRescan(scanning: false) }
+        else { rescan?.task.cancel() }
     }
 
     /// Cancels and waits until nothing runs any more; no new scan starts afterwards. Call before the
@@ -262,34 +279,45 @@ final class BackupModel {
     func setSelection(_ new: BackupSelection) {
         guard !isStopped, new != selection else { return }
         selection = new
+        selectionRevision += 1
         scheduleRescan()
     }
 
     /// Saves the current selection and checks again, replacing a rescan or scan in progress.
-    private func scheduleRescan() {
+    private func scheduleRescan(scanning: Bool = true) {
         guard !isStopped else { return }
         // Each rescan waits for the one it replaces, so saves happen in the order of the choices
         // and `stop()` (which awaits the newest) waits for all of them.
         let previous = rescan?.task
         previous?.cancel()
-        scanTask?.cancel()
+        if scanning { scanTask?.cancel() }
         let id = UUID()
         let task = Task { [weak self] in
             await previous?.value
-            await self?.applySelection()
+            await self?.applySelection(scanning: scanning)
             if self?.rescan?.id == id { self?.rescan = nil }
         }
         rescan = (id, task)
     }
 
-    private func applySelection() async {
+    private func applySelection(scanning: Bool) async {
         let index = await ensureIndex()
         // Replaced by a newer choice (or stopped) while the index loaded: that one saves.
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, !isStopped else { return }
         // The latest choice, not the one that started this task.
+        let savingRevision = selectionRevision
         await index.setSelection(selection)
-        do { try await index.save() } catch { report(error) }
-        guard !Task.isCancelled else { return }
+        do {
+            try await index.save()
+            savedSelectionRevision = savingRevision
+            // Leave any later server error intact when only the storage retry succeeded.
+            if !scanning, error == selectionSaveError { error = nil }
+            selectionSaveError = nil
+        } catch {
+            report(error)
+            selectionSaveError = self.error
+        }
+        guard !Task.isCancelled, !isStopped, scanning else { return }
         scanTask?.cancel()
         await scanTask?.value
         guard !Task.isCancelled else { return }
