@@ -134,17 +134,26 @@ public final class RootModel {
     /// at sign-in or sign-out, so no share folder in use can be removed.
     private nonisolated static func removeLeftoverFiles(keeping current: URL?) async {
         CacheProtection.removeOtherAccounts(keeping: current)
+        removeLeftoverBackups(keeping: current)
         SelectionShareFiles.removeLeftovers()
+    }
+
+    /// Other accounts' backup indexes (a failed credential load or a rotated key). `current` is the
+    /// account's cache directory; it shares its digest folder name with the backup directory.
+    nonisolated static func removeLeftoverBackups(in root: URL = backupRoot, keeping current: URL?) {
+        CacheProtection.removeOtherAccounts(in: root, keeping: current)
+    }
+
+    nonisolated static var backupRoot: URL {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return support.appendingPathComponent("Bloom/Backup", isDirectory: true)
     }
 
     /// `<Application Support>/Bloom/Backup/<digest>`. Unlike the caches this must survive low-storage
     /// purges, because the index holds checksums that are expensive to recompute.
     static func backupDirectory(for credentials: ServerCredentials) -> URL {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        return support
-            .appendingPathComponent("Bloom/Backup", isDirectory: true)
-            .appendingPathComponent(accountDigest(for: credentials), isDirectory: true)
+        backupRoot.appendingPathComponent(accountDigest(for: credentials), isDirectory: true)
     }
 
     private static func accountDigest(for credentials: ServerCredentials) -> String {

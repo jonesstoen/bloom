@@ -90,4 +90,22 @@ final class RootViewTests: XCTestCase {
         XCTAssertFalse(RootModel.backupDirectory(for: a).standardizedFileURL.path.hasPrefix(caches.standardizedFileURL.path))
         XCTAssertFalse(RootModel.backupDirectory(for: a).path.contains("test-a"))
     }
+
+    func testLeftoverBackupDirectoriesAreRemovedExceptCurrent() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BackupRoot-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for name in ["aaaa", "bbbb", "cccc"] {
+            let dir = root.appendingPathComponent(name, isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try Data("x".utf8).write(to: dir.appendingPathComponent("index.json"))
+        }
+        // The cache directory of the current account shares its digest folder name.
+        let current = URL(fileURLWithPath: "/tmp/Caches/aaaa", isDirectory: true)
+        RootModel.removeLeftoverBackups(in: root, keeping: current)
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: root.path)), ["aaaa"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("aaaa/index.json").path))
+        RootModel.removeLeftoverBackups(in: root, keeping: nil)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [])
+    }
 }

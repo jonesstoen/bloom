@@ -78,20 +78,81 @@ final class BackupIndexTests: XCTestCase {
         XCTAssertNil(entry)
     }
 
-    func testCorruptFileLoadsAsEmpty() async throws {
+    func testCorruptFileIsMovedAsideAndLaterSaveWorks() async throws {
         let directory = makeDirectory()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try Data("not json {".utf8).write(to: directory.appendingPathComponent("index.json"))
+        let file = directory.appendingPathComponent("index.json")
+        try Data("not json {".utf8).write(to: file)
         let index = BackupIndex(directory: directory)
         let entry = await index.entry(for: "1")
         let selection = await index.selection()
         XCTAssertNil(entry)
         XCTAssertEqual(selection, BackupSelection())
+        let aside = directory.appendingPathComponent("index.json.corrupt")
+        XCTAssertEqual(try Data(contentsOf: aside), Data("not json {".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
         await index.set(sampleEntry(), for: "1")
         try await index.save()
         let reloaded = BackupIndex(directory: directory)
         let again = await reloaded.entry(for: "1")
         XCTAssertNotNil(again)
+    }
+
+    func testUnreadableFileMakesSaveThrowAndLeavesFileUntouched() async throws {
+        let directory = makeDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("index.json")
+        try Data("{}".utf8).write(to: file)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: file.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path) }
+        try XCTSkipIf(FileManager.default.isReadableFile(atPath: file.path), "file is readable despite permissions (running as root)")
+
+        let index = BackupIndex(directory: directory)
+        await index.set(sampleEntry(), for: "1")
+        let entry = await index.entry(for: "1")
+        XCTAssertNotNil(entry) // in-memory edits are allowed, only persisting is blocked
+        do {
+            try await index.save()
+            XCTFail("save should throw while the index is unavailable")
+        } catch let error as BackupIndexError {
+            XCTAssertEqual(error, .unavailable)
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+        XCTAssertEqual(try Data(contentsOf: file), Data("{}".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("index.json.corrupt").path))
+    }
+
+    func testReloadRecoversOnceTheFileIsReadable() async throws {
+        let directory = makeDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let writer = BackupIndex(directory: directory)
+        await writer.set(sampleEntry(), for: "1")
+        try await writer.save()
+        let file = directory.appendingPathComponent("index.json")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: file.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path) }
+        try XCTSkipIf(FileManager.default.isReadableFile(atPath: file.path), "file is readable despite permissions (running as root)")
+
+        let index = BackupIndex(directory: directory)
+        let before = await index.entry(for: "1")
+        XCTAssertNil(before)
+        do { try await index.reload(); XCTFail("reload should throw while unreadable") } catch {}
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+        try await index.reload()
+        let after = await index.entry(for: "1")
+        XCTAssertEqual(after, sampleEntry())
+        try await index.save()
+    }
+
+    func testDirectoryNamedIndexJsonIsUnavailableToo() async throws {
+        let directory = makeDirectory()
+        let file = directory.appendingPathComponent("index.json")
+        try FileManager.default.createDirectory(at: file, withIntermediateDirectories: true)
+        let index = BackupIndex(directory: directory)
+        do { try await index.save(); XCTFail("save should throw") } catch BackupIndexError.unavailable {}
+        var isDirectory: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path, isDirectory: &isDirectory))
+        XCTAssertTrue(isDirectory.boolValue)
     }
 
     func testSavedFileIsProtectedOnIOS() async throws {
