@@ -72,6 +72,9 @@ final class FakePhotoLibrary: PhotoLibrarySource, @unchecked Sendable {
         set { lock.withLock { _thumbnails = newValue } }
     }
 
+    /// Streams from `changes()` still being iterated (a cancelled watcher is removed).
+    var changeListenerCount: Int { lock.withLock { _changeListeners.count } }
+
     /// Delivers one change to every stream handed out by `changes()` that is still being iterated.
     func emitChange() {
         let listeners = lock.withLock { Array(_changeListeners.values) }

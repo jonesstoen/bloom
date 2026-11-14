@@ -142,7 +142,9 @@ private struct ImmichTabs: View {
         }
         .environment(\.allowsLibraryChanges, allowsChanges)
         .onChange(of: allowsChanges, initial: true) { _, allowed in editing.isAllowed = allowed }
-        // Backup runs while Bloom is open: `.inactive` (Control Center, the app switcher) doesn't stop it.
+        // Backup runs while Bloom is open. `.inactive` (Control Center, Face ID, a permission prompt)
+        // neither stops it nor starts a new scan: the runner starts one only when it was in the background.
+        // Coming back goes background → inactive → active, so the old phase can't tell that apart.
         .onChange(of: scenePhase, initial: true) { _, phase in
             switch phase {
             case .active: session.backup.runner.appBecameActive()

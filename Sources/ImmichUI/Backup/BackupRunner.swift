@@ -3,13 +3,16 @@ import ImmichKit
 import Observation
 
 /// Decides when backups run: with the Backup switch on and the app open, it scans the selection and
-/// then uploads what the server is missing. That happens when the app becomes active, when the Backup
-/// screen is opened, and when the photo library changes (debounced).
+/// then uploads what the server is missing. That happens when the app comes back from the background
+/// (or opens), when the Backup screen is opened, when the album choice or a cellular switch changes,
+/// and when the photo library changes (debounced).
 ///
-/// A library change during an upload never interrupts it: the current item finishes, then the runner
-/// scans again before the next one. A change during a scan starts another scan once it has finished.
-/// Leaving the foreground or turning the switch off cancels the upload in flight (the uploader puts
-/// the item back and removes its staged file; the server's checksum check makes the retry safe).
+/// A library change during an upload never interrupts the item in flight: the run uploads at least one
+/// item, then scans again before the next. A change during a scan is followed by one more scan, after
+/// which the queue gets its turn. A changed album choice pauses the run before the next item, so items
+/// no longer selected aren't uploaded. Leaving the foreground or turning the switch off cancels the
+/// upload in flight (the uploader puts the item back and removes its staged file; the server's checksum
+/// check makes the retry safe), and so does the user's Cancel of the scan a run is waiting for.
 ///
 /// Uploads (`run`), Try Again and Re-upload never overlap: they take turns on one lane, and a waiting
 /// Try Again or Re-upload pauses a run between items. The scans themselves are the model's.
@@ -22,8 +25,12 @@ final class BackupRunner {
 
     /// Wait after the last library change before scanning: PhotoKit reports a burst for one photo.
     nonisolated static let defaultDebounce: Duration = .seconds(2)
+    /// The longest wait from the first change of a burst, so steady changes still get scanned.
+    nonisolated static let defaultDebounceLimit: Duration = .seconds(10)
     /// During a run the counts on screen are refreshed at most this often (they read the whole selection).
     static let countsInterval: Duration = .seconds(3)
+    /// Scans in a row, after the first, that library changes may cause before the queue gets an upload in.
+    static let rescansBeforeUpload = 1
 
     private struct Work {
         let id: UUID
@@ -35,7 +42,8 @@ final class BackupRunner {
     @ObservationIgnored private let staging: BackupStaging
     @ObservationIgnored private var uploader: BackupUploader?
     @ObservationIgnored private let debounce: Duration
-    @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
+    @ObservationIgnored private let debounceLimit: Duration
+    @ObservationIgnored private let clock: BackupRetryClock
 
     @ObservationIgnored private var isActive = false
     @ObservationIgnored private var isStopped = false
@@ -45,61 +53,85 @@ final class BackupRunner {
     @ObservationIgnored private var tail: Task<Void, Never>?
     /// A scan (then upload) is wanted: set by the triggers, cleared when the scan starts.
     @ObservationIgnored private var wantsRun = false
+    /// The album choice or a cellular switch changed: the queue is out of date, pause before the next item.
+    @ObservationIgnored private var choiceChanged = false
+    /// The current run is waiting for a scan (a user Cancel of it ends the run).
+    @ObservationIgnored private var isScanningForRun = false
     @ObservationIgnored private var watcher: Task<Void, Never>?
+    @ObservationIgnored private var retiredWatchers: [Task<Void, Never>] = []
     @ObservationIgnored private var debounceTask: Task<Void, Never>?
+    /// When the current burst of library changes started.
+    @ObservationIgnored private var burstStart: ContinuousClock.Instant?
     @ObservationIgnored private var cleanup: Task<Void, Never>?
     @ObservationIgnored private var countsRefreshed: ContinuousClock.Instant?
+    @ObservationIgnored private var operations: [UUID: Task<Void, Error>] = [:]
+    /// Try Again / Re-upload calls waiting for the lane: a run pauses for them between items.
+    @ObservationIgnored private var waitingOperations = 0
     @ObservationIgnored private var laneBusy = false
     @ObservationIgnored private var laneWaiters: [CheckedContinuation<Void, Never>] = []
+
+    // Test hooks: events to wait for instead of polling.
+    @ObservationIgnored private var receivedChanges = 0
+    @ObservationIgnored private var changeObservers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    @ObservationIgnored private var laneObservers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
     /// - Parameters:
     ///   - uploader: shares the model's index (see `BackupModel.makeUploader`).
     ///   - staging: the uploader's staging folder, emptied by `stop()` and `removeLeftoverStaging()`.
-    ///   - debounce, sleep: the wait after a library change, and how it is waited (tests return at once).
+    ///   - debounce, debounceLimit, clock: the wait after a library change, its maximum from the first
+    ///     change of a burst, and the time source it is measured and waited with (tests control it).
     convenience init(
         model: BackupModel, uploader: BackupUploader, source: any PhotoLibrarySource, staging: BackupStaging,
-        debounce: Duration = BackupRunner.defaultDebounce,
-        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+        debounce: Duration = BackupRunner.defaultDebounce, debounceLimit: Duration = BackupRunner.defaultDebounceLimit,
+        clock: BackupRetryClock = .live
     ) {
-        self.init(model: model, uploader: Optional(uploader), source: source, staging: staging, debounce: debounce, sleep: sleep)
+        self.init(model: model, uploader: Optional(uploader), source: source, staging: staging,
+                  debounce: debounce, debounceLimit: debounceLimit, clock: clock)
     }
 
     /// Makes the uploader from the model when it is first needed (opening the index reads a file).
     convenience init(
         model: BackupModel, source: any PhotoLibrarySource, staging: BackupStaging,
-        debounce: Duration = BackupRunner.defaultDebounce,
-        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+        debounce: Duration = BackupRunner.defaultDebounce, debounceLimit: Duration = BackupRunner.defaultDebounceLimit,
+        clock: BackupRetryClock = .live
     ) {
-        self.init(model: model, uploader: nil, source: source, staging: staging, debounce: debounce, sleep: sleep)
+        self.init(model: model, uploader: nil, source: source, staging: staging,
+                  debounce: debounce, debounceLimit: debounceLimit, clock: clock)
     }
 
     private init(
         model: BackupModel, uploader: BackupUploader?, source: any PhotoLibrarySource, staging: BackupStaging,
-        debounce: Duration, sleep: @escaping @Sendable (Duration) async throws -> Void
+        debounce: Duration, debounceLimit: Duration, clock: BackupRetryClock
     ) {
         self.model = model
         self.uploader = uploader
         self.source = source
         self.staging = staging
         self.debounce = debounce
-        self.sleep = sleep
+        self.debounceLimit = debounceLimit
+        self.clock = clock
         model.adopt(self)
     }
 
     private var isEnabled: Bool { model?.settings.isEnabled ?? false }
+    private var mayRun: Bool { isEnabled && isActive && !isStopped }
 
     // MARK: - Triggers
 
+    /// The app is in the foreground. Starts a run only when it comes back from the background (or opens):
+    /// returning from Control Center, Face ID or a permission prompt isn't a reason to scan again.
     func appBecameActive() {
         guard !isStopped else { return }
+        let wasActive = isActive
         isActive = true
         update()
-        requestRun()
+        if !wasActive { requestRun() }
     }
 
-    /// Cancels the upload in flight; it is retried the next time the app is active.
+    /// Cancels the upload in flight and any Try Again or Re-upload; retried the next time the app is active.
     func appLeftForeground() {
         isActive = false
+        cancelOperations()
         update()
     }
 
@@ -116,8 +148,23 @@ final class BackupRunner {
 
     /// Called by the model when the switch changed.
     func enabledDidChange() {
+        if !isEnabled { cancelOperations() }
         update()
         requestRun()
+    }
+
+    /// Called by the model when the album choice or a cellular switch changed (the model saves it and
+    /// scans): the run pauses before its next item, then scans and uploads with the new choice.
+    func selectionDidChange() {
+        guard mayRun else { return }
+        wantsRun = true
+        choiceChanged = true
+        start()
+    }
+
+    /// Called by the model when the user cancels a scan: ends the run that was waiting for it.
+    func scanCancelled() {
+        if isScanningForRun { cancelRun() }
     }
 
     /// Cancels and waits until nothing uploads, then empties the staging folder. Nothing runs afterwards.
@@ -125,18 +172,21 @@ final class BackupRunner {
     func stop() async {
         isStopped = true
         isActive = false
+        let pendingOperations = Array(operations.values)
+        cancelOperations()
         update()
-        debounceTask?.cancel()
+        for watcher in retiredWatchers { await watcher.value }
+        retiredWatchers = []
         await tail?.value
+        for operation in pendingOperations { _ = try? await operation.value }
         await cleanup?.value
-        // A Try Again or Re-upload in progress finishes first.
         await acquireLane()
         await staging.removeAll()
         releaseLane()
     }
 
     /// Empties the staging folder of files a run the system ended left behind. Call at launch; it waits
-    /// for its turn, so it never removes a file being uploaded.
+    /// for its turn on the lane, so it never removes a file being uploaded.
     func removeLeftoverStaging() {
         guard !isStopped else { return }
         let previous = cleanup
@@ -149,37 +199,45 @@ final class BackupRunner {
         }
     }
 
-    /// Whether a library change asked for another scan that hasn't started yet.
-    var isRescanPending: Bool { wantsRun && current != nil }
-
-    /// Waits until runs and pending library changes have been handled (for tests).
-    func settle() async {
-        while true {
-            if let task = debounceTask { await task.value; if debounceTask == task { debounceTask = nil }; continue }
-            if let task = tail { await task.value; if tail == task { tail = nil }; continue }
-            if let task = cleanup { await task.value; if cleanup == task { cleanup = nil }; continue }
-            return
-        }
-    }
-
     // MARK: - Try Again and Re-upload
 
     /// The uploader's Try Again, taking turns with uploads; then the items are checked and uploaded.
+    /// Cancelled by leaving the foreground, turning the switch off and `stop()`.
     func retryFailed(_ ids: [String]) async {
-        await acquireLane()
-        defer { releaseLane() }
-        guard !isStopped else { return }
-        await uploaderForRun()?.retryFailed(ids)
-        await finishOperation()
+        try? await operation { uploader in
+            try Task.checkCancellation()
+            await uploader.retryFailed(ids)
+        }
     }
 
-    /// The uploader's Re-upload, taking turns with uploads; then the queue is uploaded.
+    /// The uploader's Re-upload, taking turns with uploads; then the queue is uploaded. Cancelled
+    /// (throwing `CancellationError`) like `retryFailed`.
     func reupload(_ ids: [String]) async throws {
+        try await operation { uploader in try await uploader.reupload(ids) }
+    }
+
+    /// Runs `body` in a task of its own, so `cancelOperations()` reaches it whoever called.
+    private func operation(_ body: @escaping @MainActor (BackupUploader) async throws -> Void) async throws {
+        guard !isStopped else { throw CancellationError() }
+        let id = UUID()
+        let task = Task { [weak self] in
+            guard let self else { throw CancellationError() }
+            try await self.perform(body)
+        }
+        operations[id] = task
+        defer { operations[id] = nil }
+        try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+    }
+
+    private func perform(_ body: @MainActor (BackupUploader) async throws -> Void) async throws {
+        waitingOperations += 1
         await acquireLane()
+        waitingOperations -= 1
         defer { releaseLane() }
-        guard !isStopped else { return }
+        try Task.checkCancellation()
+        guard !isStopped, let uploader = await uploaderForRun() else { throw CancellationError() }
         do {
-            try await uploaderForRun()?.reupload(ids)
+            try await body(uploader)
         } catch {
             await finishOperation()
             throw error
@@ -189,35 +247,42 @@ final class BackupRunner {
 
     private func finishOperation() async {
         await model?.uploadsChanged()
-        guard isEnabled, isActive, !isStopped else { return }
+        guard mayRun else { return }
         wantsRun = true
         start()
+    }
+
+    private func cancelOperations() {
+        for task in operations.values { task.cancel() }
     }
 
     // MARK: - Running
 
     /// Starts or stops watching the library and cancels the run, to match the switch and the app state.
     private func update() {
-        let shouldRun = isEnabled && isActive && !isStopped
-        if shouldRun {
+        if mayRun {
             if watcher == nil { watch() }
         } else {
-            watcher?.cancel()
+            if let watcher {
+                watcher.cancel()
+                retiredWatchers.append(watcher)
+            }
             watcher = nil
             debounceTask?.cancel()
+            burstStart = nil
             cancelRun()
         }
     }
 
     /// Scan, then upload, unless that is going on already.
     private func requestRun() {
-        guard isEnabled, isActive, !isStopped, current == nil else { return }
+        guard mayRun, current == nil else { return }
         wantsRun = true
         start()
     }
 
     private func start() {
-        guard current == nil, isEnabled, isActive, !isStopped else { return }
+        guard current == nil, mayRun else { return }
         let previous = tail
         let id = UUID()
         let task = Task { [weak self] in
@@ -232,30 +297,56 @@ final class BackupRunner {
         current?.task.cancel()
         current = nil
         wantsRun = false
+        choiceChanged = false
+        isScanningForRun = false
         isUploading = false
         uploadProgress = nil
     }
 
     private func isCurrent(_ id: UUID) -> Bool {
-        current?.id == id && !Task.isCancelled && isEnabled && isActive && !isStopped
+        current?.id == id && !Task.isCancelled && mayRun
     }
 
     private func run(_ id: UUID) async {
-        defer { if current?.id == id { current = nil } }
+        defer {
+            if current?.id == id {
+                current = nil
+                isScanningForRun = false
+                // A trigger that came while the run was ending isn't lost.
+                if wantsRun, mayRun { start() } else {
+                    wantsRun = false
+                    choiceChanged = false
+                }
+            }
+        }
         await cleanup?.value
-        guard isCurrent(id), let model else { return }
+        guard isCurrent(id) else { return }
+        guard let model else {
+            wantsRun = false
+            return
+        }
         // At launch the Backup screen hasn't loaded the selection yet.
         if !model.hasLoaded { await model.load() }
+        var rescans = 0
         while isCurrent(id), wantsRun {
             wantsRun = false
-            await model.scan()
+            choiceChanged = false
+            isScanningForRun = true
+            let completed = await model.scanForRun()
+            isScanningForRun = false
             guard isCurrent(id) else { return }
-            // The library changed while scanning: scan again before uploading.
-            if wantsRun { continue }
+            // Cancelled (a new album choice, say): scan again if something asked for it, else wait for
+            // the next trigger. Never upload from a scan that didn't finish.
+            guard completed else { continue }
+            if wantsRun, choiceChanged || rescans < Self.rescansBeforeUpload {
+                rescans += 1
+                continue
+            }
             guard model.error == nil, model.canCheck else { return }
-            // Paused for a rescan: the loop scans again. Paused for a Try Again or Re-upload: that
-            // operation starts the next run when it is done (`finishOperation`).
+            // Paused for a library change: the loop scans again. Paused for a Try Again or Re-upload:
+            // that operation starts the next run when it is done (`finishOperation`).
             guard await upload(id) else { return }
+            rescans = 0
         }
     }
 
@@ -263,9 +354,9 @@ final class BackupRunner {
     private func upload(_ id: UUID) async -> Bool {
         await acquireLane()
         defer { releaseLane() }
-        guard isCurrent(id) else { return false }
-        guard let uploader = await uploaderForRun(), isCurrent(id) else { return false }
+        guard isCurrent(id), let uploader = await uploaderForRun(), isCurrent(id) else { return false }
         isUploading = true
+        let items = ItemCounter()
         // One pending event at most: a long queue mustn't pile up work on the main actor.
         let (updates, continuation) = AsyncStream<UploadProgress>.makeStream(bufferingPolicy: .bufferingNewest(1))
         let delivery = Task { [weak self] in
@@ -282,8 +373,14 @@ final class BackupRunner {
         var succeeded = true
         do {
             try await uploader.run(
-                progress: { continuation.yield($0) },
-                shouldPause: { [weak self] in await self?.shouldPause(id) ?? true })
+                progress: { progress in
+                    items.note(progress)
+                    continuation.yield(progress)
+                },
+                shouldPause: { [weak self] in
+                    let finished = items.finished
+                    return await self?.shouldPause(id, itemsFinished: finished) ?? true
+                })
         } catch {
             succeeded = false
             if !(error is CancellationError) { model?.reportUploadFailure(error) }
@@ -298,10 +395,10 @@ final class BackupRunner {
         return succeeded
     }
 
-    /// Asked by the uploader between items: stop for a rescan, a waiting Try Again or Re-upload, or a
-    /// cancelled run.
-    private func shouldPause(_ id: UUID) -> Bool {
-        current?.id != id || wantsRun || !laneWaiters.isEmpty
+    /// Asked by the uploader between items. Pauses at once for a cancelled run, a new album choice or a
+    /// waiting Try Again / Re-upload; for a library change only after an item, so changes can't starve uploads.
+    private func shouldPause(_ id: UUID, itemsFinished: Int) -> Bool {
+        current?.id != id || choiceChanged || waitingOperations > 0 || (wantsRun && itemsFinished > 0)
     }
 
     /// nil only once the model is gone (the session ended).
@@ -326,14 +423,29 @@ final class BackupRunner {
         }
     }
 
+    /// Debounced: a scan starts `debounce` after the last change, or `debounceLimit` after the first
+    /// change of a burst, whichever comes first.
     private func libraryChanged() {
+        defer {
+            receivedChanges += 1
+            let reached = changeObservers.filter { $0.count <= receivedChanges }
+            changeObservers.removeAll { $0.count <= receivedChanges }
+            for observer in reached { observer.continuation.resume() }
+        }
+        guard mayRun else { return }
+        let now = clock.now()
+        let first = burstStart ?? now
+        burstStart = first
+        let deadline = min(now + debounce, first + debounceLimit)
+        let wait = max(.zero, now.duration(to: deadline))
         debounceTask?.cancel()
-        let sleep = sleep
-        let debounce = debounce
+        let clock = clock
         debounceTask = Task { [weak self] in
-            do { try await sleep(debounce) } catch { return }
-            guard !Task.isCancelled, let self, self.isEnabled, self.isActive, !self.isStopped else { return }
-            // A running upload pauses after its current item (`shouldPause`); a scan is followed by another.
+            do { try await clock.sleep(wait) } catch { return }
+            guard !Task.isCancelled, let self else { return }
+            self.burstStart = nil
+            guard self.mayRun else { return }
+            // A running upload pauses after an item (`shouldPause`); a scan is followed by another.
             self.wantsRun = true
             self.start()
         }
@@ -347,11 +459,76 @@ final class BackupRunner {
             laneBusy = true
             return
         }
-        await withCheckedContinuation { laneWaiters.append($0) }
+        await withCheckedContinuation { continuation in
+            laneWaiters.append(continuation)
+            let reached = laneObservers.filter { $0.count <= laneWaiters.count }
+            laneObservers.removeAll { $0.count <= laneWaiters.count }
+            for observer in reached { observer.continuation.resume() }
+        }
     }
 
     private func releaseLane() {
         if laneWaiters.isEmpty { laneBusy = false }
         else { laneWaiters.removeFirst().resume() }
+    }
+
+    // MARK: - Test hooks
+
+    /// Whether something asked for another scan that the current run hasn't started yet.
+    var isRescanPending: Bool { wantsRun && current != nil }
+
+    /// Waits until the watcher has handed `count` library changes (in total) to the runner and the
+    /// debounce they started has run. The debounce's sleep must return.
+    func handledLibraryChanges(_ count: Int) async {
+        if receivedChanges < count {
+            await withCheckedContinuation { changeObservers.append((count, $0)) }
+        }
+        while let task = debounceTask {
+            await task.value
+            if debounceTask == task { debounceTask = nil }
+        }
+    }
+
+    /// Waits until `count` callers wait for the lane.
+    func waitUntilWaitingForLane(_ count: Int) async {
+        if laneWaiters.count >= count { return }
+        await withCheckedContinuation { laneObservers.append((count, $0)) }
+    }
+
+    /// Waits until runs, stopped watchers, pending debounces and the staging cleanup have finished.
+    func settle() async {
+        while true {
+            if !retiredWatchers.isEmpty {
+                let watchers = retiredWatchers
+                retiredWatchers = []
+                for watcher in watchers { await watcher.value }
+                continue
+            }
+            if let task = debounceTask { await task.value; if debounceTask == task { debounceTask = nil }; continue }
+            if let task = tail { await task.value; if tail == task { tail = nil }; continue }
+            if let task = cleanup { await task.value; if cleanup == task { cleanup = nil }; continue }
+            return
+        }
+    }
+}
+
+/// Counts the items an upload run has finished, from its progress events (an event with a filename
+/// starts an item, the next one without ends it). Read by `shouldPause` off the main actor.
+private final class ItemCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var inItem = false
+    private var _finished = 0
+
+    var finished: Int { lock.withLock { _finished } }
+
+    func note(_ progress: UploadProgress) {
+        lock.withLock {
+            if progress.currentFilename != nil {
+                inItem = true
+            } else if inItem {
+                inItem = false
+                _finished += 1
+            }
+        }
     }
 }

@@ -47,6 +47,7 @@ final class BackupModel {
             if settings.photosOnCellular != oldValue.photosOnCellular
                 || settings.videosOnCellular != oldValue.videosOnCellular, !selection.included.isEmpty {
                 scheduleRescan()
+                madeRunner?.selectionDidChange()
             }
         }
     }
@@ -57,7 +58,10 @@ final class BackupModel {
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private var network: (any NetworkConditions)?
     @ObservationIgnored private var indexTask: Task<BackupIndex, Never>?
-    @ObservationIgnored private var scanTask: Task<Void, Never>?
+    /// Its value: whether the scan completed (not cancelled, no error).
+    @ObservationIgnored private var scanTask: Task<Bool, Never>?
+    /// Scans that completed, for `scanForRun()`.
+    @ObservationIgnored private var completedScans = 0
     @ObservationIgnored private var rescan: (id: UUID, task: Task<Void, Never>)?
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var progressGate = BackupProgressGate()
@@ -194,17 +198,19 @@ final class BackupModel {
 
     /// Checks the selected photos against the server and returns when the scan has finished
     /// (or was cancelled). Joins a scan that is already running. Does nothing without photo access.
-    func scan() async {
-        guard !isStopped else { return }
-        if let scanTask { await scanTask.value; return }
+    /// Returns whether the scan completed: `false` when it was cancelled, failed or didn't run.
+    @discardableResult
+    func scan() async -> Bool {
+        guard !isStopped else { return false }
+        if let scanTask { return await scanTask.value }
         access = await source.authorization()
-        guard canRead else { return }
+        guard canRead else { return false }
         await reopenIndexIfNeeded()
         let scanner = await makeScanner()
         // Another caller may have started a scan while this one was suspended.
-        if let scanTask { await scanTask.value; return }
+        if let scanTask { return await scanTask.value }
         // A rescan that was replaced while it got ready must not start a scan the next one has to cancel.
-        guard !isStopped, !Task.isCancelled else { return }
+        guard !isStopped, !Task.isCancelled else { return false }
 
         error = nil
         isScanning = true
@@ -232,13 +238,30 @@ final class BackupModel {
             continuation.finish()
             await delivery.value
             await self?.finishScan(result: result, failure: failure)
+            return result != nil
         }
-        await scanTask?.value
+        return await scanTask?.value ?? false
     }
 
-    /// Stops the running scan. Hashed items keep their checksums, so the next scan carries on.
+    /// For the runner: waits for a selection or settings change to be saved and scanned with (rather than
+    /// scanning the old choice), else scans or joins the running scan. Returns whether a scan of the
+    /// current choice completed.
+    func scanForRun() async -> Bool {
+        let before = completedScans
+        var waited = false
+        while let task = rescan?.task {
+            waited = true
+            await task.value
+        }
+        if waited, completedScans > before, scanTask == nil { return true }
+        return await scan()
+    }
+
+    /// The user's Cancel: stops the running scan, and the upload run the scan was for. Hashed items keep
+    /// their checksums, so the next scan carries on.
     func cancel() {
         guard !isStopped else { return }
+        madeRunner?.scanCancelled()
         scanTask?.cancel()
         if hasUnsavedSelection { scheduleRescan(scanning: false) }
         else { rescan?.task.cancel() }
@@ -254,7 +277,7 @@ final class BackupModel {
         // Uploads too; the runner then empties the staging folder.
         await madeRunner?.stop()
         await pending?.value
-        await scanTask?.value
+        _ = await scanTask?.value
     }
 
     /// Uploads changed what is on the server: shows the new counts (a running scan brings its own).
@@ -266,9 +289,11 @@ final class BackupModel {
     /// An upload run stopped on something every item would run into: shown like a scan's error.
     func reportUploadFailure(_ failure: Error) {
         switch failure {
-        case BackupIndexError.unavailable, ImmichServiceError.unauthorized: report(failure)
-        // A full disk fails the item with its reason; other errors are only retried next time.
-        default: break
+        case is CancellationError: return
+        case BackupStagingError.notEnoughSpace:
+            // The item is listed under Problems with Bloom's reason; this explains why the run stopped.
+            error = tr("Couldn't check your photos: %@", CocoaError(.fileWriteOutOfSpace).localizedDescription)
+        default: report(failure)
         }
     }
 
@@ -276,7 +301,7 @@ final class BackupModel {
     func settle() async {
         while true {
             if let task = rescan?.task { await task.value; continue }
-            if let task = scanTask { await task.value; continue }
+            if let task = scanTask { _ = await task.value; continue }
             return
         }
     }
@@ -294,7 +319,10 @@ final class BackupModel {
         // overwrite the final counts.
         generation += 1
         progress = nil
-        if let result { counts = result } else { await refreshCounts() }
+        if let result {
+            counts = result
+            completedScans += 1
+        } else { await refreshCounts() }
         await refreshFailures()
         scanTask = nil
         isScanning = false
@@ -348,6 +376,7 @@ final class BackupModel {
         selection = new
         selectionRevision += 1
         scheduleRescan()
+        madeRunner?.selectionDidChange()
     }
 
     /// Saves the current selection and checks again, replacing a rescan or scan in progress.
@@ -386,7 +415,7 @@ final class BackupModel {
         }
         guard !Task.isCancelled, !isStopped, scanning else { return }
         scanTask?.cancel()
-        await scanTask?.value
+        _ = await scanTask?.value
         guard !Task.isCancelled else { return }
         await scan()
     }
