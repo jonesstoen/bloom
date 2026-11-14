@@ -3,6 +3,12 @@ import Foundation
 public enum BackupStagingError: Error, Equatable, Sendable {
     /// The phone hasn't room for the staged file and the upload body made from it.
     case notEnoughSpace
+    /// The staged-but-unrecorded upload bodies already take the whole staging budget; try again once
+    /// some of them have been uploaded and recorded.
+    case overBudget
+    /// The bytes read from the photo library hash differently from the checksum the scanner recorded:
+    /// the asset changed between the scan and the staging. The body is discarded.
+    case checksumMismatch
 }
 
 /// What a failed resource read means for the item, the same in the scanner and the uploader.
@@ -19,11 +25,15 @@ enum BackupReadFailure {
 
 /// Copies resources from the photo library into files for upload, hashing them on the way.
 /// The files live in `directory` (the account's `Staging` folder), are protected until the first
-/// unlock, and are removed by the caller after each item; `removeAll()` empties the folder.
+/// unlock and kept out of backups. `stageBody` writes each resource once, straight into its
+/// multipart upload body, which stays until its result is recorded; `removeUnreferenced(keeping:)`
+/// cleans up the rest and `removeAll()` empties the folder (sign-out).
 /// Never changes the photo library.
 public actor BackupStaging {
     /// Room left free on top of what the upload needs.
     public static let margin: Int64 = 200 * 1024 * 1024
+    /// The most bytes of staged-but-unrecorded upload bodies kept on the phone at once.
+    public static let defaultBudget: Int64 = 2 * 1024 * 1024 * 1024
     /// PhotoKit has no public API for a resource's size, so the space check starts from an estimate:
     /// generous for a photo, a motion clip and a video per second (4K HEVC is about 0.5–1 MB/s).
     /// A file larger than that is checked again while it is written.
@@ -35,6 +45,7 @@ public actor BackupStaging {
     private let directory: URL
     private let freeSpace: @Sendable () -> Int64
     private let recheckInterval: Int64
+    private let budget: Int64
     private let estimate: @Sendable (DeviceResource, DeviceAsset) -> Int64
 
     /// `freeSpace` gives the bytes available on the volume of `directory`
@@ -47,11 +58,13 @@ public actor BackupStaging {
     /// Tests set a small `recheckInterval` and their own `estimate`.
     init(
         directory: URL, freeSpace: @escaping @Sendable () -> Int64, recheckInterval: Int64,
+        budget: Int64 = BackupStaging.defaultBudget,
         estimate: @escaping @Sendable (DeviceResource, DeviceAsset) -> Int64 = { BackupStaging.estimate($0, of: $1) }
     ) {
         self.directory = directory
         self.freeSpace = freeSpace
         self.recheckInterval = max(1, recheckInterval)
+        self.budget = max(0, budget)
         self.estimate = estimate
     }
 
@@ -99,6 +112,63 @@ public actor BackupStaging {
         }
     }
 
+    /// Streams `resource` from the photo library straight into a new multipart upload body in the
+    /// staging folder (prefix, bytes, suffix) and hashes the bytes in the same pass, so there is one
+    /// copy on disk. The body stays until the caller has recorded the upload's result and removes it.
+    ///
+    /// Throws, with no file left: `notEnoughSpace` (needs room for the body once plus `margin`; checked
+    /// again while a larger file is written), `overBudget` (the unrecorded bodies already staged plus this
+    /// one would pass the budget; a body is always allowed when nothing else is staged),
+    /// `checksumMismatch` (the bytes don't hash to `expectedChecksum`), read errors
+    /// (`PhotoLibraryReadError.needsNetwork` among them) and cancellation.
+    public func stageBody(
+        _ resource: DeviceResource, of asset: DeviceAsset, from source: any PhotoLibrarySource, allowNetwork: Bool,
+        fields: MultipartFields, expectedChecksum: String
+    ) async throws -> (bodyFile: URL, boundary: String) {
+        let expected = max(estimate(resource, asset), 0)
+        guard freeSpace() >= expected + Self.margin else { throw BackupStagingError.notEnoughSpace }
+        let used = stagedBytes()
+        if used > 0, used + expected > budget { throw BackupStagingError.overBudget }
+
+        try Self.createDirectory(directory)
+        let boundary = "bloom-\(UUID().uuidString)"
+        let url = directory.appendingPathComponent("\(UUID().uuidString).multipart")
+        var attributes: [FileAttributeKey: Any]?
+        #if os(iOS)
+        attributes = [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+        #endif
+        guard FileManager.default.createFile(atPath: url.path, contents: nil, attributes: attributes) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        do {
+            // Staged bodies are rebuilt from the photo library if lost; no reason to put them in a backup.
+            var excluded = URLResourceValues()
+            excluded.isExcludedFromBackup = true
+            var mutableURL = url
+            try? mutableURL.setResourceValues(excluded)
+
+            let sink = try StagingSink(
+                url: url, freeSpace: freeSpace, firstCheck: expected + recheckInterval, interval: recheckInterval,
+                prefix: MultipartBody.prefix(fields, boundary: boundary), copies: 0)
+            defer { sink.close() }
+            let reader = Task { try await source.read(resource, of: asset.id, allowNetwork: allowNetwork) { sink.write($0) } }
+            sink.onFailure { reader.cancel() }
+            do {
+                try await withTaskCancellationHandler { try await reader.value } onCancel: { reader.cancel() }
+            } catch {
+                throw sink.failure ?? error
+            }
+            try Task.checkCancellation()
+            let checksum = try sink.finish(suffix: MultipartBody.suffix(boundary: boundary))
+            guard checksum == expectedChecksum else { throw BackupStagingError.checksumMismatch }
+            return (url, boundary)
+        } catch {
+            remove(url)
+            if Self.isOutOfSpace(error) { throw BackupStagingError.notEnoughSpace }
+            throw error
+        }
+    }
+
     /// The file in the staging folder called `name`, for an upload body recorded by name (see
     /// `UploadJob.bodyFileName`). Only the last path component is used, so a name can't point outside.
     public nonisolated func url(forBodyNamed name: String) -> URL {
@@ -108,6 +178,19 @@ public actor BackupStaging {
     /// Removes one staged file. Safe to call from a `defer`, and for a file that is already gone.
     public nonisolated func remove(_ url: URL) {
         try? FileManager.default.removeItem(at: url)
+    }
+
+    /// Removes every file in the staging folder that isn't in `keeping`: leftovers from an app that was
+    /// stopped mid-staging, and bodies whose upload no longer exists. Pass the body files of the
+    /// uploads still recorded or in flight; never removes those.
+    public func removeUnreferenced(keeping: Set<URL>) {
+        let directoryPath = directory.standardizedFileURL.path
+        // Only files directly in the staging folder count as kept; same name elsewhere doesn't.
+        let kept = Set(keeping.filter {
+            $0.standardizedFileURL.deletingLastPathComponent().path == directoryPath
+        }.map { $0.standardizedFileURL.lastPathComponent })
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        for name in names where !kept.contains(name) { remove(directory.appendingPathComponent(name)) }
     }
 
     /// Empties the staging folder: staged files and any upload bodies left behind by an app that was
@@ -145,6 +228,15 @@ public actor BackupStaging {
 
     // MARK: - Helpers
 
+    /// Bytes the files in the staging folder take now (bodies being written count as far as they got).
+    private func stagedBytes() -> Int64 {
+        let urls = (try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: [.fileSizeKey], options: [])) ?? []
+        return urls.reduce(0) { total, url in
+            total + Int64((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+        }
+    }
+
     static func estimate(_ resource: DeviceResource, of asset: DeviceAsset) -> Int64 {
         switch resource.type {
         case .video, .fullSizeVideo:
@@ -174,6 +266,9 @@ private final class StagingSink: @unchecked Sendable {
     private let handle: FileHandle
     private let freeSpace: @Sendable () -> Int64
     private let interval: Int64
+    /// How many more copies of what's written must fit besides it: 1 when an upload body will be made
+    /// from the file afterwards, 0 when the file is the body.
+    private let copies: Int64
     private var sha = SHA1Stream()
     private var written: Int64 = 0
     private var nextCheck: Int64
@@ -191,10 +286,16 @@ private final class StagingSink: @unchecked Sendable {
         if failedAlready { handler() }
     }
 
-    init(url: URL, freeSpace: @escaping @Sendable () -> Int64, firstCheck: Int64, interval: Int64) throws {
+    /// `prefix` is written first and isn't hashed (the multipart header of a body file).
+    init(
+        url: URL, freeSpace: @escaping @Sendable () -> Int64, firstCheck: Int64, interval: Int64,
+        prefix: Data = Data(), copies: Int64 = 1
+    ) throws {
         handle = try FileHandle(forWritingTo: url)
+        if !prefix.isEmpty { try handle.write(contentsOf: prefix) }
         self.freeSpace = freeSpace
         self.interval = interval
+        self.copies = copies
         nextCheck = firstCheck
     }
 
@@ -211,7 +312,7 @@ private final class StagingSink: @unchecked Sendable {
             written += Int64(data.count)
             // Larger than expected: the rest of this file and the body copy of all of it must still fit.
             if written >= nextCheck {
-                if freeSpace() < written + BackupStaging.margin {
+                if freeSpace() < copies * written + BackupStaging.margin {
                     _failure = BackupStagingError.notEnoughSpace
                     return failureHandler
                 }
@@ -222,9 +323,11 @@ private final class StagingSink: @unchecked Sendable {
         handler?() // outside the lock: cancelling the read may call back into PhotoKit
     }
 
-    func finish() throws -> String {
+    /// Writes `suffix` (not hashed) and returns the SHA1 of the bytes received.
+    func finish(suffix: Data = Data()) throws -> String {
         try lock.withLock {
             if let _failure { throw _failure }
+            if !suffix.isEmpty { try handle.write(contentsOf: suffix) }
             return sha.base64()
         }
     }

@@ -78,6 +78,33 @@ final class AssetUploadTests: XCTestCase {
         XCTAssertEqual(actual, expected)
     }
 
+    /// Single-pass staging writes the same bytes `MultipartBody.write` does from a staged resource.
+    func testBodyMatchesTheMultipartFixtureByteForByte() async throws {
+        let library = FakePhotoLibrary()
+        let photo = DeviceResource(type: .photo, filename: "IMG_0001.HEIC")
+        library.setData([Data([0x01]), Data([0xFF, 0x42])], for: photo)
+        let asset = DeviceAsset(id: "a", isVideo: false, creationDate: Date(timeIntervalSince1970: 1_700_000_000),
+                                modificationDate: Date(timeIntervalSince1970: 1_700_000_100.5), isFavorite: true,
+                                duration: 0, resources: [photo])
+        let staging = BackupStaging(directory: directory.appendingPathComponent("Staging"), freeSpace: { Int64.max })
+        var sha = SHA1Stream()
+        sha.update(resource)
+        let fields = MultipartFields(
+            filename: "IMG_0001.HEIC", mimeType: "image/heic", createdAt: asset.creationDate,
+            modifiedAt: asset.modificationDate, isFavorite: true, duration: 12.4,
+            livePhotoVideoID: "11111111-2222-4333-8444-555555555555", hidden: false)
+
+        let staged = try await staging.stageBody(
+            photo, of: asset, from: library, allowNetwork: false, fields: fields, expectedChecksum: sha.base64())
+        let actual = try Data(contentsOf: staged.bodyFile)
+
+        let expected = try body(of: request(duration: 12.4, livePhotoVideoID: "11111111-2222-4333-8444-555555555555"),
+                                boundary: staged.boundary)
+        XCTAssertEqual(actual, expected)
+        XCTAssertTrue(staged.boundary.hasPrefix("bloom-"))
+        XCTAssertEqual(actual.prefix(2), Data("--".utf8))
+    }
+
     func testMultipartOmitsDurationAndLivePhotoWhenNil() throws {
         let actual = try body(of: request(isFavorite: false))
         let string = String(decoding: actual, as: UTF8.self)
