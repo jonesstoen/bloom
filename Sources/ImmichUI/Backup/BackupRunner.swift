@@ -139,6 +139,20 @@ final class BackupRunner {
         requestRun()
     }
 
+    /// Check Now. With the switch on it checks and then uploads (a run in progress rescans after the
+    /// item in flight); with it off it only checks, as in Phase 1.
+    /// Check Now with the switch off: only a scan, kept so tests can wait for it.
+    private var manualCheck: Task<Void, Never>?
+
+    func checkNow() {
+        guard mayRun else {
+            manualCheck = Task { [weak self] in await self?.model?.scan() }
+            return
+        }
+        wantsRun = true
+        start()
+    }
+
     /// The Backup switch. Saved with the other settings; off cancels the upload in flight.
     func setEnabled(_ on: Bool) {
         guard !isStopped else { return }
@@ -511,6 +525,7 @@ final class BackupRunner {
             if let task = debounceTask { await task.value; if debounceTask == task { debounceTask = nil }; continue }
             if let task = tail { await task.value; if tail == task { tail = nil }; continue }
             if let task = cleanup { await task.value; if cleanup == task { cleanup = nil }; continue }
+            if let task = manualCheck { await task.value; if manualCheck == task { manualCheck = nil }; continue }
             return
         }
     }

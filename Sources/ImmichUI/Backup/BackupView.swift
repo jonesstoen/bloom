@@ -233,7 +233,7 @@ private struct BackupCheckSection: View {
                     Button(tr("Cancel"), role: .cancel) { model.cancel() }
                 }
             } else {
-                Button(tr("Check Now")) { Task { await model.scan() } }
+                Button(tr("Check Now")) { model.runner.checkNow() }
                     .disabled(!model.canCheck)
             }
         } footer: {

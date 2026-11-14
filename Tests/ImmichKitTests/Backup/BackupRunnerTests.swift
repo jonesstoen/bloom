@@ -378,6 +378,30 @@ final class BackupRunnerTests: XCTestCase {
         XCTAssertEqual(setup.stagedFiles, [])
     }
 
+    func testCheckNowWithTheSwitchOnUploads() async throws {
+        let setup = try await makeSetup(["a1"])
+        setup.runner.setEnabled(true)
+        setup.runner.appBecameActive()
+        await setup.runner.settle()
+        Self.addAsset("a2", age: -1, to: setup.library)
+        setup.setAlbum(["a1", "a2"])
+        setup.runner.checkNow()
+        await setup.runner.settle()
+        let uploads = await setup.mock.uploads.count
+        XCTAssertEqual(uploads, 2, "Check Now with the switch on uploads what it finds")
+    }
+
+    func testCheckNowWithTheSwitchOffOnlyChecks() async throws {
+        let setup = try await makeSetup(["a1"])
+        setup.runner.appBecameActive()
+        setup.runner.checkNow()
+        await setup.runner.settle()
+        await setup.model.settle()
+        let uploads = await setup.mock.uploads.count
+        XCTAssertEqual(uploads, 0)
+        XCTAssertEqual(setup.model.counts.total, 1, "It still checks")
+    }
+
     func testFinishedUploadRunTellsTheLibraryOnce() async throws {
         let setup = try await makeSetup(["a1", "a2"])
         var changes = 0
