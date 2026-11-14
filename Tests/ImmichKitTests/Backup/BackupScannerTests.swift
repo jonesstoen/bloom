@@ -67,6 +67,16 @@ final class BackupScannerTests: XCTestCase {
         return library
     }
 
+    /// Gives the asset a new modification date and keeps its bytes, as PhotoKit does when it is made a
+    /// favourite, hidden, captioned or moved.
+    private func touch(_ id: String, in library: FakePhotoLibrary, modified: Date) async throws {
+        let found = await library.asset(id)
+        let asset = try XCTUnwrap(found)
+        library.addAsset(DeviceAsset(
+            id: asset.id, isVideo: asset.isVideo, creationDate: asset.creationDate, modificationDate: modified,
+            isFavorite: !asset.isFavorite, duration: asset.duration, resources: asset.resources))
+    }
+
     private func makeIndex(_ directory: URL? = nil) async -> BackupIndex {
         let index = BackupIndex(directory: directory ?? makeDirectory())
         await index.setSelection(BackupSelection(included: ["A"]))
@@ -717,6 +727,95 @@ final class BackupScannerTests: XCTestCase {
         let entry = await index.entry(for: "1")
         XCTAssertEqual(entry?.state, .pending(reason: .needsUpload))
         XCTAssertEqual(entry?.checksums, edited)
+    }
+
+    /// A favourite, hide, caption or location change bumps the date but not the bytes: the item deleted
+    /// on the server stays deleted there and is not queued for upload.
+    func testDateOnlyChangeKeepsDeletedOnServer() async throws {
+        let library = makeLibrary(album: ["1"])
+        let sums = addAsset("1", to: library)
+        let service = MockImmichService()
+        await service.setServerChecksums([sums[.photo]!])
+        let index = await makeIndex()
+        _ = try await makeScanner(library, service, index).scan { _, _ in }
+        await service.setServerChecksums([]) // purged on the server
+        let deleted = try await makeScanner(library, service, index).scan { _, _ in }
+        XCTAssertEqual(deleted.deletedOnServer, 1)
+
+        try await touch("1", in: library, modified: Self.date + 60)
+        let counts = try await makeScanner(library, service, index).scan { _, _ in }
+
+        assertInvariant(counts)
+        XCTAssertEqual(counts, BackupCounts(total: 1, backedUp: 0, pending: 0, failed: 0, deletedOnServer: 1, waitingForWiFi: 0))
+        let entry = await index.entry(for: "1")
+        XCTAssertEqual(entry?.state, .deletedOnServer(trashed: [], gone: [.photo]))
+        XCTAssertEqual(entry?.checksums, sums)
+        XCTAssertEqual(entry?.modificationDate, Self.date + 60)
+        let stored = await makeScanner(library, service, index).counts()
+        XCTAssertEqual(stored, counts)
+
+        // Nothing is queued: an upload run sends nothing.
+        let directory = makeDirectory()
+        let uploader = BackupUploader(
+            source: library, service: service, index: index,
+            staging: BackupStaging(directory: directory, freeSpace: { 100 * 1024 * 1024 * 1024 }),
+            settings: { BackupSettings() }, network: FixedNetwork(isOnCellular: false))
+        try await uploader.run(progress: { _ in }, shouldPause: { false })
+        let uploads = await service.uploads
+        XCTAssertEqual(uploads.count, 0)
+    }
+
+    /// A date-only change to a backed-up item keeps what the scanner knew, even when the server's answer
+    /// for it is missing this time.
+    func testDateOnlyChangeKeepsBackedUpWithItsServerIDs() async throws {
+        let library = makeLibrary(album: ["live"])
+        let sums = addAsset("live", to: library, types: [.photo, .pairedVideo])
+        let service = MockImmichService()
+        await service.setServerChecksums([sums[.photo]!, sums[.pairedVideo]!])
+        let index = await makeIndex()
+        let first = try await makeScanner(library, service, index).scan { _, _ in }
+        XCTAssertEqual(first.backedUp, 1)
+        let before = await index.entry(for: "live")
+        let serverIDs = [DeviceResourceType.photo: "server-\(sums[.photo]!)", .pairedVideo: "server-\(sums[.pairedVideo]!)"]
+        XCTAssertEqual(before?.serverIDs, serverIDs)
+
+        try await touch("live", in: library, modified: Self.date + 60)
+        await service.setUnansweredChecksums([sums[.photo]!]) // no verdict this time
+        let counts = try await makeScanner(library, service, index).scan { _, _ in }
+
+        assertInvariant(counts)
+        XCTAssertEqual(counts, BackupCounts(total: 1, backedUp: 1, pending: 0, failed: 0, deletedOnServer: 0, waitingForWiFi: 0))
+        let entry = await index.entry(for: "live")
+        XCTAssertEqual(entry?.state, .backedUp(serverAssetID: "server-\(sums[.photo]!)"))
+        XCTAssertEqual(entry?.serverIDs, serverIDs)
+        XCTAssertEqual(entry?.checksums, sums)
+        XCTAssertEqual(entry?.modificationDate, Self.date + 60)
+    }
+
+    /// The uploader records `backedUp` while the scanner's check for the item's earlier state is on its
+    /// way: the older answer must not turn it into deleted on the server.
+    func testVerdictForAnEarlierStateIsNotApplied() async throws {
+        let library = makeLibrary(album: ["1"])
+        let sums = addAsset("1", to: library)
+        let service = MockImmichService()
+        let index = await makeIndex()
+        _ = try await makeScanner(library, service, index).scan { _, _ in }
+        let queued = await index.entry(for: "1")
+        XCTAssertEqual(queued?.state, .pending(reason: .needsUpload))
+        let checksBefore = await allCheckRequests(service).count
+
+        await service.setLatency(.milliseconds(300))
+        let scanner = makeScanner(library, service, index)
+        let task = Task { try await scanner.scan { _, _ in } }
+        // While the server answers "accept" for the queued item, the uploader finishes it.
+        while await allCheckRequests(service).count == checksBefore { try await Task.sleep(for: .milliseconds(5)) }
+        let uploaded = BackupEntry(
+            modificationDate: Self.date, checksums: sums, state: .backedUp(serverAssetID: "U"), serverIDs: [.photo: "U"])
+        await index.set(uploaded, for: "1")
+        _ = try await task.value
+
+        let entry = await index.entry(for: "1")
+        XCTAssertEqual(entry, uploaded, "the answer for needsUpload must not land on backedUp")
     }
 
     func testRecheckOf1300BackedUpSendsThreeBatchedRequests() async throws {

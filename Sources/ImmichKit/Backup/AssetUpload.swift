@@ -107,9 +107,10 @@ public enum MultipartBody {
         try output.write(contentsOf: Data("\r\n--\(boundary)--\r\n".utf8))
     }
 
-    /// The one place `duration` is encoded. The spec says integer without naming the unit: whole seconds.
+    /// The one place `duration` is encoded: whole milliseconds, as the spec says ("Duration in
+    /// milliseconds (for videos)"), never negative.
     static func durationField(_ duration: TimeInterval) -> String {
-        String(max(0, Int(duration.rounded())))
+        String(max(0, Int((duration * 1000).rounded())))
     }
 
     /// A value inside a quoted header parameter: no line breaks, `\` as `%5C` and `"` as `%22`, so it

@@ -38,7 +38,8 @@ private final class TestNetwork: NetworkConditions, @unchecked Sendable {
     }
 
     func setCellular(_ on: Bool) { lock.withLock { cellular = on } }
-    /// The clock's time at each `isOnCellular` read: the uploader reads it once per attempt.
+    /// The clock's time at each `isOnCellular` read: the uploader reads it once when it builds the
+    /// queue and once per attempt.
     var checks: [Double] { lock.withLock { _checks } }
 
     var isOnCellular: Bool {
@@ -565,7 +566,9 @@ final class BackupUploaderTests: XCTestCase {
     }
 
     func testLinkNetworkLossHoldsTheRunAndServerErrorsBackOffPerItem() async throws {
-        for (error, holds) in [(ImmichServiceError.network("offline"), true), (.unexpectedStatus(502), false)] {
+        for (error, holds) in [
+            (ImmichServiceError.network("offline"), true), (.unexpectedStatus(503), true), (.unexpectedStatus(500), false),
+        ] {
             let setup = await makeSetup(album: ["a", "b"])
             let a = addAsset("a", to: setup.library, types: [.photo, .pairedVideo], created: Self.date)
             let b = addAsset("b", to: setup.library, types: [.photo, .pairedVideo], created: Self.date.addingTimeInterval(-60))
@@ -657,7 +660,8 @@ final class BackupUploaderTests: XCTestCase {
 
         let uploads = await setup.service.uploads.count
         XCTAssertEqual(uploads, 5)
-        XCTAssertEqual(setup.network.checks, [0, 5, 35, 155, 755], "Back-off: 5 s, 30 s, 2 min, 10 min")
+        // One read when the run builds its queue, then one per attempt.
+        XCTAssertEqual(setup.network.checks, [0, 0, 5, 35, 155, 755], "Back-off: 5 s, 30 s, 2 min, 10 min")
         let afterRun = await state("s", setup.index)
         XCTAssertEqual(afterRun, .pending(reason: .needsUpload))
         XCTAssertEqual(stagedFiles(setup), [])
@@ -718,6 +722,28 @@ final class BackupUploaderTests: XCTestCase {
 
         let order = await uploadedChecksums(setup.service)
         XCTAssertEqual(order, Array(repeating: a[.photo]!, count: 5) + Array(repeating: b[.photo]!, count: 5))
+    }
+
+    /// A server that is down (502, 503, 504 from the proxy) fails every item alike: the run waits as a
+    /// whole instead of reading the next items for nothing.
+    func testServerDownHoldsTheRun() async throws {
+        for status in [502, 503, 504] {
+            let setup = await makeSetup(album: ["a", "b"])
+            let a = addAsset("a", to: setup.library, created: Self.date)
+            let b = addAsset("b", to: setup.library, created: Self.date.addingTimeInterval(-60))
+            await queue("a", a, in: setup.index)
+            await queue("b", b, in: setup.index)
+            await setup.service.setUploadFailure(ImmichServiceError.unexpectedStatus(status))
+
+            try await run(makeUploader(setup))
+
+            let order = await uploadedChecksums(setup.service)
+            XCTAssertEqual(order, Array(repeating: a[.photo]!, count: 5) + Array(repeating: b[.photo]!, count: 5), "\(status)")
+            for id in ["a", "b"] {
+                let after = await state(id, setup.index)
+                XCTAssertEqual(after, .pending(reason: .needsUpload), "\(status)")
+            }
+        }
     }
 
     func testRejectedBecomesFailedWithServerMessage() async throws {
@@ -845,6 +871,56 @@ final class BackupUploaderTests: XCTestCase {
         let s = await state("w", setup.index)
         let serverID = await setup.index.entry(for: "w")?.serverIDs[.photo]
         XCTAssertEqual(s, .backedUp(serverAssetID: try XCTUnwrap(serverID)))
+    }
+
+    /// On cellular with both switches off, the run doesn't walk the queue item by item: everything waits
+    /// for Wi-Fi in one pass, with one index save, and nothing counts as being uploaded.
+    func testCellularWithSwitchesOffMarksTheQueueWaitingInOnePass() async throws {
+        let ids = (0..<50).map { "c\($0)" }
+        let setup = await makeSetup(album: Set(ids), cellular: true)
+        for (n, id) in ids.enumerated() {
+            let video = n.isMultiple(of: 2)
+            let sums = addAsset(id, to: setup.library, types: [video ? .video : .photo], isVideo: video)
+            await queue(id, sums, in: setup.index)
+        }
+        try await setup.index.save()
+        let savesBefore = await setup.index.saveCount
+        let lookups = setup.library.singleLookups
+        let log = ProgressLog()
+
+        try await run(makeUploader(setup), log: log)
+
+        let uploads = await setup.service.uploads.count
+        XCTAssertEqual(uploads, 0)
+        XCTAssertEqual(setup.library.reads, [])
+        XCTAssertEqual(setup.library.singleLookups, lookups, "no item is fetched on its own")
+        for id in ids {
+            let s = await state(id, setup.index)
+            XCTAssertEqual(s, .pending(reason: .waitingForWiFi), id)
+        }
+        let saves = await setup.index.saveCount - savesBefore
+        XCTAssertGreaterThanOrEqual(saves, 1, "the waiting items are saved")
+        XCTAssertLessThanOrEqual(saves, 2)
+        XCTAssertEqual(log.events, [UploadProgress(done: 0, total: 0, currentFilename: nil)])
+        XCTAssertLessThanOrEqual(setup.network.checks.count, 2, "the network is asked once per run, not per item")
+    }
+
+    /// Only the media type the cellular switches allow is queued; the rest waits for Wi-Fi uncounted.
+    func testCellularQueuesOnlyTheAllowedMediaType() async throws {
+        let setup = await makeSetup(album: ["p", "v"], cellular: true, settings: BackupSettings(photosOnCellular: true))
+        let p = addAsset("p", to: setup.library, created: Self.date)
+        let v = addAsset("v", to: setup.library, types: [.video], isVideo: true, created: Self.date.addingTimeInterval(60))
+        await queue("p", p, in: setup.index)
+        await queue("v", v, in: setup.index)
+        let log = ProgressLog()
+
+        try await run(makeUploader(setup), log: log)
+
+        let uploads = await uploadedChecksums(setup.service)
+        XCTAssertEqual(uploads, [p[.photo]!])
+        XCTAssertEqual(log.events.map(\.total), Array(repeating: 1, count: log.events.count))
+        let vState = await state("v", setup.index)
+        XCTAssertEqual(vState, .pending(reason: .waitingForWiFi))
     }
 
     func testSettingsAreReadForEachItem() async throws {

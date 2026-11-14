@@ -61,8 +61,8 @@ public actor BackupUploader {
     private var retries: [String: Retry] = [:]
     /// Items that failed too often to be tried again this session.
     private var skipped: Set<String> = []
-    /// Network loss and rate limiting hold back every item, not just the one that failed, so an
-    /// outage doesn't read (and download from iCloud) the whole queue for nothing.
+    /// Network loss, rate limiting and a server that is down (502, 503, 504) hold back every item, not
+    /// just the one that failed, so an outage doesn't read (and download from iCloud) the whole queue for nothing.
     private var holdUntil: ContinuousClock.Instant?
     private var isRunning = false
 
@@ -114,7 +114,7 @@ public actor BackupUploader {
         // Fails fast on an unavailable index, before anything is uploaded that couldn't be recorded.
         try await index.saveIfChanged()
 
-        var queue = await queuedItems()
+        var queue = try await queuedItems()
         let total = queue.count
         var done = 0
         defer { if total == 0 { progress(UploadProgress(done: 0, total: 0, currentFilename: nil)) } }
@@ -138,29 +138,43 @@ public actor BackupUploader {
     }
 
     /// The queue for this run, newest first. Left out: items given up on for the session, items the
-    /// scanner still has to finish (waiting for Wi-Fi without all checksums), and items waiting for
-    /// Wi-Fi while the network still doesn't allow them (so they aren't counted as being uploaded).
-    private func queuedItems() async -> [Candidate] {
+    /// scanner still has to finish (waiting for Wi-Fi without all checksums), and items the network
+    /// doesn't allow now (so they aren't counted as being uploaded). The network and the cellular
+    /// switches are read once: queued items not allowed are marked waiting for Wi-Fi in one pass, with
+    /// one index save, instead of one by one (`upload` still checks each item, as the network can change).
+    private func queuedItems() async throws -> [Candidate] {
         let ids = await index.selection().assetIDs(in: source)
         let queued = await index.entries(where: { Self.isQueued($0.state) }, in: ids, limit: Int.max)
         let entries = Dictionary(queued.filter { !skipped.contains($0.0) }, uniquingKeysWith: { first, _ in first })
         let sorted = entries.keys.sorted()
+        let settings = settings()
         var onCellular: Bool?
         var candidates: [Candidate] = []
+        var notAllowed: [(String, BackupEntry)] = []
         for start in stride(from: 0, to: sorted.count, by: Self.fetchSize) {
             let chunk = Array(sorted[start..<min(start + Self.fetchSize, sorted.count)])
             for asset in await source.assets(chunk) {
                 guard let entry = entries[asset.id] else { continue }
                 let resources = BackupResourcePolicy.upload(from: asset.resources)
                 guard let main = resources.first else { continue }
-                if entry.state == .pending(reason: .waitingForWiFi) {
-                    guard Self.hasChecksums(entry, for: resources) else { continue }
-                    if onCellular == nil { onCellular = await network.isOnCellular }
-                    guard settings().allowsNetwork(for: asset, onCellular: onCellular ?? true) else { continue }
+                let waiting = entry.state == .pending(reason: .waitingForWiFi)
+                if waiting, !Self.hasChecksums(entry, for: resources) { continue }
+                if onCellular == nil { onCellular = await network.isOnCellular }
+                guard settings.allowsNetwork(for: asset, onCellular: onCellular ?? true) else {
+                    if !waiting { notAllowed.append((asset.id, entry)) }
+                    continue
                 }
                 candidates.append(Candidate(
                     id: asset.id, creationDate: asset.creationDate, filename: Self.uploadFilename(for: main, in: asset)))
             }
+        }
+        if !notAllowed.isEmpty {
+            for (id, entry) in notAllowed {
+                await write(id, from: entry) {
+                    if $0.state == .pending(reason: .needsUpload) { $0.state = .pending(reason: .waitingForWiFi) }
+                }
+            }
+            try await index.saveIfChanged()
         }
         return candidates.sorted { ($0.creationDate, $0.id) > ($1.creationDate, $1.id) }
     }
@@ -604,7 +618,8 @@ public actor BackupUploader {
             switch error {
             case .unauthorized, .insecureConnection, .invalidServerURL:
                 return .stop
-            case .network, .unexpectedStatus(429):
+            // The server (or the proxy in front of it) is down or busy: every item would fail alike.
+            case .network, .unexpectedStatus(429), .unexpectedStatus(502), .unexpectedStatus(503), .unexpectedStatus(504):
                 return .retry(holdsRun: true)
             case .unexpectedStatus(408), .unexpectedStatus(500...599), .invalidResponse:
                 return .retry(holdsRun: false)

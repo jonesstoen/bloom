@@ -42,12 +42,18 @@ struct BackupView: View {
         }
         .task { await model.load(); model.runner.backupScreenOpened() }
         #if os(iOS)
-        // Keep the screen awake while a scan runs: auto-lock would suspend the app and stop a long first run.
-        .onAppear { UIApplication.shared.isIdleTimerDisabled = model.isScanning }
-        .onChange(of: model.isScanning) { _, scanning in UIApplication.shared.isIdleTimerDisabled = scanning }
+        // Keep the screen awake while a scan or an upload runs: auto-lock would suspend the app and stop
+        // a long first run.
+        .onAppear { UIApplication.shared.isIdleTimerDisabled = keepsScreenAwake }
+        .onChange(of: keepsScreenAwake) { _, awake in UIApplication.shared.isIdleTimerDisabled = awake }
         .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
         #endif
     }
+
+    #if os(iOS)
+    /// While the Backup screen is open, a scan or an upload keeps the screen from locking.
+    private var keepsScreenAwake: Bool { model.isScanning || model.runner.isUploading }
+    #endif
 
     @ViewBuilder private var content: some View {
         switchSection

@@ -74,6 +74,8 @@ public actor BackupIndex {
     private var stored = Stored()
     private var isAvailable = true
     private var hasChanges = false
+    /// Writes of the file so far, for tests that check how often the index is saved.
+    private(set) var saveCount = 0
 
     /// Loads `index.json` from `directory`. A missing file starts empty; a corrupt one is moved
     /// aside to `index.json.corrupt` and the index starts empty; a file that exists but can't be
@@ -127,12 +129,20 @@ public actor BackupIndex {
         _ assetID: String, ifModificationDate date: Date, checksums: [DeviceResourceType: String],
         _ change: (inout BackupEntry) -> Void
     ) -> Bool {
-        guard var entry = stored.entries[assetID], entry.modificationDate == date, entry.checksums == checksums else {
-            return false
-        }
+        update(assetID, if: { $0.modificationDate == date && $0.checksums == checksums }, change) != nil
+    }
+
+    /// Applies `change` to the stored entry for `assetID`, inside the index, if `condition` holds for it:
+    /// checked and written in one step. Returns the entry as written, `nil` when there is no entry or the
+    /// condition doesn't hold.
+    @discardableResult
+    public func update(
+        _ assetID: String, if condition: (BackupEntry) -> Bool, _ change: (inout BackupEntry) -> Void
+    ) -> BackupEntry? {
+        guard var entry = stored.entries[assetID], condition(entry) else { return nil }
         change(&entry)
         set(entry, for: assetID)
-        return true
+        return entry
     }
 
     public func selection() -> BackupSelection { stored.selection }
@@ -154,6 +164,7 @@ public actor BackupIndex {
         let data = try JSONEncoder().encode(stored)
         try data.write(to: fileURL, options: CacheProtection.writingOptions)
         hasChanges = false
+        saveCount += 1
     }
 
     /// A scanner checkpoint; unchanged records need no additional disk write.

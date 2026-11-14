@@ -11,7 +11,7 @@ final class APIKeyPermissionTests: XCTestCase {
         ("getAllPeople", .view), ("getPerson", .view), ("getPersonThumbnail", .view), ("searchSmart", .view),
         ("searchAssets", .view), ("getSearchSuggestions", .view), ("getMapMarkers", .view), ("searchMemories", .view),
         ("updateAsset", .organize), ("deleteAssets", .organize), ("restoreAssets", .organize), ("createAlbum", .organize),
-        ("addAssetsToAlbum", .organize), ("checkBulkUpload", .backup),
+        ("addAssetsToAlbum", .organize), ("checkBulkUpload", .backup), ("uploadAsset", .backup),
         // Public, need no permission.
         ("pingServer", .view), ("getServerVersion", .view), ("getServerFeatures", .view), ("getServerConfig", .view),
     ]

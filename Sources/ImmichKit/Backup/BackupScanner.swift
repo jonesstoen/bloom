@@ -65,11 +65,16 @@ public actor BackupScanner {
         self.settings = settings
     }
 
-    /// An item hashed (now or in an earlier scan) and waiting for the server's answer.
+    /// An item hashed (now or in an earlier scan) and waiting for the server's answer, with what its
+    /// entry held when it was queued for the check. The answer is applied only to that entry: if the
+    /// uploader (or a Re-upload) recorded something else meanwhile, the answer is about an older state.
     private struct Hashed {
         let assetID: String
         /// In `BackupResourcePolicy` order: the photo or video first.
         let checksums: [(type: DeviceResourceType, checksum: String)]
+        let state: BackupState
+        let serverIDs: [DeviceResourceType: String]
+        let needsLink: Bool
         var dictionary: [DeviceResourceType: String] {
             Dictionary(checksums.map { ($0.type, $0.checksum) }, uniquingKeysWith: { first, _ in first })
         }
@@ -132,30 +137,39 @@ public actor BackupScanner {
             let results = try await service.checkBulkUpload(items)
             let byID = Dictionary(results.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             for item in batch {
-                // The entry may have changed while the server answered: only apply the verdict
-                // to the checksums it was given for. It holds what was known before this check.
-                guard var entry = await index.entry(for: item.assetID), entry.checksums == item.dictionary else { continue }
-                if let (state, serverIDs) = Self.verdict(for: item, results: byID, previous: entry) {
-                    // Both halves there but maybe not joined yet: stays queued, the uploader links them.
-                    if case .backedUp = state, entry.needsLink {
-                        entry.state = .pending(reason: .needsUpload)
-                    } else {
-                        entry.state = state
+                let verdict = Self.verdict(for: item, results: byID)
+                let checksums = item.dictionary
+                // The entry may have changed while the server answered (a new version, or the uploader
+                // recording the item): the verdict is applied, in one step, only to the entry it was
+                // asked for. That entry holds what was known before this check.
+                let written = await index.update(item.assetID, if: {
+                    $0.checksums == checksums && $0.state == item.state
+                        && $0.serverIDs == item.serverIDs && $0.needsLink == item.needsLink
+                }) { entry in
+                    if let (state, serverIDs) = verdict {
+                        // Both halves there but maybe not joined yet: stays queued, the uploader links them.
+                        if case .backedUp = state, entry.needsLink {
+                            entry.state = .pending(reason: .needsUpload)
+                        } else {
+                            entry.state = state
+                        }
+                        entry.serverIDs = serverIDs
+                    } else if !Self.wasSeenOnServer(entry.state) {
+                        entry.state = .pending(reason: .notChecked)
                     }
-                    entry.serverIDs = serverIDs
-                } else if !Self.wasSeenOnServer(entry.state) {
-                    entry.state = .pending(reason: .notChecked)
                 }
-                await record(entry, for: item.assetID)
+                if let written { show(written.state, for: item.assetID) }
             }
             batch = []
             batchChecksums = 0
         }
-        func enqueue(_ assetID: String, _ resources: [DeviceResource], _ checksums: [DeviceResourceType: String]) async throws {
-            let sums = resources.map { (type: $0.type, checksum: checksums[$0.type]!) }
+        /// Queues `entry` (as recorded in the index) for a check.
+        func enqueue(_ assetID: String, _ resources: [DeviceResource], _ entry: BackupEntry) async throws {
+            let sums = resources.map { (type: $0.type, checksum: entry.checksums[$0.type]!) }
             // A Live Photo's checksums always travel in the same request.
             if batchChecksums + sums.count > Self.batchSize { try await flush() }
-            batch.append(Hashed(assetID: assetID, checksums: sums))
+            batch.append(Hashed(
+                assetID: assetID, checksums: sums, state: entry.state, serverIDs: entry.serverIDs, needsLink: entry.needsLink))
             batchChecksums += sums.count
         }
 
@@ -195,14 +209,21 @@ public actor BackupScanner {
                     } else if let entry, Self.isCurrent(entry, for: asset, resources: resources) {
                         // Already hashed: ask the server again, no reads. It may have the file by now,
                         // or have deleted or restored what it had.
-                        if Self.isRechecked(entry.state) { try await enqueue(id, resources, entry.checksums) }
+                        if Self.isRechecked(entry.state) { try await enqueue(id, resources, entry) }
                     } else {
                         try await probeServer()
                         let (checksums, state) = try await hash(asset, resources: resources)
-                        await record(
-                            BackupEntry(modificationDate: asset.modificationDate, checksums: checksums, state: state),
-                            for: id)
-                        if state == .pending(reason: .notChecked) { try await enqueue(id, resources, checksums) }
+                        var recorded = BackupEntry(modificationDate: asset.modificationDate, checksums: checksums, state: state)
+                        if state == .pending(reason: .notChecked), let entry, entry.checksums == checksums {
+                            // Only the date changed (a favourite, hide, caption or location change), not the
+                            // bytes: still the item the server has, or had and deleted. Keep what is known
+                            // about it, so an item deleted on the server is never uploaded again by this.
+                            recorded = entry
+                            recorded.modificationDate = asset.modificationDate
+                        }
+                        await record(recorded, for: id)
+                        // A new version is `notChecked`; a kept entry is re-checked as an unchanged one is.
+                        if Self.isRechecked(recorded.state) { try await enqueue(id, resources, recorded) }
                     }
                     if batchChecksums >= Self.batchSize { try await flush() }
                     if handled.isMultiple(of: Self.saveInterval) { try await index.saveIfChanged() }
@@ -272,7 +293,7 @@ public actor BackupScanner {
     }
 
     /// The new state and per-resource server IDs from the server's answers, given what the entry knew
-    /// before the check (option C). A resource was *seen* on the server when the whole item was
+    /// when the item was queued for the check (`item.state` and `item.serverIDs`; option C). A resource was *seen* on the server when the whole item was
     /// (`backedUp` / `deletedOnServer`) or when the entry has a server ID for it (a Live Photo half
     /// found earlier while the other half was missing).
     /// - a copy in the server's trash, or a seen resource gone (`accept`): deleted on the server, with
@@ -288,10 +309,10 @@ public actor BackupScanner {
     /// Returns `nil` (no verdict) when an answer or a duplicate's ID is missing, or for the refusal case
     /// above: a refusal says nothing about deletion.
     private static func verdict(
-        for item: Hashed, results: [String: BulkUploadCheckResult], previous: BackupEntry
+        for item: Hashed, results: [String: BulkUploadCheckResult]
     ) -> (BackupState, [DeviceResourceType: String])? {
         guard let main = item.checksums.first?.type else { return nil }
-        let seenItem = wasSeenOnServer(previous.state)
+        let seenItem = wasSeenOnServer(item.state)
         var trashed: Set<DeviceResourceType> = []
         var gone: Set<DeviceResourceType> = []
         var rejected = false
@@ -309,7 +330,7 @@ public actor BackupScanner {
             }
         }
         // Deletion wins over a refusal: a trashed or seen-and-gone half is never uploaded automatically.
-        let seenGone = seenItem ? !gone.isEmpty : gone.contains { previous.serverIDs[$0] != nil }
+        let seenGone = seenItem ? !gone.isEmpty : gone.contains { item.serverIDs[$0] != nil }
         if !trashed.isEmpty || seenGone {
             return (.deletedOnServer(trashed: trashed, gone: gone), serverIDs)
         }

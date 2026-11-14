@@ -69,7 +69,7 @@ final class AssetUploadTests: XCTestCase {
         expected.append(text(field("fileModifiedAt", "2023-11-14T22:15:00.500Z")))
         expected.append(text(field("filename", "IMG_0001.HEIC")))
         expected.append(text(field("isFavorite", "true")))
-        expected.append(text(field("duration", "12")))
+        expected.append(text(field("duration", "12400")))
         expected.append(text(field("livePhotoVideoId", "11111111-2222-4333-8444-555555555555")))
         expected.append(text("--XBOUNDARYX\r\nContent-Disposition: form-data; name=\"assetData\"; filename=\"IMG_0001.HEIC\"\r\n"
             + "Content-Type: image/heic\r\n\r\n"))
@@ -125,10 +125,13 @@ final class AssetUploadTests: XCTestCase {
         XCTAssertEqual(actual.suffix(text("\r\n--XBOUNDARYX--\r\n").count), text("\r\n--XBOUNDARYX--\r\n"))
     }
 
-    func testDurationFieldIsWholeSecondsAndNeverNegative() {
+    /// The spec: "Duration in milliseconds (for videos)".
+    func testDurationFieldIsMillisecondsAndNeverNegative() {
         XCTAssertEqual(MultipartBody.durationField(0), "0")
-        XCTAssertEqual(MultipartBody.durationField(12.4), "12")
-        XCTAssertEqual(MultipartBody.durationField(12.5), "13")
+        XCTAssertEqual(MultipartBody.durationField(12.4), "12400")
+        XCTAssertEqual(MultipartBody.durationField(12.5), "12500")
+        XCTAssertEqual(MultipartBody.durationField(0.0004), "0")
+        XCTAssertEqual(MultipartBody.durationField(0.0006), "1")
         XCTAssertEqual(MultipartBody.durationField(-3), "0")
     }
 
