@@ -405,7 +405,7 @@ final class BackupRunnerTests: XCTestCase {
         setup.runner.appBecameActive()
         await setup.runner.settle()
         XCTAssertEqual(setup.model.error,
-                       "Couldn't check your photos: \(ImmichServiceError.insecureConnection.localizedDescription)")
+                       "Couldn't back up your photos: \(ImmichServiceError.insecureConnection.localizedDescription)")
     }
 
     // MARK: Album and cellular choices

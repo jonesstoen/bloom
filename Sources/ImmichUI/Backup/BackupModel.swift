@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import ImmichKit
 import Observation
 import os
@@ -28,8 +29,6 @@ final class BackupModel {
         let date: Date?
         /// Every missing copy is in the server's trash (so "In the Trash"); else at least one is gone for good.
         let isTrashed: Bool
-        /// A small JPEG from the photo library.
-        let thumbnail: Data?
     }
 
     enum AlbumState { case included, excluded, neither }
@@ -88,6 +87,11 @@ final class BackupModel {
     @ObservationIgnored private var completedScans = 0
     @ObservationIgnored private var rescan: (id: UUID, task: Task<Void, Never>)?
     @ObservationIgnored private var generation = 0
+    /// Counts `refreshLists()` calls: only the newest one may publish its result.
+    @ObservationIgnored private var listsRevision = 0
+    /// Decoded thumbnails of the Deleted on Server rows, by asset ID, and the IDs that had none.
+    @ObservationIgnored private var thumbnailCache: [String: CGImage] = [:]
+    @ObservationIgnored private var thumbnailMisses: Set<String> = []
     @ObservationIgnored private var progressGate = BackupProgressGate()
     @ObservationIgnored private var isStopped = false
     @ObservationIgnored private var selectionRevision = 0
@@ -324,8 +328,8 @@ final class BackupModel {
         case is CancellationError: return
         case BackupStagingError.notEnoughSpace:
             // The item is listed under Problems with Bloom's reason; this explains why the run stopped.
-            error = tr("Couldn't check your photos: %@", CocoaError(.fileWriteOutOfSpace).localizedDescription)
-        default: report(failure)
+            error = tr("Couldn't back up your photos: %@", CocoaError(.fileWriteOutOfSpace).localizedDescription)
+        default: report(failure, uploading: true)
         }
     }
 
@@ -481,9 +485,57 @@ final class BackupModel {
         await refreshLists()
     }
 
+    /// Reads the failed and deleted-on-server items in one pass over the index. Only the newest call
+    /// publishes: a slower, older one is discarded.
     private func refreshLists() async {
-        await refreshFailures()
-        await refreshDeletedItems()
+        listsRevision += 1
+        let revision = listsRevision
+        let wantsFailed = counts.failed > 0
+        let wantsDeleted = counts.deletedOnServer > 0
+        var failed: [FailedItem] = []
+        var deleted: [(id: String, entry: BackupEntry)] = []
+        if wantsFailed || wantsDeleted {
+            let entries = await currentEntries {
+                (wantsFailed && Self.isFailed($0)) || (wantsDeleted && Self.isDeletedOnServer($0))
+            }
+            failed = entries.compactMap { id, entry in
+                guard case let .failed(reason) = entry.state else { return nil }
+                return FailedItem(id: id, reason: reason)
+            }
+            // The newest edits first, so the limit keeps those.
+            deleted = entries.filter { Self.isDeletedOnServer($0.entry) }
+                .sorted {
+                    $0.entry.modificationDate != $1.entry.modificationDate
+                        ? $0.entry.modificationDate > $1.entry.modificationDate : $0.id < $1.id
+                }
+            deleted = Array(deleted.prefix(Self.deletedItemLimit))
+        }
+        guard revision == listsRevision else { return }
+        let shownFailed = Array(failed.prefix(Self.failedItemLimit))
+        if failedItems != shownFailed { failedItems = shownFailed }
+
+        let known = Dictionary(deletedItems.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let created = Dictionary(
+            await source.assets(deleted.map(\.id).filter { known[$0] == nil }).map { ($0.id, $0.creationDate) },
+            uniquingKeysWith: { first, _ in first })
+        guard revision == listsRevision else { return }
+        let items: [DeletedItem] = deleted.compactMap { id, entry in
+            guard case let .deletedOnServer(trashed, gone) = entry.state else { return nil }
+            // Every missing copy is in the trash: it can be restored without uploading anything.
+            return DeletedItem(id: id, date: known[id]?.date ?? created[id], isTrashed: !trashed.isEmpty && gone.isEmpty)
+        }.sorted {
+            switch ($0.date, $1.date) {
+            case let (a?, b?) where a != b: a > b
+            case (_?, nil): true
+            case (nil, _?): false
+            default: $0.id < $1.id
+            }
+        }
+        if deletedItems != items { deletedItems = items }
+        // Thumbnails of rows that are gone aren't needed any more.
+        let shown = Set(items.map(\.id))
+        thumbnailCache = thumbnailCache.filter { shown.contains($0.key) }
+        thumbnailMisses.formIntersection(shown)
     }
 
     /// The entries of the selected photos that satisfy `isIncluded`, in ID order, left out when the photo
@@ -509,42 +561,24 @@ final class BackupModel {
         if case .deletedOnServer = entry.state { true } else { false }
     }
 
-    private func refreshFailures() async {
-        guard counts.failed > 0 else { failedItems = []; return }
-        let failed = await currentEntries(where: Self.isFailed)
-        failedItems = failed.prefix(Self.failedItemLimit).compactMap { id, entry in
-            guard case let .failed(reason) = entry.state else { return nil }
-            return FailedItem(id: id, reason: reason)
+    // MARK: - Thumbnails
+
+    /// The thumbnail of a Deleted on Server row, decoded off the main actor and kept for later rows and
+    /// refreshes. Photos without one (gone from the iPhone, say) are remembered, not asked for again.
+    func thumbnail(for id: String) async -> CGImage? {
+        if let image = thumbnailCache[id] { return image }
+        if thumbnailMisses.contains(id) { return nil }
+        guard let data = await source.thumbnailData(id, pixelSide: Self.thumbnailPixelSide) else {
+            thumbnailMisses.insert(id)
+            return nil
         }
+        let image = await Task.detached { Self.decode(data) }.value
+        if let image { thumbnailCache[id] = image } else { thumbnailMisses.insert(id) }
+        return image
     }
 
-    private func refreshDeletedItems() async {
-        guard counts.deletedOnServer > 0 else { deletedItems = []; return }
-        let deleted = await currentEntries(where: Self.isDeletedOnServer).prefix(Self.deletedItemLimit)
-        let known = Dictionary(deletedItems.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let newIDs = deleted.map(\.id).filter { known[$0] == nil }
-        let created = Dictionary(
-            await source.assets(newIDs).map { ($0.id, $0.creationDate) }, uniquingKeysWith: { first, _ in first })
-        var items: [DeletedItem] = []
-        for (id, entry) in deleted {
-            guard case let .deletedOnServer(trashed, gone) = entry.state else { continue }
-            // Every missing copy is in the trash: it can be restored without uploading anything.
-            let isTrashed = !trashed.isEmpty && gone.isEmpty
-            var thumbnail = known[id]?.thumbnail
-            if thumbnail == nil {
-                thumbnail = await source.thumbnailData(id, pixelSide: Self.thumbnailPixelSide)
-            }
-            items.append(DeletedItem(id: id, date: known[id]?.date ?? created[id], isTrashed: isTrashed, thumbnail: thumbnail))
-        }
-        // Newest first; the photos' own order isn't known before their dates are.
-        deletedItems = items.sorted {
-            switch ($0.date, $1.date) {
-            case let (a?, b?) where a != b: a > b
-            case (_?, nil): true
-            case (nil, _?): false
-            default: $0.id < $1.id
-            }
-        }
+    private nonisolated static func decode(_ data: Data) -> CGImage? {
+        CGImageSourceCreateWithData(data as CFData, nil).flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
     }
 
     // MARK: - Try Again and Re-upload
@@ -555,8 +589,9 @@ final class BackupModel {
         guard !ids.isEmpty else { return }
         workingCount += 1
         defer { workingCount -= 1 }
+        // The runner refreshes the counts and lists when it is done. A retry that was cancelled before it
+        // started changed nothing.
         await runner.retryFailed(ids)
-        await uploadsChanged()
     }
 
     /// Try Again for every failed item, not just the ones on screen.
@@ -581,7 +616,8 @@ final class BackupModel {
         } catch {
             report(error, uploading: true)
         }
-        await uploadsChanged()
+        // The runner refreshes the counts and lists after the uploader ran, also when it failed. A call
+        // cancelled before it started changed nothing.
     }
 
     /// Re-upload for every item deleted on the server, not just the ones on screen.

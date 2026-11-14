@@ -1,3 +1,5 @@
+import ImageIO
+import UniformTypeIdentifiers
 import XCTest
 @testable import ImmichKit
 @testable import ImmichUI
@@ -528,7 +530,6 @@ final class BackupModelTests: XCTestCase {
 
     func testCountsRowAddsUpWithDeletedOnServer() async throws {
         let library = makeLibrary(count: 6)
-        library.thumbnails = ["a4": Data("thumb".utf8)]
         let directory = try await seededDirectory([
             "a1": .backedUp(serverAssetID: "s1"),
             "a2": .pending(reason: .needsUpload),
@@ -551,8 +552,87 @@ final class BackupModelTests: XCTestCase {
         XCTAssertEqual(byID["a5"]?.isTrashed, false)
         XCTAssertEqual(byID["a6"]?.isTrashed, false, "One half is gone for good")
         XCTAssertEqual(byID["a4"]?.date, Self.date)
-        XCTAssertEqual(byID["a4"]?.thumbnail, Data("thumb".utf8))
-        XCTAssertNil(byID["a5"]?.thumbnail)
+        await model.stop()
+    }
+
+    /// A 2x2 PNG.
+    private func pngData() throws -> Data {
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: 2, height: 2, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
+        let image = try XCTUnwrap(context.makeImage())
+        let data = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return data as Data
+    }
+
+    func testThumbnailsAreDecodedOnDemandAndMissesRemembered() async throws {
+        let library = makeLibrary(count: 2)
+        library.thumbnails = ["a1": try pngData()]
+        let model = makeModel(library)
+        await model.load()
+
+        let first = await model.thumbnail(for: "a1")
+        XCTAssertEqual(first?.width, 2)
+        // Served from the cache: the photo library isn't asked again.
+        library.thumbnails = [:]
+        let again = await model.thumbnail(for: "a1")
+        XCTAssertNotNil(again)
+
+        let missing = await model.thumbnail(for: "a2")
+        XCTAssertNil(missing)
+        library.thumbnails = ["a2": try pngData()]
+        let stillMissing = await model.thumbnail(for: "a2")
+        XCTAssertNil(stillMissing, "A photo without a thumbnail isn't asked for again")
+        await model.stop()
+    }
+
+    func testLoadingDoesNotFetchThumbnails() async throws {
+        let library = makeLibrary(count: 2)
+        library.thumbnails = ["a1": try pngData()]
+        let directory = try await seededDirectory(["a1": .deletedOnServer(trashed: [.photo], gone: [])])
+        let model = makeModel(library, directory: directory)
+        await model.load()
+        XCTAssertEqual(model.deletedItems.map(\.id), ["a1"])
+        // Thumbnails come per row: nothing was cached by loading, so a later change shows up.
+        library.thumbnails = [:]
+        let thumbnail = await model.thumbnail(for: "a1")
+        XCTAssertNil(thumbnail)
+        await model.stop()
+    }
+
+    func testDeletedListKeepsTheNewestWhenOverTheLimit() async throws {
+        let count = BackupModel.deletedItemLimit + 3
+        let ids = (1...count).map { "a\($0)" }
+        let library = FakePhotoLibrary()
+        let directory = makeDirectory()
+        let index = BackupIndex(directory: directory)
+        for (offset, id) in ids.enumerated() {
+            // a1 is the oldest, the last the newest.
+            let date = Self.date.addingTimeInterval(TimeInterval(offset))
+            let resource = DeviceResource(type: .photo, filename: "\(id).jpg")
+            library.addAsset(DeviceAsset(
+                id: id, isVideo: false, creationDate: date, modificationDate: date,
+                isFavorite: false, duration: 0, resources: [resource]))
+            await index.set(
+                BackupEntry(modificationDate: date, checksums: [.photo: "sum-\(id)"],
+                            state: .deletedOnServer(trashed: [], gone: [.photo])),
+                for: id)
+        }
+        library.addAlbum(id: "recents", title: "Recents", assetIDs: Set(ids))
+        await index.setSelection(BackupSelection(included: ["recents"]))
+        try await index.save()
+        let model = makeModel(library, directory: directory)
+        await model.load()
+
+        XCTAssertEqual(model.counts.deletedOnServer, count)
+        XCTAssertEqual(model.deletedItems.count, BackupModel.deletedItemLimit)
+        XCTAssertEqual(model.deletedItems.first?.id, "a\(count)", "Newest first")
+        XCTAssertFalse(model.deletedItems.contains { ["a1", "a2", "a3"].contains($0.id) }, "The oldest are cut")
         await model.stop()
     }
 

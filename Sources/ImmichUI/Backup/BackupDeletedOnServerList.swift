@@ -1,4 +1,4 @@
-import ImageIO
+import CoreGraphics
 import ImmichKit
 import SwiftUI
 
@@ -30,7 +30,7 @@ struct BackupDeletedOnServerList: View {
     private var itemsSection: some View {
         Section {
             ForEach(model.deletedItems) { item in
-                DeletedItemRow(item: item, isDisabled: model.isWorking) {
+                DeletedItemRow(item: item, model: model, isDisabled: model.isWorking) {
                     Task { await model.reupload([item.id]) }
                 }
             }
@@ -57,12 +57,13 @@ struct BackupDeletedOnServerList: View {
 
 private struct DeletedItemRow: View {
     let item: BackupModel.DeletedItem
+    let model: BackupModel
     let isDisabled: Bool
     let reupload: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
-            BackupThumbnail(data: item.thumbnail)
+            BackupThumbnail(id: item.id, model: model)
                 .frame(width: 56, height: 56)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .accessibilityHidden(true)
@@ -82,25 +83,26 @@ private struct DeletedItemRow: View {
     }
 }
 
-/// A photo-library thumbnail, or a placeholder while there is none (the photo is gone from the iPhone,
-/// or the library hasn't answered yet).
+/// A photo-library thumbnail, loaded when the row appears (the model decodes and caches it), or a
+/// placeholder while there is none (the photo is gone from the iPhone, or the library hasn't answered yet).
 private struct BackupThumbnail: View {
-    let data: Data?
+    let id: String
+    let model: BackupModel
+    @State private var image: CGImage?
 
     var body: some View {
-        if let image = data.flatMap(Self.cgImage) {
-            Image(decorative: image, scale: 1)
-                .resizable()
-                .scaledToFill()
-        } else {
-            Rectangle()
-                .fill(.quaternary)
-                .overlay { Image(systemName: "photo").foregroundStyle(.secondary) }
+        Group {
+            if let image {
+                Image(decorative: image, scale: 1)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Rectangle()
+                    .fill(.quaternary)
+                    .overlay { Image(systemName: "photo").foregroundStyle(.secondary) }
+            }
         }
-    }
-
-    private static func cgImage(from data: Data) -> CGImage? {
-        CGImageSourceCreateWithData(data as CFData, nil).flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
+        .task(id: id) { image = await model.thumbnail(for: id) }
     }
 }
 
