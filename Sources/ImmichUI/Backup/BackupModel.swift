@@ -51,6 +51,10 @@ final class BackupModel {
     /// The first `deletedItemLimit` items deleted on the server, newest first. `counts.deletedOnServer` has the total.
     private(set) var deletedItems: [DeletedItem] = []
     private(set) var error: String?
+    /// The last scan or upload stopped because the server couldn't be reached (offline, say). Shown as a
+    /// calm status instead of `error`; cleared when a scan or upload run gets through. The runner tries
+    /// again when the network comes back.
+    private(set) var isWaitingForNetwork = false
     /// Set when the Backup switch was turned on with no album chosen: the screen opens the album picker,
     /// and clears it when the picker closes.
     var needsAlbumChoice = false
@@ -142,11 +146,18 @@ final class BackupModel {
     /// Called by `BackupRunner.init`.
     func adopt(_ runner: BackupRunner) { madeRunner = runner }
 
+    /// The network the scans and uploads check, watched by the runner. A path monitor unless one was given.
+    var networkConditions: any NetworkConditions {
+        if let network { return network }
+        let made = PathMonitorNetwork()
+        network = made
+        return made
+    }
+
     /// The uploader for this account: same index, photo library, server and settings as the scans.
     func makeUploader(clock: BackupRetryClock = .live) async -> BackupUploader {
         let index = await ensureIndex()
-        let network = self.network ?? PathMonitorNetwork()
-        self.network = network
+        let network = networkConditions
         let settings = sharedSettings
         return BackupUploader(
             source: source, service: service, index: index, staging: staging,
@@ -327,12 +338,16 @@ final class BackupModel {
 
     func serverLibraryChanged() { onServerLibraryChanged?() }
 
+    /// An upload run got through: the server is reachable again.
+    func uploadRunSucceeded() { isWaitingForNetwork = false }
+
     /// An upload run stopped on something every item would run into: shown like a scan's error.
     func reportUploadFailure(_ failure: Error) {
         switch failure {
         case is CancellationError: return
         case BackupStagingError.notEnoughSpace:
             // The item is listed under Problems with Bloom's reason; this explains why the run stopped.
+            isWaitingForNetwork = false
             error = tr("Couldn't back up your photos: %@", CocoaError(.fileWriteOutOfSpace).localizedDescription)
         default: report(failure, uploading: true)
         }
@@ -363,13 +378,21 @@ final class BackupModel {
         if let result {
             counts = result
             completedScans += 1
+            isWaitingForNetwork = false
         } else { await refreshCounts() }
         await refreshLists()
         scanTask = nil
         isScanning = false
     }
 
+    /// No connection to the server becomes the waiting status (leaving any other error as it is); any
+    /// other failure becomes `error`.
     private func report(_ failure: Error, uploading: Bool = false) {
+        if ImmichServiceError.isConnectivityFailure(failure) {
+            isWaitingForNetwork = true
+            return
+        }
+        isWaitingForNetwork = false
         if case BackupIndexError.unavailable = failure { indexWasUnavailable = true }
         error = Self.message(for: failure, uploading: uploading)
     }
@@ -475,8 +498,7 @@ final class BackupModel {
 
     private func makeScanner() async -> BackupScanner {
         let index = await ensureIndex()
-        let network = self.network ?? PathMonitorNetwork()
-        self.network = network
+        let network = networkConditions
         return BackupScanner(source: source, service: service, index: index, network: network, settings: settings)
     }
 
@@ -614,6 +636,7 @@ final class BackupModel {
         error = nil
         do {
             try await runner.reupload(ids)
+            isWaitingForNetwork = false
         } catch is CancellationError {
             // The user left the foreground, turned the switch off or signed out: nothing to report.
         } catch ImmichServiceError.editingOff {

@@ -239,6 +239,8 @@ private struct BackupCheckSection: View {
         } footer: {
             if let error = model.error {
                 Text(error).foregroundStyle(.red)
+            } else if model.isWaitingForNetwork {
+                Text(tr("Waiting for a network connection.")).foregroundStyle(.secondary)
             }
         }
     }

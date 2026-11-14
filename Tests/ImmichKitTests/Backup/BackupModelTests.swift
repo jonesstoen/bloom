@@ -336,6 +336,45 @@ final class BackupModelTests: XCTestCase {
         XCTAssertTrue(library.reads.isEmpty, "nothing is read before the key is known to work")
     }
 
+    /// Owner's phone: Wi-Fi off showed a red "Couldn't check your photos: Could not reach the server".
+    func testUnreachableServerShowsWaitingForNetworkInsteadOfAnError() async {
+        let library = makeLibrary(count: 2)
+        let service = MockImmichService(library: MockLibrary(assetCount: 1, years: 1))
+        await service.setFailure(.network("The Internet connection appears to be offline."))
+        let model = makeModel(library, service: service)
+        await model.load()
+        model.setSelection(BackupSelection(included: ["recents"]))
+        await model.settle()
+        XCTAssertNil(model.error, "no connection isn't shown as an error")
+        XCTAssertTrue(model.isWaitingForNetwork)
+
+        // The connection is back: the next scan that succeeds clears the status.
+        await service.setFailure(nil)
+        let completed = await model.scan()
+        XCTAssertTrue(completed)
+        XCTAssertFalse(model.isWaitingForNetwork)
+        XCTAssertNil(model.error)
+        XCTAssertEqual(model.counts.total, 2)
+    }
+
+    func testOtherScanFailuresStillShowAnError() async {
+        let library = makeLibrary(count: 2)
+        let service = MockImmichService(library: MockLibrary(assetCount: 1, years: 1))
+        await service.setFailure(.network("offline"))
+        let model = makeModel(library, service: service)
+        await model.load()
+        model.setSelection(BackupSelection(included: ["recents"]))
+        await model.settle()
+        XCTAssertTrue(model.isWaitingForNetwork)
+
+        // Reachable now, but the server fails: the red error is back and the waiting status goes.
+        await service.setFailure(.unexpectedStatus(500))
+        await model.scan()
+        XCTAssertEqual(
+            model.error, "Couldn't check your photos: \(ImmichServiceError.unexpectedStatus(500).localizedDescription)")
+        XCTAssertFalse(model.isWaitingForNetwork)
+    }
+
     func testCellularSwitchRechecksItemsWaitingForWiFi() async {
         let library = makeLibrary(count: 2)
         library.markICloudOnly(DeviceResource(type: .photo, filename: "a1.jpg"))

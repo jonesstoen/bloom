@@ -1,32 +1,113 @@
 import Foundation
 import Network
 
-/// Whether the device is currently on cellular data. Backup reads it before each iCloud download.
+/// One state of the device's network path.
+public struct NetworkPath: Sendable, Equatable {
+    /// There is a usable path at all (iOS may still not reach the server over it).
+    public var isConnected: Bool
+    /// Cellular, an expensive path (a personal hotspot), or no path.
+    public var isOnCellular: Bool
+
+    public init(isConnected: Bool, isOnCellular: Bool) {
+        self.isConnected = isConnected
+        self.isOnCellular = isOnCellular
+    }
+}
+
+/// Whether the device is currently on cellular data. Backup reads it before each iCloud download, and
+/// the runner watches `changes()` to carry on when the network comes back or Wi-Fi takes over.
 public protocol NetworkConditions: Sendable {
     var isOnCellular: Bool { get async }
+    var isConnected: Bool { get async }
+    /// Yields the current path once it is known, then every path update. Ends when the caller stops iterating.
+    func changes() -> AsyncStream<NetworkPath>
+}
+
+extension NetworkConditions {
+    /// Conditions that can't observe the network: always connected...
+    public var isConnected: Bool { get async { true } }
+    /// ...and never changing (the stream ends at once).
+    public func changes() -> AsyncStream<NetworkPath> { AsyncStream { $0.finish() } }
 }
 
 /// `NetworkConditions` from `NWPathMonitor`. Until the first path update arrives it reports
-/// cellular, so nothing is downloaded over cellular by mistake.
+/// cellular, so nothing is downloaded over cellular by mistake, and connected.
 public final class PathMonitorNetwork: NetworkConditions, @unchecked Sendable {
     private let monitor = NWPathMonitor()
     private let lock = NSLock()
-    private var cellular = true
+    /// nil until the first path update.
+    private var path: NetworkPath?
+    private var listeners: [UUID: AsyncStream<NetworkPath>.Continuation] = [:]
 
     public init() {
         monitor.pathUpdateHandler = { [weak self] path in
             guard let self else { return }
-            let onCellular = path.status != .satisfied || path.usesInterfaceType(.cellular) || path.isExpensive
-            self.lock.withLock { self.cellular = onCellular }
+            let connected = path.status == .satisfied
+            let new = NetworkPath(
+                isConnected: connected,
+                isOnCellular: !connected || path.usesInterfaceType(.cellular) || path.isExpensive)
+            // Yielded under the lock, so a new stream can't get an older path after a newer one.
+            self.lock.withLock {
+                self.path = new
+                for listener in self.listeners.values { listener.yield(new) }
+            }
         }
         monitor.start(queue: DispatchQueue(label: "Bloom.PathMonitorNetwork"))
     }
 
-    deinit { monitor.cancel() }
+    deinit {
+        monitor.cancel()
+        let listeners = lock.withLock { Array(self.listeners.values) }
+        for listener in listeners { listener.finish() }
+    }
 
     public var isOnCellular: Bool {
-        get async { lock.withLock { cellular } }
+        get async { lock.withLock { path?.isOnCellular ?? true } }
     }
+
+    public var isConnected: Bool {
+        get async { lock.withLock { path?.isConnected ?? true } }
+    }
+
+    /// Only the newest path is buffered: a slow reader sees where the network ended up.
+    public func changes() -> AsyncStream<NetworkPath> {
+        let (stream, continuation) = AsyncStream<NetworkPath>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let id = UUID()
+        continuation.onTermination = { [weak self] _ in
+            guard let self else { return }
+            self.lock.withLock { _ = self.listeners.removeValue(forKey: id) }
+        }
+        lock.withLock {
+            listeners[id] = continuation
+            if let path { continuation.yield(path) }
+        }
+        return stream
+    }
+}
+
+extension ImmichServiceError {
+    /// Whether `error` means the server couldn't be reached at all (offline, no route, DNS, timeout),
+    /// as opposed to an answer the server gave. Backup shows such failures as waiting for the network
+    /// and tries again when the network comes back. `LiveImmichService` maps every transport failure
+    /// to `.network`; a raw `URLError` counts only with one of the codes below.
+    public static func isConnectivityFailure(_ error: any Error) -> Bool {
+        switch error {
+        case ImmichServiceError.network:
+            return true
+        case let error as URLError:
+            return connectivityCodes.contains(error.code)
+        case is ImmichServiceError, is CancellationError:
+            return false
+        default:
+            let nsError = error as NSError
+            return nsError.domain == NSURLErrorDomain && connectivityCodes.contains(URLError.Code(rawValue: nsError.code))
+        }
+    }
+
+    private static let connectivityCodes: Set<URLError.Code> = [
+        .notConnectedToInternet, .networkConnectionLost, .timedOut, .cannotConnectToHost, .cannotFindHost,
+        .dnsLookupFailed, .internationalRoamingOff, .dataNotAllowed, .callIsActive,
+    ]
 }
 
 /// The user's backup switches, per device. All off by default: no uploads, and no cellular data for

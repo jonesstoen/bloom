@@ -2,8 +2,39 @@ import XCTest
 @testable import ImmichKit
 @testable import ImmichUI
 
-private struct FixedNetwork: NetworkConditions {
-    let isOnCellular: Bool
+/// A network the test switches by hand. Like `PathMonitorNetwork`, each `changes()` stream starts with
+/// the current path; `set(connected:cellular:)` then delivers the new one to every stream.
+private final class FakeNetwork: NetworkConditions, @unchecked Sendable {
+    private let lock = NSLock()
+    private var path: NetworkPath
+    private var listeners: [UUID: AsyncStream<NetworkPath>.Continuation] = [:]
+
+    init(cellular: Bool) { path = NetworkPath(isConnected: true, isOnCellular: cellular) }
+
+    var isOnCellular: Bool { lock.withLock { path.isOnCellular } }
+    var isConnected: Bool { lock.withLock { path.isConnected } }
+    var listenerCount: Int { lock.withLock { listeners.count } }
+
+    func set(connected: Bool = true, cellular: Bool = false) {
+        lock.withLock {
+            path = NetworkPath(isConnected: connected, isOnCellular: cellular || !connected)
+            for listener in listeners.values { listener.yield(path) }
+        }
+    }
+
+    func changes() -> AsyncStream<NetworkPath> {
+        let (stream, continuation) = AsyncStream<NetworkPath>.makeStream()
+        let id = UUID()
+        lock.withLock {
+            listeners[id] = continuation
+            continuation.yield(path)
+        }
+        continuation.onTermination = { [weak self] _ in
+            guard let self else { return }
+            self.lock.withLock { _ = self.listeners.removeValue(forKey: id) }
+        }
+        return stream
+    }
 }
 
 /// The debounce waits the runner asked for. They return at once: tests don't wait for real time.
@@ -234,6 +265,7 @@ final class BackupRunnerTests: XCTestCase {
         let directory: URL
         let defaults: UserDefaults
         let debounce: SleepLog
+        let network: FakeNetwork
 
         var stagingDirectory: URL { directory.appendingPathComponent("Staging", isDirectory: true) }
 
@@ -308,9 +340,10 @@ final class BackupRunnerTests: XCTestCase {
         let holds = Holds(keys)
         let log = EventLog()
         let source = GatedLibrary(base: library, holds: holds, log: log)
+        let network = FakeNetwork(cellular: cellular)
         let model = BackupModel(
             source: source, service: GatedUploadService(mock: mock, holds: holds, log: log), directory: directory,
-            network: FixedNetwork(isOnCellular: cellular), defaults: defaults)
+            network: network, defaults: defaults)
         let retryClock = BackupRetryClock(now: { ContinuousClock.now }, sleep: { _ in try Task.checkCancellation() })
         let uploader = await model.makeUploader(clock: retryClock)
         let debounce = SleepLog()
@@ -318,7 +351,7 @@ final class BackupRunnerTests: XCTestCase {
             model: model, uploader: uploader, source: source, staging: model.staging,
             debounce: .seconds(2), debounceLimit: .seconds(10), clock: debounceClock ?? debounce.clock)
         return Setup(library: library, mock: mock, holds: holds, log: log, model: model, runner: runner,
-                     directory: directory, defaults: defaults, debounce: debounce)
+                     directory: directory, defaults: defaults, debounce: debounce, network: network)
     }
 
     private func position(of request: MockImmichService.Request, in requests: [MockImmichService.Request]) -> Int? {
@@ -520,6 +553,105 @@ final class BackupRunnerTests: XCTestCase {
         await setup.model.settle()
         let uploaded = await setup.uploadedIDs
         XCTAssertEqual(uploaded, ["a1"])
+    }
+
+    // MARK: Network
+
+    /// Owner's phone: with Wi-Fi off the run stopped, and nothing resumed when Wi-Fi came back.
+    func testNetworkComingBackResumesTheRun() async throws {
+        let setup = try await makeSetup(["a1"])
+        await setup.mock.setFailure(.network("The Internet connection appears to be offline."))
+        setup.runner.setEnabled(true)
+        setup.runner.appBecameActive()
+        await setup.runner.settle()
+        XCTAssertTrue(setup.model.isWaitingForNetwork)
+        XCTAssertNil(setup.model.error)
+        XCTAssertEqual(setup.network.listenerCount, 1, "The network is watched while on and open")
+
+        setup.network.set(connected: false)
+        await setup.runner.handledNetworkChanges(2) // the first is the path when watching started
+        await setup.runner.settle()
+        let uploadsOffline = await setup.uploadRequests()
+        XCTAssertEqual(uploadsOffline, 0)
+
+        await setup.mock.setFailure(nil)
+        setup.network.set(connected: true)
+        await setup.runner.handledNetworkChanges(3)
+        XCTAssertEqual(setup.debounce.sleeps.last, .seconds(2), "Debounced like library changes")
+        await setup.runner.settle()
+        let uploaded = await setup.uploadedIDs
+        XCTAssertEqual(uploaded, ["a1"])
+        XCTAssertFalse(setup.model.isWaitingForNetwork, "Cleared by the scan that worked")
+        XCTAssertNil(setup.model.error)
+    }
+
+    func testSwitchingFromCellularToWiFiUploadsItemsWaitingForWiFi() async throws {
+        let setup = try await makeSetup(["a1"], cellular: true)
+        setup.runner.setEnabled(true)
+        setup.runner.appBecameActive()
+        await setup.runner.settle()
+        let waiting = await setup.savedState("a1")
+        XCTAssertEqual(waiting, .pending(reason: .waitingForWiFi))
+        XCTAssertEqual(setup.model.counts.waitingForWiFi, 1)
+
+        // Another path update while still on cellular: nothing to do.
+        setup.network.set(cellular: true)
+        await setup.runner.handledNetworkChanges(2)
+        await setup.runner.settle()
+        let before = await setup.uploadRequests()
+        XCTAssertEqual(before, 0)
+
+        setup.network.set(cellular: false)
+        await setup.runner.handledNetworkChanges(3)
+        await setup.runner.settle()
+        let uploaded = await setup.uploadedIDs
+        XCTAssertEqual(uploaded, ["a1"])
+    }
+
+    func testNetworkChangesWithTheSwitchOffRunNothing() async throws {
+        let setup = try await makeSetup(["a1"], cellular: true)
+        await setup.mock.setFailure(.network("offline"))
+        setup.runner.appBecameActive()
+        setup.runner.checkNow()
+        await setup.runner.settle()
+        XCTAssertTrue(setup.model.isWaitingForNetwork, "Check Now with the switch off still shows the status")
+        XCTAssertNil(setup.model.error)
+        XCTAssertEqual(setup.network.listenerCount, 0, "The network isn't watched while off")
+
+        await setup.mock.setFailure(nil)
+        let before = await setup.mock.requests
+        setup.network.set(connected: false)
+        setup.network.set(cellular: false)
+        await setup.runner.settle()
+        let after = await setup.mock.requests
+        XCTAssertEqual(after, before, "Nothing runs")
+        let uploads = await setup.uploadRequests()
+        XCTAssertEqual(uploads, 0)
+    }
+
+    func testTheNetworkIsOnlyWatchedWhileOnAndOpen() async throws {
+        let setup = try await makeSetup(["a1"])
+        setup.runner.setEnabled(true)
+        setup.runner.appBecameActive()
+        await setup.runner.settle()
+        XCTAssertEqual(setup.network.listenerCount, 1)
+
+        setup.runner.appLeftForeground()
+        await setup.runner.settle()
+        XCTAssertEqual(setup.network.listenerCount, 0, "Not watched in the background")
+
+        setup.runner.appBecameActive()
+        await setup.runner.settle()
+        XCTAssertEqual(setup.network.listenerCount, 1)
+
+        await setup.runner.stop()
+        XCTAssertEqual(setup.network.listenerCount, 0, "Released by stop()")
+        let before = await setup.mock.requests
+        setup.network.set(connected: false)
+        setup.network.set(connected: true)
+        await setup.runner.settle()
+        let after = await setup.mock.requests
+        XCTAssertEqual(after, before, "Nothing runs after stop")
     }
 
     func testUserCancelOfTheRunsScanStopsTheRun() async throws {

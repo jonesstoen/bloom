@@ -5,7 +5,8 @@ import Observation
 /// Decides when backups run: with the Backup switch on and the app open, it scans the selection and
 /// then uploads what the server is missing. That happens when the app comes back from the background
 /// (or opens), when the Backup screen is opened, when the album choice or a cellular switch changes,
-/// and when the photo library changes (debounced).
+/// when the photo library changes (debounced), and when the network comes back after a scan or run found
+/// no connection, or Wi-Fi takes over from cellular while items wait for it (debounced alike).
 ///
 /// A library change during an upload never interrupts the item in flight: the run uploads at least one
 /// item, then scans again before the next. A change during a scan is followed by one more scan, after
@@ -58,6 +59,9 @@ final class BackupRunner {
     /// The current run is waiting for a scan (a user Cancel of it ends the run).
     @ObservationIgnored private var isScanningForRun = false
     @ObservationIgnored private var watcher: Task<Void, Never>?
+    @ObservationIgnored private var networkWatcher: Task<Void, Never>?
+    /// The path the network watcher saw last; nil until its first one.
+    @ObservationIgnored private var lastPath: NetworkPath?
     @ObservationIgnored private var retiredWatchers: [Task<Void, Never>] = []
     @ObservationIgnored private var debounceTask: Task<Void, Never>?
     /// When the current burst of library changes started.
@@ -73,6 +77,8 @@ final class BackupRunner {
     // Test hooks: events to wait for instead of polling.
     @ObservationIgnored private var receivedChanges = 0
     @ObservationIgnored private var changeObservers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    @ObservationIgnored private var receivedPaths = 0
+    @ObservationIgnored private var pathObservers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
     @ObservationIgnored private var laneObservers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
     /// - Parameters:
@@ -274,16 +280,20 @@ final class BackupRunner {
 
     // MARK: - Running
 
-    /// Starts or stops watching the library and cancels the run, to match the switch and the app state.
+    /// Starts or stops watching the library and the network and cancels the run, to match the switch and
+    /// the app state.
     private func update() {
         if mayRun {
             if watcher == nil { watch() }
+            if networkWatcher == nil { watchNetwork() }
         } else {
-            if let watcher {
-                watcher.cancel()
-                retiredWatchers.append(watcher)
+            for task in [watcher, networkWatcher].compactMap({ $0 }) {
+                task.cancel()
+                retiredWatchers.append(task)
             }
             watcher = nil
+            networkWatcher = nil
+            lastPath = nil
             debounceTask?.cancel()
             burstStart = nil
             cancelRun()
@@ -410,6 +420,7 @@ final class BackupRunner {
         await model?.uploadsChanged()
         // New assets on the server: once per run, so the Library isn't reloaded after every item.
         if items.finished > 0 { model?.serverLibraryChanged() }
+        if succeeded { model?.uploadRunSucceeded() }
         return succeeded
     }
 
@@ -451,6 +462,11 @@ final class BackupRunner {
             for observer in reached { observer.continuation.resume() }
         }
         guard mayRun else { return }
+        scheduleRun()
+    }
+
+    /// Starts a run after the debounce (see `libraryChanged`); a new trigger meanwhile restarts the wait.
+    private func scheduleRun() {
         let now = clock.now()
         let first = burstStart ?? now
         burstStart = first
@@ -467,6 +483,39 @@ final class BackupRunner {
             self.wantsRun = true
             self.start()
         }
+    }
+
+    // MARK: - Network
+
+    private func watchNetwork() {
+        guard let changes = model?.networkConditions.changes() else { return }
+        networkWatcher = Task { [weak self] in
+            for await path in changes {
+                // A path still buffered for a retired watcher must not overwrite the new one's baseline.
+                guard !Task.isCancelled else { break }
+                self?.networkChanged(path)
+            }
+        }
+    }
+
+    /// The first path only sets the baseline (a run was requested when watching started). After that, a
+    /// connected path starts a run (debounced) when the last scan or run found no connection, or when it is
+    /// Wi-Fi after cellular or no network while items wait for Wi-Fi.
+    private func networkChanged(_ path: NetworkPath) {
+        let previous = lastPath
+        lastPath = path
+        defer {
+            receivedPaths += 1
+            let reached = pathObservers.filter { $0.count <= receivedPaths }
+            pathObservers.removeAll { $0.count <= receivedPaths }
+            for observer in reached { observer.continuation.resume() }
+        }
+        guard mayRun, let previous, path.isConnected, let model else { return }
+        let reconnected = model.isWaitingForNetwork
+        let wifiTookOver = !path.isOnCellular && (previous.isOnCellular || !previous.isConnected)
+            && model.counts.waitingForWiFi > 0
+        guard reconnected || wifiTookOver else { return }
+        scheduleRun()
     }
 
     // MARK: - Lane
@@ -500,6 +549,18 @@ final class BackupRunner {
     func handledLibraryChanges(_ count: Int) async {
         if receivedChanges < count {
             await withCheckedContinuation { changeObservers.append((count, $0)) }
+        }
+        while let task = debounceTask {
+            await task.value
+            if debounceTask == task { debounceTask = nil }
+        }
+    }
+
+    /// Waits until the network watcher has handed `count` paths (in total, the first included) to the runner
+    /// and the debounce they started has run. The debounce's sleep must return.
+    func handledNetworkChanges(_ count: Int) async {
+        if receivedPaths < count {
+            await withCheckedContinuation { pathObservers.append((count, $0)) }
         }
         while let task = debounceTask {
             await task.value
