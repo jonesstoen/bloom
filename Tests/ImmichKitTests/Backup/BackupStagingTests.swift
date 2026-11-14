@@ -273,7 +273,7 @@ final class BackupStagingTests: XCTestCase {
                        "Only the body is left; there is no separate copy of the resource")
         XCTAssertEqual(staged.bodyFile.deletingLastPathComponent().standardizedFileURL.path,
                        directory.standardizedFileURL.path)
-        XCTAssertEqual(staging.url(forBodyNamed: staged.bodyFile.lastPathComponent).standardizedFileURL.path,
+        XCTAssertEqual(staging.url(forBodyNamed: staged.bodyFile.lastPathComponent)?.standardizedFileURL.path,
                        staged.bodyFile.standardizedFileURL.path)
     }
 

@@ -60,7 +60,7 @@ final class BackupResultRecorderTests: XCTestCase {
     }
 
     private func exists(_ job: UploadJob, in fixture: Fixture) -> Bool {
-        FileManager.default.fileExists(atPath: fixture.staging.url(forBodyNamed: job.bodyFileName).path)
+        fixture.staging.url(forBodyNamed: job.bodyFileName).map { FileManager.default.fileExists(atPath: $0.path) } ?? false
     }
 
     func testRecordingSuccessMarksBackedUpAndDeletesBody() async throws {
@@ -102,6 +102,7 @@ final class BackupResultRecorderTests: XCTestCase {
         // The server copy was deleted meanwhile; a late second delivery of the same result must not undo that.
         await fixture.index.set(
             entry(state: .deletedOnServer(trashed: [], gone: [.photo])), for: "A")
+        try await fixture.index.save() // so a save by the repeated record would be its own
         let before = await fixture.index.entry(for: "A")
         let savesBefore = await fixture.index.saveCount
 
@@ -320,7 +321,7 @@ final class BackupResultRecorderTests: XCTestCase {
         let job = UploadJob(assetID: "A", resource: .photo, attempt: UUID(), bodyFileName: "x.multipart", checksum: "aa")
         await index.addJob(job)
         try await index.save()
-        XCTAssertEqual(oldStaging.url(forBodyNamed: job.bodyFileName).deletingLastPathComponent().lastPathComponent, "Staging")
+        XCTAssertEqual(oldStaging.url(forBodyNamed: job.bodyFileName)?.deletingLastPathComponent().lastPathComponent, "Staging")
 
         // Same index file, now found in a different place, with the body in the new staging folder.
         try FileManager.default.copyItem(
@@ -335,7 +336,7 @@ final class BackupResultRecorderTests: XCTestCase {
 
         let reloadedJobs = await reloaded.jobs
         let loaded = try XCTUnwrap(reloadedJobs.first)
-        XCTAssertEqual(newStaging.url(forBodyNamed: loaded.bodyFileName).standardizedFileURL, body.standardizedFileURL)
+        XCTAssertEqual(newStaging.url(forBodyNamed: loaded.bodyFileName)?.standardizedFileURL, body.standardizedFileURL)
         await recorder.record(loaded, .uploaded(AssetUploadResult(id: "srv-1", status: .created)))
 
         let recorded = await reloaded.entry(for: "A")
@@ -343,11 +344,176 @@ final class BackupResultRecorderTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: body.path))
     }
 
-    func testBodyNameCannotPointOutsideStaging() {
+    func testBodyNameMustBeAPlainFileNameInsideStaging() {
         let staging = BackupStaging(directory: makeDirectory().appendingPathComponent("Staging"), freeSpace: { .max })
-        let url = staging.url(forBodyNamed: "../../index.json")
-        XCTAssertEqual(url.lastPathComponent, "index.json")
-        XCTAssertEqual(url.deletingLastPathComponent().lastPathComponent, "Staging")
+        for name in ["", ".", "..", "../index.json", "../../index.json", "a/b", "/etc/passwd", "sub/", "x\u{0}y"] {
+            XCTAssertNil(staging.url(forBodyNamed: name), "\(name.debugDescription)")
+        }
+        let url = staging.url(forBodyNamed: "1A2B.multipart")
+        XCTAssertEqual(url?.lastPathComponent, "1A2B.multipart")
+        XCTAssertEqual(url?.deletingLastPathComponent().lastPathComponent, "Staging")
+    }
+
+    func testACorruptJobNameNeverDeletesTheStagingFolder() async throws {
+        let fixture = makeFixture()
+        await fixture.index.set(entry(), for: "A")
+        let marker = fixture.stagingDirectory.appendingPathComponent("other.multipart")
+        try Data("x".utf8).write(to: marker)
+        for name in ["", ".", ".."] {
+            let job = UploadJob(assetID: "A", resource: .photo, attempt: UUID(), bodyFileName: name, checksum: "aa")
+            await fixture.index.addJob(job)
+            await fixture.recorder.record(job, .failed(.service(.unexpectedStatus(503))))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.stagingDirectory.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.directory.path))
+    }
+
+    // MARK: - The body outlives anything not on disk yet
+
+    func testBodyStaysWhenTheIndexCannotBeSaved() async throws {
+        let fixture = makeFixture()
+        // An index file that exists but can't be read makes the index unavailable, so saving throws.
+        let file = fixture.directory.appendingPathComponent("index.json")
+        try Data("{}".utf8).write(to: file)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: file.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path) }
+        let index = BackupIndex(directory: fixture.directory)
+        let recorder = BackupResultRecorder(index: index, staging: fixture.staging)
+        await index.set(entry(), for: "A")
+        let name = "\(UUID().uuidString).multipart"
+        try Data("body".utf8).write(to: fixture.stagingDirectory.appendingPathComponent(name))
+        let job = UploadJob(assetID: "A", resource: .photo, attempt: UUID(), bodyFileName: name, checksum: "aa")
+        await index.addJob(job)
+
+        await recorder.record(job, .uploaded(AssetUploadResult(id: "srv-1", status: .created)))
+        // The result was claimed in memory, the disk still has the old state; a redelivery must not delete either.
+        await recorder.record(job, .uploaded(AssetUploadResult(id: "srv-1", status: .created)))
+
+        XCTAssertTrue(exists(job, in: fixture))
+    }
+
+    func testTheSameAttemptRecordedConcurrentlyDeletesTheBodyAfterTheSave() async throws {
+        let fixture = makeFixture()
+        await fixture.index.set(entry(), for: "A")
+        let job = try await makeJob(fixture)
+        let outcome = UploadOutcome.uploaded(AssetUploadResult(id: "srv-1", status: .created))
+        let savesBefore = await fixture.index.saveCount
+
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<4 { group.addTask { await fixture.recorder.record(job, outcome) } }
+        }
+
+        XCTAssertFalse(exists(job, in: fixture))
+        // One write carried the result; the other records found nothing left to save.
+        let savesAfter = await fixture.index.saveCount
+        XCTAssertEqual(savesAfter - savesBefore, 1)
+        let onDisk = BackupIndex(directory: fixture.directory)
+        let recorded = await onDisk.entry(for: "A")
+        let jobs = await onDisk.jobs
+        XCTAssertEqual(recorded?.state, .backedUp(serverAssetID: "srv-1"))
+        XCTAssertTrue(jobs.isEmpty)
+    }
+
+    func testBodyStaysWhileAnotherJobNamesTheSameFile() async throws {
+        let fixture = makeFixture()
+        await fixture.index.set(entry(), for: "A")
+        let job = try await makeJob(fixture)
+        let sibling = UploadJob(
+            assetID: "A", resource: .pairedVideo, attempt: UUID(), bodyFileName: job.bodyFileName, checksum: "bb")
+        await fixture.index.addJob(sibling)
+
+        await fixture.recorder.record(job, .uploaded(AssetUploadResult(id: "srv-1", status: .created)))
+
+        XCTAssertTrue(exists(job, in: fixture))
+    }
+
+    func testRecordingTwiceAcrossAReloadChangesNothing() async throws {
+        let fixture = makeFixture()
+        await fixture.index.set(entry(), for: "A")
+        let job = try await makeJob(fixture)
+        await fixture.recorder.record(job, .uploaded(AssetUploadResult(id: "srv-1", status: .created)))
+
+        // Relaunch: a new index from disk, and the system delivers the same result again.
+        let reloaded = BackupIndex(directory: fixture.directory)
+        await reloaded.set(entry(state: .deletedOnServer(trashed: [], gone: [.photo])), for: "A")
+        try await reloaded.save()
+        let recorder = BackupResultRecorder(index: reloaded, staging: fixture.staging)
+        let before = await reloaded.entry(for: "A")
+        let savesBefore = await reloaded.saveCount
+
+        await recorder.record(job, .uploaded(AssetUploadResult(id: "srv-1", status: .created)))
+
+        let after = await reloaded.entry(for: "A")
+        let savesAfter = await reloaded.saveCount
+        XCTAssertEqual(after, before)
+        XCTAssertEqual(savesAfter, savesBefore)
+    }
+
+    // MARK: - Failure mapping
+
+    func testOutOfSpaceErrorsStayOutOfSpace() async throws {
+        let errors: [Error] = [
+            BackupStagingError.notEnoughSpace,
+            CocoaError(.fileWriteOutOfSpace),
+            NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC)),
+            NSError(domain: NSURLErrorDomain, code: NSURLErrorUnknown, userInfo: [
+                NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC))]),
+        ]
+        for error in errors {
+            let failure = UploadFailure(error)
+            XCTAssertEqual(failure, .outOfSpace, "\(error)")
+            XCTAssertTrue(BackupStaging.isOutOfSpace(failure.error))
+        }
+        let fixture = makeFixture()
+        await fixture.index.set(entry(), for: "A")
+        let job = try await makeJob(fixture)
+        await fixture.recorder.record(job, .failed(.outOfSpace))
+        let recorded = await fixture.index.entry(for: "A")
+        XCTAssertEqual(recorded?.state, .failed(reason: BackupUploader.notEnoughSpaceReason))
+    }
+
+    // MARK: - Lenient decoding
+
+    func testAnUnreadableJobIsDroppedWithoutLosingTheEntries() async throws {
+        let directory = makeDirectory()
+        let index = BackupIndex(directory: directory)
+        await index.set(entry(state: .backedUp(serverAssetID: "srv-1")), for: "A")
+        let good = UploadJob(assetID: "A", resource: .photo, attempt: UUID(), bodyFileName: "g.multipart", checksum: "aa")
+        await index.addJob(good)
+        try await index.save()
+        let file = directory.appendingPathComponent("index.json")
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        let goodObject = try XCTUnwrap((object["jobs"] as? [Any])?.first)
+        object["jobs"] = [["assetID": "A"], goodObject, "nonsense", 7]
+        try JSONSerialization.data(withJSONObject: object).write(to: file)
+
+        let loaded = BackupIndex(directory: directory)
+
+        let recorded = await loaded.entry(for: "A")
+        let jobs = await loaded.jobs
+        XCTAssertEqual(recorded?.state, .backedUp(serverAssetID: "srv-1"))
+        XCTAssertEqual(jobs, [good])
+        // Not treated as corrupt: nothing was moved aside.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.appendingPathExtension("corrupt").path))
+    }
+
+    func testJobsOfTheWrongShapeAreIgnoredToo() async throws {
+        let directory = makeDirectory()
+        let index = BackupIndex(directory: directory)
+        await index.set(entry(state: .backedUp(serverAssetID: "srv-1")), for: "A")
+        try await index.save()
+        let file = directory.appendingPathComponent("index.json")
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        object["jobs"] = "not a list"
+        try JSONSerialization.data(withJSONObject: object).write(to: file)
+
+        let loaded = BackupIndex(directory: directory)
+
+        let recorded = await loaded.entry(for: "A")
+        let jobs = await loaded.jobs
+        XCTAssertNotNil(recorded)
+        XCTAssertTrue(jobs.isEmpty)
     }
 
     func testClearForgetsJobs() async throws {

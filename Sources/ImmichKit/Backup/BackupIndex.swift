@@ -80,7 +80,17 @@ public actor BackupIndex {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             entries = try container.decode([String: BackupEntry].self, forKey: .entries)
             selection = try container.decode(BackupSelection.self, forKey: .selection)
-            jobs = try container.decodeIfPresent([UploadJob].self, forKey: .jobs) ?? []
+            // Leniently: a job that can't be read is dropped, the entries are not thrown away with it.
+            // (Its body file is then unreferenced and cleanup removes it.)
+            jobs = ((try? container.decodeIfPresent([Lossy<UploadJob>].self, forKey: .jobs)) ?? nil)?
+                .compactMap(\.value) ?? []
+        }
+
+        private struct Lossy<Value: Decodable>: Decodable {
+            let value: Value?
+            init(from decoder: Decoder) throws {
+                value = try? decoder.singleValueContainer().decode(Value.self)
+            }
         }
     }
 
@@ -182,16 +192,17 @@ public actor BackupIndex {
         return true
     }
 
-    /// Finishes `job` in one step: forgets its record and, if the stored entry for its asset satisfies
-    /// `condition`, applies `change` to it. Returns `false` when no record of this attempt existed (its
-    /// result was recorded before), in which case nothing changes. Doing both inside the index means a
-    /// save in between can never persist the removal without the result.
+    /// Finishes the job of `attempt` in one step: forgets its record and, if the stored entry for its asset
+    /// satisfies `condition`, applies `change` to it. Both closures get the job as stored, not as the caller
+    /// remembers it. Returns that job, or `nil` when no record of this attempt existed (its result was
+    /// recorded before), in which case nothing changes. Doing both inside the index means a save in
+    /// between can never persist the removal without the result.
     func complete(
-        _ job: UploadJob, if condition: (BackupEntry) -> Bool, _ change: (inout BackupEntry) -> Void
-    ) -> Bool {
-        guard removeJob(attempt: job.attempt) else { return false }
-        update(job.assetID, if: condition, change)
-        return true
+        attempt: UUID, if condition: (UploadJob, BackupEntry) -> Bool, _ change: (UploadJob, inout BackupEntry) -> Void
+    ) -> UploadJob? {
+        guard let job = stored.jobs.first(where: { $0.attempt == attempt }), removeJob(attempt: attempt) else { return nil }
+        update(job.assetID, if: { condition(job, $0) }, { change(job, &$0) })
+        return job
     }
 
     public func selection() -> BackupSelection { stored.selection }

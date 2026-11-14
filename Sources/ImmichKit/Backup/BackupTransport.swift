@@ -33,10 +33,16 @@ public enum UploadFailure: Sendable, Equatable {
     case rejected(status: Int, message: String)
     /// The task was cancelled (switch turned off, sign-out).
     case cancelled
+    /// The disk is full (`BackupStaging.isOutOfSpace`).
+    case outOfSpace
     /// Anything else, as the text to show.
     case other(String)
 
     public init(_ error: Error) {
+        if BackupStaging.isOutOfSpace(error) {
+            self = .outOfSpace
+            return
+        }
         switch error {
         case let BackupUploadError.rejected(status, message):
             self = .rejected(status: status, message: message)
@@ -58,6 +64,7 @@ public enum UploadFailure: Sendable, Equatable {
         case let .service(error): error
         case let .rejected(status, message): BackupUploadError.rejected(status: status, message: message)
         case .cancelled: CancellationError()
+        case .outOfSpace: BackupStagingError.notEnoughSpace
         case let .other(message): UploadFailureMessage(message: message)
         }
     }
@@ -79,8 +86,9 @@ public enum UploadOutcome: Sendable, Equatable {
 /// a background `URLSession` implements it, and so could a PhotoKit upload extension. Results are not
 /// returned from here; the implementation hands each one to `BackupResultRecorder`.
 public protocol BackupTransport: Sendable {
-    /// Starts sending the job's body file with `request` (the request without its body). The job is recorded
-    /// in the index before this returns.
+    /// Starts sending the job's body file with `request` (the request without its body). The job is added to
+    /// the index **and the index saved** before this returns: `BackupResultRecorder` drops results for jobs
+    /// the index doesn't know, so a job that only existed in memory would lose its result after a crash.
     func enqueue(_ job: UploadJob, request: URLRequest) async throws
     /// The jobs started and not yet recorded.
     func inFlight() async -> [UploadJob]

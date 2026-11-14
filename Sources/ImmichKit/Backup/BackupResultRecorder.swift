@@ -17,18 +17,23 @@ public actor BackupResultRecorder {
         self.staging = staging
     }
 
-    /// Applies `outcome` of `job`. Ignored, apart from deleting the body, when the job's attempt was
-    /// recorded before or the entry no longer has the checksum the job was staged for (the asset changed
-    /// and the scanner has taken it over). The result is final either way, so the body goes.
+    /// Applies `outcome` of `job`. Ignored when the job's attempt was recorded before or the entry no longer
+    /// has the checksum the job was staged for (the asset changed and the scanner has taken it over).
+    /// The body file is deleted only after the index was saved successfully, and only when no remaining
+    /// job names the same file; so a failed save, a repeated delivery whose first record hasn't been
+    /// saved yet, or two records at once never delete a body whose result isn't on disk. Even an ignored
+    /// record saves first for that reason.
     public func record(_ job: UploadJob, _ outcome: UploadOutcome) async {
         let claimed = await index.complete(
-            job, if: { $0.checksums[job.resource] == job.checksum }, { Self.apply(outcome, of: job, to: &$0) })
-        if claimed {
-            // The body stays when the index couldn't be saved: the result is only in memory then, and
-            // cleanup of unreferenced files removes it later.
-            guard (try? await index.saveIfChanged()) != nil else { return }
-        }
-        staging.remove(staging.url(forBodyNamed: job.bodyFileName))
+            attempt: job.attempt, if: { stored, entry in entry.checksums[stored.resource] == stored.checksum },
+            { stored, entry in Self.apply(outcome, of: stored, to: &entry) })
+        let name = claimed?.bodyFileName ?? job.bodyFileName
+        // The body stays when the index couldn't be saved: the result is only in memory then, and
+        // cleanup of unreferenced files removes it later.
+        guard (try? await index.saveIfChanged()) != nil else { return }
+        guard await !index.jobs.contains(where: { $0.bodyFileName == name }),
+              let body = staging.url(forBodyNamed: name) else { return }
+        staging.remove(body)
     }
 
     private static func apply(_ outcome: UploadOutcome, of job: UploadJob, to entry: inout BackupEntry) {
