@@ -120,14 +120,117 @@ final class ViewerMissingAssetTests: XCTestCase {
         model.stopPrefetching()
     }
 
-    func testMissingAssetIsIgnoredDuringWrite() async {
+    func testMissingAssetDuringWriteIsHiddenAfterIt() async throws {
         let mock = MockImmichService(assets: [asset("kept", 2026, 11, 2), asset("gone", 2026, 11, 3)])
         let model = LibraryGridModel(service: mock) // oldest first, like the Library tab
         await model.load()
+        await mock.setAssets([asset("kept", 2026, 11, 2)])
         model.isTrashing = true
         model.assetMissingOnServer("gone")
-        model.isTrashing = false
         XCTAssertEqual(model.months.flatMap(\.assets).map(\.id), ["kept", "gone"])
+        model.isTrashing = false
+        XCTAssertEqual(model.months.flatMap(\.assets).map(\.id), ["kept"])
+        model.stopPrefetching()
+    }
+
+    // MARK: Preview errors
+
+    func testPreviewNotFoundWhileAssetExistsIsNotMissing() async throws {
+        // A photo uploaded a moment ago: Immich answers 404 "Asset media not found" until its
+        // preview is generated, although the asset exists.
+        let asset = try XCTUnwrap(MockLibrary.standard.assets.first { !$0.isVideo })
+        let mock = MockImmichService(library: .standard)
+        await mock.setThumbnailFailure(.unexpectedStatus(404))
+        var reported: [String] = []
+        let model = model(for: asset, service: mock) { reported.append($0) }
+        await model.load()
+        XCTAssertFalse(model.isMissing)
+        XCTAssertEqual(model.error, "Couldn't load this item. Please try again.")
+        XCTAssertEqual(reported, [])
+        let detailRequests = await mock.requestCount(.asset(asset.id))
+        XCTAssertEqual(detailRequests, 1)
+    }
+
+    func testPreviewAndAssetBadRequestIsMissing() async throws {
+        let gone = try XCTUnwrap(MockLibrary.standard.assets.first { !$0.isVideo })
+        let mock = MockImmichService(library: .standard)
+        await mock.setAssets(MockLibrary.standard.assets.filter { $0.id != gone.id })
+        await mock.setThumbnailFailure(.unexpectedStatus(400))
+        var reported: [String] = []
+        let model = model(for: gone, service: mock) { reported.append($0) }
+        await model.load()
+        XCTAssertTrue(model.isMissing)
+        XCTAssertEqual(model.error, "This item is no longer on the server.")
+        XCTAssertEqual(reported, [gone.id])
+    }
+
+    // MARK: Open viewer
+
+    func testMissingOpenPhotoLoadsOnceAndLeavesGridAloneUntilViewerCloses() async throws {
+        let mock = MockImmichService(assets: [asset("kept", 2026, 11, 2), asset("gone", 2026, 11, 3)])
+        let library = LibraryGridModel(service: mock)
+        await library.load()
+        await mock.setAssets([asset("kept", 2026, 11, 2)])
+        library.viewerPresentationChanged(isOpen: true)
+        let store = ViewerStore(service: mock, loader: library.loader, onMissing: library.assetMissingOnServer)
+        let viewerAssets = library.viewerAssets(around: "gone")
+        let page = store.model(for: try XCTUnwrap(viewerAssets.first { $0.id == "gone" }))
+        await page.load()
+        XCTAssertTrue(page.isMissing)
+        // Nothing behind the open viewer changes, so it isn't rebuilt and doesn't reload.
+        XCTAssertEqual(library.months.flatMap(\.assets).map(\.id), ["kept", "gone"])
+        XCTAssertEqual(library.viewerAssets(around: "kept").map(\.id), viewerAssets.map(\.id))
+        XCTAssertTrue(store.model(for: page.asset) === page)
+        let detailRequests = await mock.requestCount(.asset("gone"))
+        XCTAssertEqual(detailRequests, 1)
+
+        library.viewerPresentationChanged(isOpen: false)
+        XCTAssertEqual(library.months.flatMap(\.assets).map(\.id), ["kept"])
+        library.stopPrefetching()
+    }
+
+    // MARK: Missing ids are confirmed by the server
+
+    private func directory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ViewerMissingAssetTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url
+    }
+
+    func testMissingAssetDoesNotPushNextLoadOntoFreshTimeline() async throws {
+        let assets = [asset("old", 2026, 6, 1), asset("gone", 2026, 6, 2), asset("mid", 2026, 8, 1),
+                      asset("new", 2026, 10, 1), asset("newest", 2026, 11, 1)]
+        let mock = MockImmichService(assets: assets)
+        let model = LibraryGridModel(service: mock, snapshotStore: TimelineSnapshotStore(directory: try directory()))
+        await model.load()
+        await model.loadAllMonths()
+        await mock.setAssets(assets.filter { $0.id != "gone" })
+        model.assetMissingOnServer("gone")
+        XCTAssertFalse(model.edits.missingIDs.isEmpty)
+        XCTAssertTrue(model.edits.trashedIDs.isEmpty)
+
+        // The backup reload: a full `load()` keeps the loaded months (no placeholders).
+        await model.load()
+        XCTAssertTrue(model.allMonthsLoaded)
+        XCTAssertEqual(model.months.flatMap(\.assets).map(\.id), ["old", "mid", "new", "newest"])
+        // The refreshed month confirmed it: nothing left to hide locally.
+        XCTAssertTrue(model.edits.missingIDs.isEmpty)
+        model.stopPrefetching()
+    }
+
+    func testRevalidationBringsBackAssetTheServerStillHas() async throws {
+        let assets = [asset("a", 2026, 6, 1), asset("b", 2026, 6, 2), asset("c", 2026, 11, 1)]
+        let mock = MockImmichService(assets: assets)
+        let model = LibraryGridModel(service: mock, snapshotStore: TimelineSnapshotStore(directory: try directory()))
+        await model.load()
+        await model.loadAllMonths()
+        model.assetMissingOnServer("b") // e.g. a passing access error
+        XCTAssertEqual(model.months.flatMap(\.assets).map(\.id), ["a", "c"])
+        await model.revalidate()
+        XCTAssertEqual(model.months.flatMap(\.assets).map(\.id), ["a", "b", "c"])
+        XCTAssertTrue(model.edits.missingIDs.isEmpty)
         model.stopPrefetching()
     }
 }

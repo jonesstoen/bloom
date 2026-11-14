@@ -19,12 +19,26 @@ extension LibraryGridModel {
     }
 
     /// The viewer found that the server no longer has `id` (deleted on the website or another
-    /// device). Hides it right away, like a confirmed move to trash (in Recently Deleted, like a
-    /// confirmed restore), rather than waiting for the next refresh. Ignored during a write,
-    /// whose own reload reconciles the grid.
+    /// device). Hides it without waiting for the next refresh, in every view, until a fresh copy
+    /// of its month settles it (`LocalLibraryEdits.missingIDs`). While the viewer is open or a
+    /// write runs it waits, so nothing changes behind the viewer (see `runDeferredWork()`).
     public func assetMissingOnServer(_ id: String) {
-        guard !isMutating, gridIndex(ofAsset: id) != nil else { return }
-        if options.isTrashed == true { edits.restoredIDs.insert(id) } else { edits.trashedIDs.insert(id) }
+        guard gridIndex(ofAsset: id) != nil else { return }
+        if isViewerOpen || isMutating {
+            pendingMissingIDs.insert(id)
+            return
+        }
+        hideMissing([id])
+    }
+
+    func hideMissing(_ ids: Set<String>) {
+        var changed = false
+        for id in ids {
+            guard let monthID = monthID(ofAsset: id) else { continue }
+            edits.missingIDs[id] = monthID
+            changed = true
+        }
+        guard changed else { return }
         apply(months)
         scheduleSnapshotSave()
     }

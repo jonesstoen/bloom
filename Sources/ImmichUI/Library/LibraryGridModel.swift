@@ -73,8 +73,9 @@ public final class LibraryGridModel {
     @ObservationIgnored private let feed: PrefetchFeed
 
     // State shared with the trash and restore extension (`+Editing`).
-    public internal(set) var isTrashing = false
-    public internal(set) var isRestoring = false
+    // Work deferred during a write runs when it ends.
+    public internal(set) var isTrashing = false { didSet { if oldValue && !isMutating { runDeferredWork() } } }
+    public internal(set) var isRestoring = false { didSet { if oldValue && !isMutating { runDeferredWork() } } }
     /// Invalidates other session views that may still contain pre-mutation asset snapshots.
     public internal(set) var trashRevision = 0
     /// Refreshes session content without replacing the active Recently Deleted navigation.
@@ -90,9 +91,14 @@ public final class LibraryGridModel {
     @ObservationIgnored var snapshotRevision: UInt64 = 0
     @ObservationIgnored var didAttemptRestore = false
     @ObservationIgnored var snapshotSave: Task<Void, Never>?
-    /// The grid's viewer is open: a revalidation waits until it closes (`revalidate()`).
-    @ObservationIgnored private var isViewerOpen = false
-    @ObservationIgnored private var revalidatesAfterViewer = false
+    // While the viewer is open, a selection is shown or a write runs, revalidations and
+    // missing assets wait (`revalidate()`, `assetMissingOnServer(_:)`, `runDeferredWork()`).
+    @ObservationIgnored var isViewerOpen = false
+    @ObservationIgnored private var isSelecting = false
+    @ObservationIgnored private var revalidationPending = false
+    @ObservationIgnored var pendingMissingIDs: Set<String> = []
+    /// The last deferred work started, for tests to wait on.
+    @ObservationIgnored private(set) var deferredWork: Task<Void, Never>?
 
     /// - Parameters:
     ///   - options: defaults to the library, oldest month first with the newest at the bottom like Photos.
@@ -206,25 +212,48 @@ public final class LibraryGridModel {
     /// comes back from the background. Uses the same path as `load()`: buckets first, then every
     /// loaded month refetched in place, and the photo in the middle of the screen keeps its place
     /// (`GridShift`). Unlike an explicit refresh it keeps confirmed local removals, which would
-    /// otherwise start a fresh timeline with every month unloaded. Skipped during a write or the
-    /// first load, and deferred while the viewer is open, so the grid doesn't move behind it.
+    /// otherwise start a fresh timeline with every month unloaded. Skipped during the first load.
+    /// Waits while the viewer is open (so nothing moves behind it), while selecting (so selected
+    /// photos don't vanish from under the selection) and during a write.
     public func revalidate() async {
-        guard !isMutating, phase != .loading else { return }
-        if isViewerOpen {
-            revalidatesAfterViewer = true
+        guard phase != .loading else { return }
+        if revalidationWaits {
+            revalidationPending = true
             return
         }
+        revalidationPending = false
         await load(reconcilingTrash: false)
     }
 
-    /// The grid's viewer opened or closed. Closing runs a revalidation that waited for it;
-    /// returns that work, for tests to wait on.
+    private var revalidationWaits: Bool { isViewerOpen || isSelecting || isMutating }
+
+    /// The grid's viewer opened, or finished closing. Closing hides assets the viewer found
+    /// missing and runs a revalidation that waited; returns that work, for tests to wait on.
     @discardableResult
     public func viewerPresentationChanged(isOpen: Bool) -> Task<Void, Never>? {
         isViewerOpen = isOpen
-        guard !isOpen, revalidatesAfterViewer else { return nil }
-        revalidatesAfterViewer = false
-        return Task { await revalidate() }
+        return runDeferredWork()
+    }
+
+    /// The grid's selection started or ended. Ending runs a revalidation that waited.
+    @discardableResult
+    public func selectionChanged(isSelecting: Bool) -> Task<Void, Never>? {
+        self.isSelecting = isSelecting
+        return runDeferredWork()
+    }
+
+    @discardableResult
+    func runDeferredWork() -> Task<Void, Never>? {
+        if !pendingMissingIDs.isEmpty, !isViewerOpen, !isMutating {
+            let ids = pendingMissingIDs
+            pendingMissingIDs = []
+            hideMissing(ids)
+        }
+        guard revalidationPending, !revalidationWaits else { return nil }
+        revalidationPending = false
+        let task = Task { await revalidate() }
+        deferredWork = task
+        return task
     }
 
     /// Shows the months saved on disk while the server is asked for fresh ones.
@@ -256,10 +285,14 @@ public final class LibraryGridModel {
             guard isCurrent(timeline, generation), !Task.isCancelled else { return }
             let batch = Array(retained[offset..<min(offset + 6, retained.count)])
             loadingMonths.formUnion(batch)
-            await withTaskGroup(of: Void.self) { group in
-                for id in batch { group.addTask { _ = try? await timeline.refreshMonth(id) } }
+            let refreshed = await withTaskGroup(of: String?.self) { group in
+                for id in batch { group.addTask { (try? await timeline.refreshMonth(id)) == nil ? nil : id } }
+                return await group.reduce(into: [String]()) { if let id = $1 { $0.append(id) } }
             }
-            if isCurrent(timeline, generation) { loadingMonths.subtract(batch) }
+            if isCurrent(timeline, generation) {
+                loadingMonths.subtract(batch)
+                edits.confirmMissing(inMonths: refreshed)
+            }
             guard isCurrent(timeline, generation), !Task.isCancelled else { return }
             if offset == 0 || offset + 6 >= retained.count {
                 guard await applySnapshot(from: timeline, generation: generation) else { return }
@@ -284,6 +317,7 @@ public final class LibraryGridModel {
         defer { if isCurrent(timeline, generation) { loadingMonths.remove(id) } }
         do {
             try await timeline.loadMonth(id)
+            if isCurrent(timeline, generation) { edits.confirmMissing(inMonths: [id]) }
             guard await applySnapshot(from: timeline, generation: generation) else { return }
             scheduleSnapshotSave()
         } catch {
@@ -313,17 +347,23 @@ public final class LibraryGridModel {
         guard !ids.isEmpty else { return }
         loadingMonths.formUnion(ids)
         defer { if isCurrent(timeline, generation) { loadingMonths.subtract(ids) } }
-        await withTaskGroup(of: Void.self) { group in
+        let loaded = await withTaskGroup(of: String?.self) { group in
             var next = 0
+            var loaded: [String] = []
             func add() {
                 guard next < ids.count else { return }
                 let id = ids[next]
                 next += 1
-                group.addTask { _ = try? await timeline.loadMonth(id) }
+                group.addTask { (try? await timeline.loadMonth(id)) == nil ? nil : id }
             }
             for _ in 0..<6 { add() }
-            while await group.next() != nil { add() }
+            while let result = await group.next() {
+                if let result { loaded.append(result) }
+                add()
+            }
+            return loaded
         }
+        if isCurrent(timeline, generation) { edits.confirmMissing(inMonths: loaded) }
         guard await applySnapshot(from: timeline, generation: generation) else { return }
         snapshotSave?.cancel()
         await persistSnapshot(timeline: timeline, generation: generation)
@@ -357,6 +397,8 @@ public final class LibraryGridModel {
         options = newOptions
         timeline = Timeline(service: service, options: newOptions)
         edits.favoriteOverrides = [:]
+        // Bucket ids differ between sorts; every month is fetched fresh for the new options.
+        edits.missingIDs = [:]
         stopPrefetching()
         loadingMonths = []
         visibleMonthTitle = nil

@@ -146,16 +146,60 @@ final class LibraryForegroundRefreshTests: XCTestCase {
         model.stopPrefetching()
     }
 
-    func testRevalidationSkipsWhileMutating() async {
-        let mock = MockImmichService(assets: [asset("a", 2026, 11, 3)])
-        let model = LibraryGridModel(service: mock, options: .library)
+    func testRevalidationDuringWriteRunsAfterIt() async throws {
+        let mock = MockImmichService(assets: [asset("kept", 2026, 10, 2), asset("deleted", 2026, 11, 3)])
+        let model = LibraryGridModel(service: mock)
         await model.load()
+        await mock.setAssets([asset("kept", 2026, 10, 2)])
         let before = await mock.requestCount(.timeBuckets)
         model.isTrashing = true
         await model.revalidate()
+        let during = await mock.requestCount(.timeBuckets)
+        XCTAssertEqual(during, before)
+        XCTAssertEqual(ids(model), ["kept", "deleted"])
+
         model.isTrashing = false
-        let after = await mock.requestCount(.timeBuckets)
-        XCTAssertEqual(after, before)
+        let task = try XCTUnwrap(model.deferredWork)
+        await task.value
+        XCTAssertEqual(ids(model), ["kept"])
+        model.stopPrefetching()
+    }
+
+    func testRevalidationWaitsWhileSelecting() async throws {
+        let mock = MockImmichService(assets: [asset("kept", 2026, 10, 2), asset("deleted", 2026, 11, 3)])
+        let model = LibraryGridModel(service: mock)
+        await model.load()
+        await mock.setAssets([asset("kept", 2026, 10, 2)])
+        let before = await mock.requestCount(.timeBuckets)
+
+        XCTAssertNil(model.selectionChanged(isSelecting: true))
+        await model.revalidate()
+        let during = await mock.requestCount(.timeBuckets)
+        XCTAssertEqual(during, before)
+        XCTAssertEqual(ids(model), ["kept", "deleted"])
+
+        let task = try XCTUnwrap(model.selectionChanged(isSelecting: false))
+        await task.value
+        XCTAssertEqual(ids(model), ["kept"])
+        model.stopPrefetching()
+    }
+
+    func testSelectionStartedFromGridDefersRevalidation() async throws {
+        let mock = MockImmichService(assets: [asset("kept", 2026, 10, 2), asset("deleted", 2026, 11, 3)])
+        let model = LibraryGridModel(service: mock)
+        await model.load()
+        let selection = LibrarySelectionModel(library: model)
+        selection.start()
+        model.selectionChanged(isSelecting: selection.isSelecting)
+        selection.toggle(try XCTUnwrap(model.months.flatMap(\.assets).first { $0.id == "deleted" }))
+        await mock.setAssets([asset("kept", 2026, 10, 2)])
+        await model.revalidate()
+        // The selected photo stays in the grid while the selection is open.
+        XCTAssertEqual(ids(model), ["kept", "deleted"])
+        XCTAssertEqual(selection.selectedIDs, ["deleted"])
+        selection.cancel()
+        await model.selectionChanged(isSelecting: selection.isSelecting)?.value
+        XCTAssertEqual(ids(model), ["kept"])
         model.stopPrefetching()
     }
 }

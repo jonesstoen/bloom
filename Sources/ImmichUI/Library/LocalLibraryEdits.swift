@@ -13,13 +13,24 @@ struct LocalLibraryEdits {
     var trashedIDs: Set<String> = []
     /// Restored from trash: hidden from the Recently Deleted view.
     var restoredIDs: Set<String> = []
+    /// The viewer found these gone from the server, by asset id, with the month (bucket id) they
+    /// were in. Hidden from every view until a fresh copy of that month replaces the guess
+    /// (`confirmMissing(inMonths:)`). Not a write: a load never has to start over for them.
+    var missingIDs: [String: String] = [:]
 
-    var isEmpty: Bool { favoriteOverrides.isEmpty && trashedIDs.isEmpty && restoredIDs.isEmpty }
+    var isEmpty: Bool { favoriteOverrides.isEmpty && trashedIDs.isEmpty && restoredIDs.isEmpty && missingIDs.isEmpty }
+
+    /// The server sent fresh copies of these months: whatever it says about their assets wins.
+    mutating func confirmMissing(inMonths monthIDs: some Sequence<String>) {
+        guard !missingIDs.isEmpty else { return }
+        let months = Set(monthIDs)
+        missingIDs = missingIDs.filter { !months.contains($0.value) }
+    }
 
     /// `source` with favorites updated and trashed or restored assets removed, as `options`
     /// shows them (Favorites drops unfavorited photos, Recently Deleted drops restored ones).
     func applied(to source: [TimelineMonth], options: TimelineOptions) -> [TimelineMonth] {
-        let removedIDs = options.isTrashed == true ? restoredIDs : trashedIDs
+        let removedIDs = (options.isTrashed == true ? restoredIDs : trashedIDs).union(missingIDs.keys)
         // Without overrides the server's Favorites response is taken as it is.
         let onlyFavorites = options.isFavorite == true && !favoriteOverrides.isEmpty
         guard !favoriteOverrides.isEmpty || !removedIDs.isEmpty else { return source }

@@ -141,6 +141,10 @@ public actor MockImmichService: ImmichService {
     public func setServerFeaturesFailure(_ failure: ImmichServiceError?) { featuresFailure = failure }
     /// Fails only smart search, like a server without a working machine-learning service.
     public func setSmartSearchFailure(_ failure: ImmichServiceError?) { smartSearchFailure = failure }
+    public private(set) var thumbnailFailure: ImmichServiceError?
+    /// Fails only thumbnails and previews, like a server whose previews aren't generated yet
+    /// (HTTP 404 "Asset media not found") while the asset itself exists.
+    public func setThumbnailFailure(_ failure: ImmichServiceError?) { thumbnailFailure = failure }
 
     private var trashFailures: Set<String> = []
     public func setTrashFailures(_ ids: Set<String>) { trashFailures = ids }
@@ -301,6 +305,7 @@ public actor MockImmichService: ImmichService {
     /// A placeholder JPEG drawn in code, shaped like the asset (square for unknown ids).
     public func thumbnail(assetID: String, size: ImageSize) async throws -> Data {
         try await begin(.thumbnail(assetID, size))
+        if let thumbnailFailure { throw thumbnailFailure }
         return Self.placeholderData(assetID: assetID, size: size, aspectRatio: assetsByID[assetID]?.aspectRatio ?? 1)
     }
 

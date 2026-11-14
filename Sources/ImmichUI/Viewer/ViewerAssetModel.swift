@@ -121,6 +121,8 @@ public final class ViewerAssetModel {
             let thumbnail = await ThumbnailDecoder.decode(data)
             if !Task.isCancelled, generation == started, image == nil { placeholder = thumbnail }
         }
+        // Which request failed: a missing preview alone doesn't mean the asset is gone.
+        var stage = LoadStage.preview
         do {
             try Task.checkCancellation()
             guard generation == started, retainsPreview else { return }
@@ -134,7 +136,9 @@ public final class ViewerAssetModel {
                 guard generation == started else { return }
                 image = decoded
             }
+            stage = .detail
             let detail = try await service.asset(id: asset.id)
+            stage = .playback
             try Task.checkCancellation()
             guard generation == started else { return }
             var request: MediaRequest?
@@ -158,7 +162,10 @@ public final class ViewerAssetModel {
             return
         } catch {
             guard generation == started else { return }
-            if Self.isNotFound(error) {
+            let gone = await isGone(after: error, in: stage)
+            // Checking the asset info can take a while: a newer load or a release wins.
+            guard generation == started, !Task.isCancelled else { return }
+            if gone {
                 isMissing = true
                 self.error = tr("This item is no longer on the server.")
                 onMissing?(asset.id)
@@ -166,6 +173,27 @@ public final class ViewerAssetModel {
             }
             // Do not surface transport diagnostics containing authenticated media URLs.
             self.error = tr("Couldn't load this item. Please try again.")
+        }
+    }
+
+    private enum LoadStage { case preview, detail, playback }
+
+    /// Whether `error` shows that the server no longer has the asset. The asset info answering
+    /// "not found" settles it. A preview can be missing for a photo that exists (Immich answers
+    /// 404 "Asset media not found" until it has generated one, e.g. right after a backup upload),
+    /// so a preview "not found" is checked against the asset info first.
+    private func isGone(after error: any Error, in stage: LoadStage) async -> Bool {
+        guard Self.isNotFound(error) else { return false }
+        switch stage {
+        case .detail: return true
+        case .playback: return false
+        case .preview:
+            do {
+                _ = try await service.asset(id: asset.id)
+                return false
+            } catch {
+                return Self.isNotFound(error)
+            }
         }
     }
 

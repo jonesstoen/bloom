@@ -204,14 +204,15 @@ public struct LibraryGridView: View {
                 }
             }
             .modifier(LibrarySelectionPresentation(selection: selection))
-            // A revalidation waits while the viewer is open, so the grid doesn't move behind it.
-            .onChange(of: viewerItem == nil) { _, closed in model.viewerPresentationChanged(isOpen: !closed) }
+            // A revalidation waits while selecting, so selected photos can't vanish from under it.
+            .onChange(of: selection.isSelecting) { _, selecting in model.selectionChanged(isSelecting: selecting) }
             .onDisappear {
                 model.stopPrefetching()
                 if selection.isPreparingShare { selection.cancelSharePreparation() }
             }
             #if os(iOS)
-            .fullScreenCover(item: $viewerItem) { item in
+            // Closing runs what waited for the viewer once the zoom back has finished.
+            .fullScreenCover(item: $viewerItem, onDismiss: { model.viewerPresentationChanged(isOpen: false) }) { item in
                 if reduceMotion || transitionSourceID == nil {
                     viewer(item)
                 } else {
@@ -220,7 +221,9 @@ public struct LibraryGridView: View {
                 }
             }
             #else
-            .sheet(item: $viewerItem) { item in viewer(item).frame(minWidth: 700, minHeight: 500) }
+            .sheet(item: $viewerItem, onDismiss: { model.viewerPresentationChanged(isOpen: false) }) { item in
+                viewer(item).frame(minWidth: 700, minHeight: 500)
+            }
             #endif
     }
 
@@ -243,9 +246,9 @@ public struct LibraryGridView: View {
             // thumbnails the user can't see and makes paging stutter.
             viewerScrollTarget = id
         }, onMissing: { id in
+            // Hidden once the viewer has closed. Don't touch `transitionSourceID` here: the cover's
+            // content depends on it, and changing it would rebuild the open viewer.
             model.assetMissingOnServer(id)
-            // Like a move to trash: closing the viewer must not zoom into a removed cell.
-            if transitionSourceID == id, model.gridIndex(ofAsset: id) == nil { transitionSourceID = nil }
         })
     }
 
@@ -269,6 +272,8 @@ public struct LibraryGridView: View {
         let loader = model.loader
         Task { _ = try? await loader.data(for: ImageKey(assetID: asset.id, size: .preview)) }
         transitionSourceID = asset.id
+        // A revalidation or a missing asset waits until the viewer has closed (`onDismiss`).
+        model.viewerPresentationChanged(isOpen: true)
         viewerItem = ViewerItem(assets: model.viewerAssets(around: asset.id), selectedID: asset.id)
         onSelect(asset)
     }
