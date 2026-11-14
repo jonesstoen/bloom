@@ -5,6 +5,8 @@ import XCTest
 
 private struct FixedBackupNetwork: NetworkConditions {
     let isOnCellular: Bool
+    /// Doesn't observe the network: the stream ends at once.
+    func changes() -> AsyncStream<NetworkPath> { AsyncStream { $0.finish() } }
 }
 
 @MainActor

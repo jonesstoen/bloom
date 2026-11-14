@@ -46,7 +46,11 @@ private struct GatedPhotoLibrary: PhotoLibrarySource {
     }
 }
 
-private struct ReadTestNetwork: NetworkConditions { let isOnCellular = false }
+private struct ReadTestNetwork: NetworkConditions {
+    let isOnCellular = false
+    /// Doesn't observe the network: the stream ends at once.
+    func changes() -> AsyncStream<NetworkPath> { AsyncStream { $0.finish() } }
+}
 
 @MainActor
 final class BackupReadCancellationTests: XCTestCase {

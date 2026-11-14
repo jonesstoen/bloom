@@ -56,11 +56,15 @@ public actor BackupUploader {
     private struct Retry {
         var failures: Int
         var notBefore: ContinuousClock.Instant
+        /// The last failure was no connection to the server (`ImmichServiceError.isConnectivityFailure`).
+        var wasOffline = false
     }
     /// Items waiting to be tried again (this session only).
     private var retries: [String: Retry] = [:]
     /// Items that failed too often to be tried again this session.
     private var skipped: Set<String> = []
+    /// The part of `skipped` whose last failure was no connection: tried again by `networkReturned()`.
+    private var skippedOffline: Set<String> = []
     /// Network loss, rate limiting and a server that is down (502, 503, 504) hold back every item, not
     /// just the one that failed, so an outage doesn't read (and download from iCloud) the whole queue for nothing.
     private var holdUntil: ContinuousClock.Instant?
@@ -253,7 +257,9 @@ public actor BackupUploader {
                     try await stop(with: error, record: record)
                 case let .retry(holdsRun):
                     await record(.pending(reason: .needsUpload))
-                    if scheduleRetry(id, holdsRun: holdsRun) { outcome = .willRetry }
+                    if scheduleRetry(id, holdsRun: holdsRun, offline: ImmichServiceError.isConnectivityFailure(error)) {
+                        outcome = .willRetry
+                    }
                 case let .failed(reason):
                     await record(.failed(reason: reason))
                 }
@@ -265,7 +271,9 @@ public actor BackupUploader {
                     try await stop(with: error, record: record)
                 case let .retry(holdsRun):
                     await record(.pending(reason: .needsUpload))
-                    if scheduleRetry(id, holdsRun: holdsRun) { outcome = .willRetry }
+                    if scheduleRetry(id, holdsRun: holdsRun, offline: ImmichServiceError.isConnectivityFailure(error)) {
+                        outcome = .willRetry
+                    }
                 case .failed:
                     await record(.failed(reason: Self.linkFailedReason(error)))
                 }
@@ -295,18 +303,33 @@ public actor BackupUploader {
     }
 
     /// Counts a failure. Returns `false` when the item has had its tries for this session.
-    private func scheduleRetry(_ id: String, holdsRun: Bool) -> Bool {
+    private func scheduleRetry(_ id: String, holdsRun: Bool, offline: Bool) -> Bool {
         var retry = retries[id] ?? Retry(failures: 0, notBefore: clock.now())
         retry.failures += 1
+        retry.wasOffline = offline
         guard retry.failures <= Self.retryDelays.count else {
             retries[id] = nil
             skipped.insert(id)
+            if offline { skippedOffline.insert(id) }
             return false
         }
         retry.notBefore = clock.now() + Self.retryDelays[retry.failures - 1]
         retries[id] = retry
         if holdsRun { holdUntil = retry.notBefore }
         return true
+    }
+
+    /// The network came back: the hold on the run ends, every waiting retry may go now, and items whose
+    /// last failure was no connection get their tries back (also those given up on for the session). A run
+    /// in a back-off wait doesn't notice: the caller pauses it (`shouldPause`) and starts the next.
+    public func networkReturned() {
+        holdUntil = nil
+        let now = clock.now()
+        for (id, retry) in retries {
+            if retry.wasOffline { retries[id] = nil } else { retries[id]?.notBefore = now }
+        }
+        skipped.subtract(skippedOffline)
+        skippedOffline = []
     }
 
     // MARK: - Try Again and Re-upload
@@ -319,6 +342,7 @@ public actor BackupUploader {
             await write(id, from: entry) { $0.state = .pending(reason: .notChecked) }
             retries[id] = nil
             skipped.remove(id)
+            skippedOffline.remove(id)
         }
         try? await index.saveIfChanged()
     }
@@ -385,6 +409,7 @@ public actor BackupUploader {
             // Gone entirely: uploaded by the next run like any other item.
             retries[id] = nil
             skipped.remove(id)
+            skippedOffline.remove(id)
             await write(id, from: entry, needsUpload)
             return
         }

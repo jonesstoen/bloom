@@ -20,14 +20,14 @@ public protocol NetworkConditions: Sendable {
     var isOnCellular: Bool { get async }
     var isConnected: Bool { get async }
     /// Yields the current path once it is known, then every path update. Ends when the caller stops iterating.
+    /// No default: a conformer that can't observe the network says so by returning a finished stream (the
+    /// runner then never resumes on a reconnect).
     func changes() -> AsyncStream<NetworkPath>
 }
 
 extension NetworkConditions {
-    /// Conditions that can't observe the network: always connected...
+    /// Conditions that can't tell report connected.
     public var isConnected: Bool { get async { true } }
-    /// ...and never changing (the stream ends at once).
-    public func changes() -> AsyncStream<NetworkPath> { AsyncStream { $0.finish() } }
 }
 
 /// `NetworkConditions` from `NWPathMonitor`. Until the first path update arrives it reports
@@ -87,13 +87,17 @@ public final class PathMonitorNetwork: NetworkConditions, @unchecked Sendable {
 
 extension ImmichServiceError {
     /// Whether `error` means the server couldn't be reached at all (offline, no route, DNS, timeout),
-    /// as opposed to an answer the server gave. Backup shows such failures as waiting for the network
-    /// and tries again when the network comes back. `LiveImmichService` maps every transport failure
-    /// to `.network`; a raw `URLError` counts only with one of the codes below.
+    /// as opposed to an answer the server gave or a broken connection (TLS, a garbled response). Backup
+    /// shows such failures as a calm status and tries again when the network comes back; other transport
+    /// failures stay errors. `LiveImmichService` keeps the `URLError` code on `.network`; a `.network`
+    /// without one (a mock's) is not counted.
+    ///
+    /// `timedOut` counts: a server behind a VPN that is off (Tailscale) or a network that dropped mostly
+    /// shows as a timeout, and trying again when the path changes is what helps.
     public static func isConnectivityFailure(_ error: any Error) -> Bool {
         switch error {
-        case ImmichServiceError.network:
-            return true
+        case let ImmichServiceError.network(_, code):
+            return code.map { connectivityCodes.contains($0) } ?? false
         case let error as URLError:
             return connectivityCodes.contains(error.code)
         case is ImmichServiceError, is CancellationError:

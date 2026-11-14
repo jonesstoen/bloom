@@ -274,8 +274,9 @@ public enum ImmichServiceError: Error, Sendable, Equatable, LocalizedError {
     case unexpectedStatus(Int)
     /// The response body did not have the expected shape.
     case invalidResponse
-    /// The request did not reach the server (offline, DNS, TLS, timeout, ...).
-    case network(String)
+    /// The request did not reach the server (offline, DNS, TLS, timeout, ...). `code` is the transport's
+    /// `URLError` code when there was one: `isConnectivityFailure` tells "no connection" from e.g. TLS by it.
+    case network(String, code: URLError.Code? = nil)
     /// A change to the library was refused because Allow Changes is off (`EditingPermission`).
     case editingOff
     /// Refused to send the API key over plain http to a host outside the user's own network.
@@ -291,7 +292,7 @@ public enum ImmichServiceError: Error, Sendable, Equatable, LocalizedError {
             return tr("The server answered with HTTP status %lld.", Int64(status))
         case .invalidResponse:
             return tr("The server sent a response that is not an Immich API response. Check the server URL.")
-        case .network(let message):
+        case .network(let message, _):
             return tr("Could not reach the server: %@", message)
         case .insecureConnection:
             return tr("Bloom only uses http on your own network or Tailscale. Use https for this server.")

@@ -329,7 +329,7 @@ public struct LiveImmichService: ImmichService {
         case let error as ImmichServiceError:
             return error
         case let error as URLError:
-            return .network(error.localizedDescription)
+            return .network(error.localizedDescription, code: error.code)
         case is DecodingError:
             return .invalidResponse
         default:
@@ -337,7 +337,7 @@ public struct LiveImmichService: ImmichService {
             // (an HTML page instead of JSON, usually a wrong URL).
             let nsError = error as NSError
             if nsError.domain == NSURLErrorDomain {
-                return .network(nsError.localizedDescription)
+                return .network(nsError.localizedDescription, code: URLError.Code(rawValue: nsError.code))
             }
             return .invalidResponse
         }

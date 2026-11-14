@@ -51,10 +51,25 @@ final class BackupModel {
     /// The first `deletedItemLimit` items deleted on the server, newest first. `counts.deletedOnServer` has the total.
     private(set) var deletedItems: [DeletedItem] = []
     private(set) var error: String?
-    /// The last scan or upload stopped because the server couldn't be reached (offline, say). Shown as a
-    /// calm status instead of `error`; cleared when a scan or upload run gets through. The runner tries
-    /// again when the network comes back.
-    private(set) var isWaitingForNetwork = false
+    /// The last scan or upload stopped because the server couldn't be reached (offline, VPN off, server
+    /// down). Shown as `connectionStatus` instead of `error`; cleared when a scan or upload run gets through.
+    /// The runner tries again when the network comes back.
+    private(set) var cannotReachServer = false
+
+    enum ConnectionStatus: Equatable {
+        /// The device has no network: the runner carries on when it is back.
+        case waitingForNetwork
+        /// The device has a network but the server didn't answer, or nothing watches the network (the
+        /// Backup switch is off).
+        case serverUnreachable
+    }
+
+    /// What the screen says about `cannotReachServer`. "Waiting" only while the switch is on and the runner
+    /// sees no network, since only then does anything wait.
+    var connectionStatus: ConnectionStatus? {
+        guard cannotReachServer else { return nil }
+        return settings.isEnabled && madeRunner?.isOffline == true ? .waitingForNetwork : .serverUnreachable
+    }
     /// Set when the Backup switch was turned on with no album chosen: the screen opens the album picker,
     /// and clears it when the picker closes.
     var needsAlbumChoice = false
@@ -339,7 +354,7 @@ final class BackupModel {
     func serverLibraryChanged() { onServerLibraryChanged?() }
 
     /// An upload run got through: the server is reachable again.
-    func uploadRunSucceeded() { isWaitingForNetwork = false }
+    func uploadRunSucceeded() { cannotReachServer = false }
 
     /// An upload run stopped on something every item would run into: shown like a scan's error.
     func reportUploadFailure(_ failure: Error) {
@@ -347,7 +362,7 @@ final class BackupModel {
         case is CancellationError: return
         case BackupStagingError.notEnoughSpace:
             // The item is listed under Problems with Bloom's reason; this explains why the run stopped.
-            isWaitingForNetwork = false
+            cannotReachServer = false
             error = tr("Couldn't back up your photos: %@", CocoaError(.fileWriteOutOfSpace).localizedDescription)
         default: report(failure, uploading: true)
         }
@@ -378,7 +393,7 @@ final class BackupModel {
         if let result {
             counts = result
             completedScans += 1
-            isWaitingForNetwork = false
+            cannotReachServer = false
         } else { await refreshCounts() }
         await refreshLists()
         scanTask = nil
@@ -389,10 +404,10 @@ final class BackupModel {
     /// other failure becomes `error`.
     private func report(_ failure: Error, uploading: Bool = false) {
         if ImmichServiceError.isConnectivityFailure(failure) {
-            isWaitingForNetwork = true
+            cannotReachServer = true
             return
         }
-        isWaitingForNetwork = false
+        cannotReachServer = false
         if case BackupIndexError.unavailable = failure { indexWasUnavailable = true }
         error = Self.message(for: failure, uploading: uploading)
     }
@@ -636,7 +651,7 @@ final class BackupModel {
         error = nil
         do {
             try await runner.reupload(ids)
-            isWaitingForNetwork = false
+            cannotReachServer = false
         } catch is CancellationError {
             // The user left the foreground, turned the switch off or signed out: nothing to report.
         } catch ImmichServiceError.editingOff {

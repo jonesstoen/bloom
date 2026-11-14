@@ -51,6 +51,16 @@ private final class TestNetwork: NetworkConditions, @unchecked Sendable {
             }
         }
     }
+
+    /// Doesn't observe the network: the stream ends at once.
+    func changes() -> AsyncStream<NetworkPath> { AsyncStream { $0.finish() } }
+}
+
+/// Counts calls; `increment()` returns the new count.
+private final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func increment() -> Int { lock.withLock { count += 1; return count } }
 }
 
 private final class SettingsBox: @unchecked Sendable {
@@ -722,6 +732,61 @@ final class BackupUploaderTests: XCTestCase {
 
         let order = await uploadedChecksums(setup.service)
         XCTAssertEqual(order, Array(repeating: a[.photo]!, count: 5) + Array(repeating: b[.photo]!, count: 5))
+    }
+
+    /// Given up on for the session while offline, tried again once the network is back. An item given up on
+    /// for another reason (a server that is down) stays given up on.
+    func testNetworkReturnedRetriesItemsGivenUpOnForNoConnection() async throws {
+        let setup = await makeSetup(album: ["a", "b"])
+        let a = addAsset("a", to: setup.library, created: Self.date)
+        let b = addAsset("b", to: setup.library, created: Self.date.addingTimeInterval(-60))
+        let uploader = makeUploader(setup)
+        await queue("a", a, in: setup.index)
+        await setup.service.setUploadFailure(ImmichServiceError.network("offline", code: .notConnectedToInternet))
+        try await run(uploader)
+        await queue("b", b, in: setup.index)
+        await setup.service.setUploadFailure(ImmichServiceError.unexpectedStatus(503))
+        try await run(uploader)
+        let given = await uploadedChecksums(setup.service)
+        XCTAssertEqual(given, Array(repeating: a[.photo]!, count: 5) + Array(repeating: b[.photo]!, count: 5))
+
+        await setup.service.setUploadFailure(nil)
+        try await run(uploader)
+        let stillSkipped = await setup.service.uploads.count
+        XCTAssertEqual(stillSkipped, 10, "Both are given up on until the network returns")
+
+        await uploader.networkReturned()
+        try await run(uploader)
+        let after = await uploadedChecksums(setup.service)
+        XCTAssertEqual(Array(after.dropFirst(10)), [a[.photo]!], "Only the item that failed for no connection")
+        let aState = await state("a", setup.index)
+        guard case .backedUp = aState else { return XCTFail("Expected backedUp, got \(String(describing: aState))") }
+        let bState = await state("b", setup.index)
+        XCTAssertEqual(bState, .pending(reason: .needsUpload))
+    }
+
+    /// A run waiting out the back-off after no connection: once the network is back the next run doesn't wait.
+    func testNetworkReturnedEndsTheBackOff() async throws {
+        let setup = await makeSetup(album: ["a"])
+        let a = addAsset("a", to: setup.library, created: Self.date)
+        let uploader = makeUploader(setup)
+        await queue("a", a, in: setup.index)
+        await setup.service.setUploadFailure(ImmichServiceError.network("offline", code: .notConnectedToInternet), afterCalls: 0)
+        // Asked before the item, after it failed, then during the back-off wait: paused there (as the
+        // runner does when the network returns).
+        let asked = LockedCounter()
+        try await run(uploader, shouldPause: { asked.increment() > 2 })
+        let uploads = await setup.service.uploads.count
+        XCTAssertEqual(uploads, 1)
+        let sleptBefore = setup.clock.totalSlept
+        XCTAssertGreaterThan(sleptBefore, .zero, "It was waiting")
+
+        await setup.service.setUploadFailure(nil)
+        await uploader.networkReturned()
+        try await run(uploader)
+        XCTAssertEqual(setup.clock.totalSlept, sleptBefore, "No wait left after the network returned")
+        let aState = await state("a", setup.index)
+        guard case .backedUp = aState else { return XCTFail("Expected backedUp, got \(String(describing: aState))") }
     }
 
     /// A server that is down (502, 503, 504 from the proxy) fails every item alike: the run waits as a

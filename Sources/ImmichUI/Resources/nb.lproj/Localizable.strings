@@ -308,6 +308,7 @@
 "Bloom couldn't open its backup records. Unlock your device and try again." = "Bloom fikk ikke åpnet sikkerhetskopi-oversikten. Lås opp enheten og prøv igjen.";
 "Couldn't check your photos: %@" = "Kunne ikke sjekke bildene: %@";
 "Waiting for a network connection." = "Venter på nettverk.";
+"Can't reach the server." = "Får ikke kontakt med serveren.";
 "This API key can't check backups. Create a key with the View, Organize and Back Up permissions and sign in with it." = "Denne API-nøkkelen kan ikke sjekke sikkerhetskopier. Lag en nøkkel med tillatelsene Se, endre og sikkerhetskopiere, og logg inn med den.";
 "Problems" = "Problemer";
 

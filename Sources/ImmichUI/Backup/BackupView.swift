@@ -239,8 +239,11 @@ private struct BackupCheckSection: View {
         } footer: {
             if let error = model.error {
                 Text(error).foregroundStyle(.red)
-            } else if model.isWaitingForNetwork {
-                Text(tr("Waiting for a network connection.")).foregroundStyle(.secondary)
+            } else if let status = model.connectionStatus {
+                switch status {
+                case .waitingForNetwork: Text(tr("Waiting for a network connection.")).foregroundStyle(.secondary)
+                case .serverUnreachable: Text(tr("Can't reach the server.")).foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -350,4 +353,5 @@ extension BackupModel {
 
 private struct PreviewNetwork: NetworkConditions {
     var isOnCellular: Bool { false }
+    func changes() -> AsyncStream<NetworkPath> { AsyncStream { $0.finish() } }
 }

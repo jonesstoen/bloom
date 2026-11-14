@@ -70,7 +70,7 @@ public enum LoginError: Error, Sendable, Equatable, LocalizedError {
             return error
         case ImmichServiceError.invalidServerURL:
             return .invalidServerURL
-        case ImmichServiceError.network(let detail):
+        case ImmichServiceError.network(let detail, _):
             return .serverUnreachable(detail)
         case ImmichServiceError.insecureConnection:
             return .insecureServer

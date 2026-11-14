@@ -23,6 +23,8 @@ final class BackupRunner {
     private(set) var isUploading = false
     /// The upload run's latest progress; nil when nothing uploads.
     private(set) var uploadProgress: UploadProgress?
+    /// The network watcher's latest path has no connection. False while the network isn't watched.
+    private(set) var isOffline = false
 
     /// Wait after the last library change before scanning: PhotoKit reports a burst for one photo.
     nonisolated static let defaultDebounce: Duration = .seconds(2)
@@ -34,6 +36,11 @@ final class BackupRunner {
     static let rescansBeforeUpload = 1
 
     private struct Work {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
+
+    private struct Watcher {
         let id: UUID
         let task: Task<Void, Never>
     }
@@ -58,11 +65,17 @@ final class BackupRunner {
     @ObservationIgnored private var choiceChanged = false
     /// The current run is waiting for a scan (a user Cancel of it ends the run).
     @ObservationIgnored private var isScanningForRun = false
-    @ObservationIgnored private var watcher: Task<Void, Never>?
-    @ObservationIgnored private var networkWatcher: Task<Void, Never>?
+    /// The network came back since the last upload run started: the next one first ends the uploader's
+    /// back-off (`BackupUploader.networkReturned`), and a run waiting in it pauses (`shouldPause`).
+    @ObservationIgnored private var networkReturned = false
+    @ObservationIgnored private var watcher: Watcher?
+    @ObservationIgnored private var networkWatcher: Watcher?
     /// The path the network watcher saw last; nil until its first one.
     @ObservationIgnored private var lastPath: NetworkPath?
-    @ObservationIgnored private var retiredWatchers: [Task<Void, Never>] = []
+    /// Cancelled watchers that haven't ended yet (`stop()` waits for them); each removes itself when it ends.
+    @ObservationIgnored private var retiredWatchers: [UUID: Task<Void, Never>] = [:]
+    /// Watchers that ended before they were retired (their stream finished), so retiring them keeps nothing.
+    @ObservationIgnored private var endedWatchers: Set<UUID> = []
     @ObservationIgnored private var debounceTask: Task<Void, Never>?
     /// When the current burst of library changes started.
     @ObservationIgnored private var burstStart: ContinuousClock.Instant?
@@ -195,8 +208,8 @@ final class BackupRunner {
         let pendingOperations = Array(operations.values)
         cancelOperations()
         update()
-        for watcher in retiredWatchers { await watcher.value }
-        retiredWatchers = []
+        for watcher in retiredWatchers.values { await watcher.value }
+        retiredWatchers = [:]
         await tail?.value
         for operation in pendingOperations { _ = try? await operation.value }
         await cleanup?.value
@@ -287,13 +300,14 @@ final class BackupRunner {
             if watcher == nil { watch() }
             if networkWatcher == nil { watchNetwork() }
         } else {
-            for task in [watcher, networkWatcher].compactMap({ $0 }) {
-                task.cancel()
-                retiredWatchers.append(task)
+            for retired in [watcher, networkWatcher].compactMap({ $0 }) {
+                retired.task.cancel()
+                if endedWatchers.remove(retired.id) == nil { retiredWatchers[retired.id] = retired.task }
             }
             watcher = nil
             networkWatcher = nil
             lastPath = nil
+            isOffline = false
             debounceTask?.cancel()
             burstStart = nil
             cancelRun()
@@ -381,6 +395,10 @@ final class BackupRunner {
         await acquireLane()
         defer { releaseLane() }
         guard isCurrent(id), let uploader = await uploaderForRun(), isCurrent(id) else { return false }
+        if networkReturned {
+            networkReturned = false
+            await uploader.networkReturned()
+        }
         isUploading = true
         let items = ItemCounter()
         // One pending event at most: a long queue mustn't pile up work on the main actor.
@@ -424,10 +442,11 @@ final class BackupRunner {
         return succeeded
     }
 
-    /// Asked by the uploader between items. Pauses at once for a cancelled run, a new album choice or a
+    /// Asked by the uploader between items and while it waits out a back-off. Pauses at once for a cancelled
+    /// run, a new album choice, the network coming back (the next run starts without the back-off) or a
     /// waiting Try Again / Re-upload; for a library change only after an item, so changes can't starve uploads.
     private func shouldPause(_ id: UUID, itemsFinished: Int) -> Bool {
-        current?.id != id || choiceChanged || waitingOperations > 0 || (wantsRun && itemsFinished > 0)
+        current?.id != id || choiceChanged || networkReturned || waitingOperations > 0 || (wantsRun && itemsFinished > 0)
     }
 
     /// nil only once the model is gone (the session ended).
@@ -445,11 +464,27 @@ final class BackupRunner {
 
     private func watch() {
         let changes = source.changes()
-        watcher = Task { [weak self] in
+        watcher = makeWatcher { [weak self] in
             for await _ in changes {
                 self?.libraryChanged()
             }
         }
+    }
+
+    /// Runs `body` in a task that takes itself off `retiredWatchers` when it ends, so that list stays short
+    /// however often the app goes to the background.
+    private func makeWatcher(_ body: @escaping @MainActor () async -> Void) -> Watcher {
+        let id = UUID()
+        let task = Task { [weak self] in
+            await body()
+            self?.watcherEnded(id)
+        }
+        return Watcher(id: id, task: task)
+    }
+
+    private func watcherEnded(_ id: UUID) {
+        if retiredWatchers.removeValue(forKey: id) != nil { return }
+        if watcher?.id == id || networkWatcher?.id == id { endedWatchers.insert(id) }
     }
 
     /// Debounced: a scan starts `debounce` after the last change, or `debounceLimit` after the first
@@ -489,7 +524,7 @@ final class BackupRunner {
 
     private func watchNetwork() {
         guard let changes = model?.networkConditions.changes() else { return }
-        networkWatcher = Task { [weak self] in
+        networkWatcher = makeWatcher { [weak self] in
             for await path in changes {
                 // A path still buffered for a retired watcher must not overwrite the new one's baseline.
                 guard !Task.isCancelled else { break }
@@ -499,11 +534,14 @@ final class BackupRunner {
     }
 
     /// The first path only sets the baseline (a run was requested when watching started). After that, a
-    /// connected path starts a run (debounced) when the last scan or run found no connection, or when it is
-    /// Wi-Fi after cellular or no network while items wait for Wi-Fi.
+    /// connected path starts a run (debounced) when the last scan or run found no connection, when it follows
+    /// no network while a run or scan is under way (it may fail on the old path after this one arrived), or
+    /// when it is Wi-Fi after cellular or no network while items wait for Wi-Fi. Coming back from no network
+    /// also ends the uploader's back-off: a run waiting in it pauses, scans and goes on.
     private func networkChanged(_ path: NetworkPath) {
         let previous = lastPath
         lastPath = path
+        isOffline = !path.isConnected
         defer {
             receivedPaths += 1
             let reached = pathObservers.filter { $0.count <= receivedPaths }
@@ -511,10 +549,14 @@ final class BackupRunner {
             for observer in reached { observer.continuation.resume() }
         }
         guard mayRun, let previous, path.isConnected, let model else { return }
-        let reconnected = model.isWaitingForNetwork
-        let wifiTookOver = !path.isOnCellular && (previous.isOnCellular || !previous.isConnected)
-            && model.counts.waitingForWiFi > 0
-        guard reconnected || wifiTookOver else { return }
+        let cameBack = !previous.isConnected
+        if cameBack {
+            networkReturned = true
+            if isUploading { wantsRun = true }
+        }
+        let retry = model.cannotReachServer || (cameBack && (current != nil || model.isScanning))
+        let wifiTookOver = !path.isOnCellular && (previous.isOnCellular || cameBack) && model.counts.waitingForWiFi > 0
+        guard retry || wifiTookOver else { return }
         scheduleRun()
     }
 
@@ -568,6 +610,9 @@ final class BackupRunner {
         }
     }
 
+    /// Retired watchers not ended yet.
+    var retiredWatcherCount: Int { retiredWatchers.count }
+
     /// Waits until `count` callers wait for the lane.
     func waitUntilWaitingForLane(_ count: Int) async {
         if laneWaiters.count >= count { return }
@@ -579,8 +624,8 @@ final class BackupRunner {
         while true {
             if !retiredWatchers.isEmpty {
                 let watchers = retiredWatchers
-                retiredWatchers = []
-                for watcher in watchers { await watcher.value }
+                retiredWatchers = [:]
+                for watcher in watchers.values { await watcher.value }
                 continue
             }
             if let task = debounceTask { await task.value; if debounceTask == task { debounceTask = nil }; continue }

@@ -318,7 +318,7 @@ final class BackupRunnerTests: XCTestCase {
     /// sleeps return at once.
     private func makeSetup(
         _ ids: [String], selected: Bool = true, cellular: Bool = false, holds keys: Set<String> = [],
-        debounceClock: BackupRetryClock? = nil
+        debounceClock: BackupRetryClock? = nil, retryClock customRetryClock: BackupRetryClock? = nil
     ) async throws -> Setup {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("BackupRunnerTests-\(UUID().uuidString)", isDirectory: true)
@@ -345,7 +345,7 @@ final class BackupRunnerTests: XCTestCase {
             source: source, service: GatedUploadService(mock: mock, holds: holds, log: log), directory: directory,
             network: network, defaults: defaults)
         let retryClock = BackupRetryClock(now: { ContinuousClock.now }, sleep: { _ in try Task.checkCancellation() })
-        let uploader = await model.makeUploader(clock: retryClock)
+        let uploader = await model.makeUploader(clock: customRetryClock ?? retryClock)
         let debounce = SleepLog()
         let runner = BackupRunner(
             model: model, uploader: uploader, source: source, staging: model.staging,
@@ -557,20 +557,33 @@ final class BackupRunnerTests: XCTestCase {
 
     // MARK: Network
 
+    private static let offline = ImmichServiceError.network(
+        "The Internet connection appears to be offline.", code: .notConnectedToInternet)
+
+    /// `settle()`, failing instead of hanging when a run waits for something that never comes.
+    private func settleOrFail(_ setup: Setup, _ message: String) async {
+        let settled = expectation(description: message)
+        Task { await setup.runner.settle(); settled.fulfill() }
+        await fulfillment(of: [settled], timeout: 10)
+    }
+
     /// Owner's phone: with Wi-Fi off the run stopped, and nothing resumed when Wi-Fi came back.
     func testNetworkComingBackResumesTheRun() async throws {
         let setup = try await makeSetup(["a1"])
-        await setup.mock.setFailure(.network("The Internet connection appears to be offline."))
+        await setup.mock.setFailure(Self.offline)
         setup.runner.setEnabled(true)
         setup.runner.appBecameActive()
         await setup.runner.settle()
-        XCTAssertTrue(setup.model.isWaitingForNetwork)
+        XCTAssertTrue(setup.model.cannotReachServer)
         XCTAssertNil(setup.model.error)
         XCTAssertEqual(setup.network.listenerCount, 1, "The network is watched while on and open")
+        await setup.runner.handledNetworkChanges(1)
+        XCTAssertEqual(setup.model.connectionStatus, .serverUnreachable, "The device has a network")
 
         setup.network.set(connected: false)
         await setup.runner.handledNetworkChanges(2) // the first is the path when watching started
         await setup.runner.settle()
+        XCTAssertEqual(setup.model.connectionStatus, .waitingForNetwork)
         let uploadsOffline = await setup.uploadRequests()
         XCTAssertEqual(uploadsOffline, 0)
 
@@ -581,8 +594,57 @@ final class BackupRunnerTests: XCTestCase {
         await setup.runner.settle()
         let uploaded = await setup.uploadedIDs
         XCTAssertEqual(uploaded, ["a1"])
-        XCTAssertFalse(setup.model.isWaitingForNetwork, "Cleared by the scan that worked")
+        XCTAssertFalse(setup.model.cannotReachServer, "Cleared by the scan that worked")
+        XCTAssertNil(setup.model.connectionStatus)
         XCTAssertNil(setup.model.error)
+    }
+
+    /// The connected path can arrive before the scan that was under way fails on the old one: that scan's
+    /// failure mustn't be the last word.
+    func testReconnectDuringAFailingScanScansAgain() async throws {
+        let setup = try await makeSetup(["a1"], holds: ["read a1"])
+        setup.runner.setEnabled(true)
+        setup.runner.appBecameActive()
+        await setup.holds.waitUntilHeld("read a1") // the probe went through; the scan reads a1
+        await setup.mock.setFailure(Self.offline)
+        setup.network.set(connected: false)
+        setup.network.set(connected: true)
+        await setup.runner.handledNetworkChanges(3)
+        XCTAssertFalse(setup.model.cannotReachServer, "The scan hasn't failed yet")
+
+        await setup.holds.release("read a1")
+        await setup.runner.settle()
+        let checks = await setup.mock.requests.filter(isCheck).count
+        XCTAssertEqual(checks, 3, "The probe, the failed check, and the check of the second scan")
+        XCTAssertTrue(setup.model.cannotReachServer)
+        XCTAssertEqual(setup.model.connectionStatus, .serverUnreachable)
+    }
+
+    /// An upload run waiting out the back-off after losing the connection goes on as soon as the network is
+    /// back, instead of after the rest of the wait.
+    func testReconnectWakesARunWaitingOutTheBackOff() async throws {
+        let retry = ManualClock()
+        let setup = try await makeSetup(["a1"], retryClock: retry.clock)
+        await setup.mock.setUploadFailure(Self.offline)
+        setup.runner.setEnabled(true)
+        setup.runner.appBecameActive()
+        await retry.waitForSleeps(1) // a1 failed; the run waits out the 5 s back-off
+        XCTAssertTrue(setup.runner.isUploading)
+        XCTAssertFalse(setup.model.cannotReachServer, "The uploader retries by itself")
+
+        await setup.mock.setUploadFailure(nil)
+        setup.network.set(connected: false)
+        setup.network.set(connected: true)
+        await setup.runner.handledNetworkChanges(3)
+        await retry.releaseSleeps() // the wait's slice ends and the run is asked whether to pause
+        await settleOrFail(setup, "The run went on without waiting out the back-off")
+
+        let sleeps = await retry.sleeps
+        XCTAssertEqual(sleeps.count, 1, "No further back-off wait")
+        let uploads = await setup.mock.uploads.count
+        XCTAssertEqual(uploads, 2, "The failed attempt and the one after the network came back")
+        let state = await setup.savedState("a1")
+        guard case .backedUp = state else { return XCTFail("Expected backedUp, got \(String(describing: state))") }
     }
 
     func testSwitchingFromCellularToWiFiUploadsItemsWaitingForWiFi() async throws {
@@ -610,17 +672,19 @@ final class BackupRunnerTests: XCTestCase {
 
     func testNetworkChangesWithTheSwitchOffRunNothing() async throws {
         let setup = try await makeSetup(["a1"], cellular: true)
-        await setup.mock.setFailure(.network("offline"))
+        await setup.mock.setFailure(Self.offline)
         setup.runner.appBecameActive()
         setup.runner.checkNow()
         await setup.runner.settle()
-        XCTAssertTrue(setup.model.isWaitingForNetwork, "Check Now with the switch off still shows the status")
+        XCTAssertTrue(setup.model.cannotReachServer, "Check Now with the switch off still notes it")
+        XCTAssertEqual(setup.model.connectionStatus, .serverUnreachable, "Nothing waits for the network while off")
         XCTAssertNil(setup.model.error)
         XCTAssertEqual(setup.network.listenerCount, 0, "The network isn't watched while off")
 
         await setup.mock.setFailure(nil)
         let before = await setup.mock.requests
         setup.network.set(connected: false)
+        XCTAssertEqual(setup.model.connectionStatus, .serverUnreachable, "Never the waiting text while off")
         setup.network.set(cellular: false)
         await setup.runner.settle()
         let after = await setup.mock.requests
@@ -652,6 +716,21 @@ final class BackupRunnerTests: XCTestCase {
         await setup.runner.settle()
         let after = await setup.mock.requests
         XCTAssertEqual(after, before, "Nothing runs after stop")
+    }
+
+    /// Going to the background and back keeps no ended watcher around (nothing settles in the app).
+    func testRetiredWatchersDoNotPileUp() async throws {
+        let setup = try await makeSetup(["a1"])
+        setup.runner.setEnabled(true)
+        setup.runner.appBecameActive()
+        for _ in 0..<20 {
+            setup.runner.appLeftForeground()
+            setup.runner.appBecameActive()
+        }
+        // Cancelled watchers end on the main actor once it is free; no clock involved.
+        for _ in 0..<1000 where setup.runner.retiredWatcherCount > 0 { await Task.yield() }
+        XCTAssertEqual(setup.runner.retiredWatcherCount, 0)
+        await setup.runner.settle()
     }
 
     func testUserCancelOfTheRunsScanStopsTheRun() async throws {

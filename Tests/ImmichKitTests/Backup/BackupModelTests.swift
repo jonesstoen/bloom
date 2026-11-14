@@ -6,6 +6,8 @@ import XCTest
 
 private struct FixedNetwork: NetworkConditions {
     let isOnCellular: Bool
+    /// Doesn't observe the network: the stream ends at once.
+    func changes() -> AsyncStream<NetworkPath> { AsyncStream { $0.finish() } }
 }
 
 @MainActor
@@ -337,22 +339,24 @@ final class BackupModelTests: XCTestCase {
     }
 
     /// Owner's phone: Wi-Fi off showed a red "Couldn't check your photos: Could not reach the server".
-    func testUnreachableServerShowsWaitingForNetworkInsteadOfAnError() async {
+    func testUnreachableServerShowsAStatusInsteadOfAnError() async {
         let library = makeLibrary(count: 2)
         let service = MockImmichService(library: MockLibrary(assetCount: 1, years: 1))
-        await service.setFailure(.network("The Internet connection appears to be offline."))
+        await service.setFailure(.network("The Internet connection appears to be offline.", code: .notConnectedToInternet))
         let model = makeModel(library, service: service)
         await model.load()
         model.setSelection(BackupSelection(included: ["recents"]))
         await model.settle()
         XCTAssertNil(model.error, "no connection isn't shown as an error")
-        XCTAssertTrue(model.isWaitingForNetwork)
+        XCTAssertTrue(model.cannotReachServer)
+        XCTAssertEqual(model.connectionStatus, .serverUnreachable, "With the switch off nothing waits for the network")
 
         // The connection is back: the next scan that succeeds clears the status.
         await service.setFailure(nil)
         let completed = await model.scan()
         XCTAssertTrue(completed)
-        XCTAssertFalse(model.isWaitingForNetwork)
+        XCTAssertFalse(model.cannotReachServer)
+        XCTAssertNil(model.connectionStatus)
         XCTAssertNil(model.error)
         XCTAssertEqual(model.counts.total, 2)
     }
@@ -360,19 +364,34 @@ final class BackupModelTests: XCTestCase {
     func testOtherScanFailuresStillShowAnError() async {
         let library = makeLibrary(count: 2)
         let service = MockImmichService(library: MockLibrary(assetCount: 1, years: 1))
-        await service.setFailure(.network("offline"))
+        await service.setFailure(.network("offline", code: .timedOut))
         let model = makeModel(library, service: service)
         await model.load()
         model.setSelection(BackupSelection(included: ["recents"]))
         await model.settle()
-        XCTAssertTrue(model.isWaitingForNetwork)
+        XCTAssertTrue(model.cannotReachServer)
 
-        // Reachable now, but the server fails: the red error is back and the waiting status goes.
+        // Reachable now, but the server fails: the red error is back and the status goes.
         await service.setFailure(.unexpectedStatus(500))
         await model.scan()
         XCTAssertEqual(
             model.error, "Couldn't check your photos: \(ImmichServiceError.unexpectedStatus(500).localizedDescription)")
-        XCTAssertFalse(model.isWaitingForNetwork)
+        XCTAssertFalse(model.cannotReachServer)
+        XCTAssertNil(model.connectionStatus)
+    }
+
+    /// A broken TLS setup reaches the server's address but can never work: an error, not a calm status.
+    func testCertificateFailureIsAnError() async {
+        let library = makeLibrary(count: 2)
+        let service = MockImmichService(library: MockLibrary(assetCount: 1, years: 1))
+        let failure = ImmichServiceError.network("The certificate for this server is invalid.", code: .serverCertificateUntrusted)
+        await service.setFailure(failure)
+        let model = makeModel(library, service: service)
+        await model.load()
+        model.setSelection(BackupSelection(included: ["recents"]))
+        await model.settle()
+        XCTAssertEqual(model.error, "Couldn't check your photos: \(failure.localizedDescription)")
+        XCTAssertFalse(model.cannotReachServer)
     }
 
     func testCellularSwitchRechecksItemsWaitingForWiFi() async {
