@@ -89,6 +89,7 @@
 "Close viewer" = "Lukk";
 "Couldn't add to Favorites." = "Kunne ikke legge til i Favoritter.";
 "Couldn't load this item. Please try again." = "Kunne ikke laste inn dette objektet. Prøv igjen.";
+"This item is no longer on the server." = "Dette objektet finnes ikke lenger på serveren.";
 "Couldn't play this Live Photo. Try again." = "Kunne ikke spille av dette Live Photo-bildet. Prøv igjen.";
 "Couldn't remove from Favorites." = "Kunne ikke fjerne fra Favoritter.";
 "Couldn't Share" = "Kunne ikke dele";

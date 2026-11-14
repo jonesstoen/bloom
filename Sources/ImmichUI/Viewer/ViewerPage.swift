@@ -50,7 +50,7 @@ struct ViewerPage: View {
             } else if let error = model.error {
                 VStack(spacing: 12) {
                     Text(error).font(.callout).foregroundStyle(.secondary)
-                    Button(tr("Try Again")) { Task { await model.load() } }
+                    if !model.isMissing { Button(tr("Try Again")) { Task { await model.load() } } }
                 }
             } else {
                 ProgressView()
@@ -62,7 +62,7 @@ struct ViewerPage: View {
             if model.image == nil, model.placeholder != nil, !model.asset.isVideo, let error = model.error {
                 VStack(spacing: 12) {
                     Text(error).font(.callout).multilineTextAlignment(.center)
-                    Button(tr("Try Again")) { Task { await model.load() } }
+                    if !model.isMissing { Button(tr("Try Again")) { Task { await model.load() } } }
                 }
                 .padding()
                 .photosGlass(in: RoundedRectangle(cornerRadius: 16), interactive: false)

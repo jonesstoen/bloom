@@ -14,6 +14,9 @@ public final class ViewerAssetModel {
     public var displayImage: CGImage? { image ?? placeholder }
     public private(set) var playback: MediaRequest?
     public private(set) var error: String?
+    /// The server no longer has this asset (deleted on the website or another device). `error`
+    /// says so, and trying again would not help.
+    public private(set) var isMissing = false
     public private(set) var isLoading = false
     public private(set) var isLoaded = false
     /// Whether this page may retain or load decoded media in the current viewer window.
@@ -27,6 +30,8 @@ public final class ViewerAssetModel {
     @ObservationIgnored private let service: any ImmichService
     @ObservationIgnored private let loader: ImageLoader
     @ObservationIgnored private var generation = 0
+    /// Told the asset's id when the server no longer has it, so the grid can drop it.
+    @ObservationIgnored var onMissing: (@MainActor (String) -> Void)?
 
     public init(asset: Asset, service: any ImmichService, loader: ImageLoader, placeholder: CGImage? = nil) {
         self.asset = asset
@@ -94,6 +99,7 @@ public final class ViewerAssetModel {
         placeholder = nil
         playback = nil
         error = nil
+        isMissing = false
         livePhotoPlaybackError = nil
         isLoading = false
         isLoaded = false
@@ -108,6 +114,7 @@ public final class ViewerAssetModel {
         isLoading = true
         isLoaded = false
         error = nil
+        isMissing = false
         defer { if generation == started { isLoading = false } }
         if displayImage == nil, let data = await loader.memoryData(for: ImageKey(assetID: asset.id, size: .thumbnail)),
            !Task.isCancelled {
@@ -151,8 +158,24 @@ public final class ViewerAssetModel {
             return
         } catch {
             guard generation == started else { return }
+            if Self.isNotFound(error) {
+                isMissing = true
+                self.error = tr("This item is no longer on the server.")
+                onMissing?(asset.id)
+                return
+            }
             // Do not surface transport diagnostics containing authenticated media URLs.
             self.error = tr("Couldn't load this item. Please try again.")
+        }
+    }
+
+    /// Immich answers HTTP 400 "Not found or no asset.read access" for an asset id it no longer
+    /// has (its access check runs before the lookup); 404 is accepted as well. The id comes from
+    /// the server's own timeline, so for these requests a 400 means the asset is gone.
+    static func isNotFound(_ error: any Error) -> Bool {
+        switch error as? ImmichServiceError {
+        case .unexpectedStatus(400)?, .unexpectedStatus(404)?: true
+        default: false
         }
     }
 }

@@ -90,6 +90,9 @@ public final class LibraryGridModel {
     @ObservationIgnored var snapshotRevision: UInt64 = 0
     @ObservationIgnored var didAttemptRestore = false
     @ObservationIgnored var snapshotSave: Task<Void, Never>?
+    /// The grid's viewer is open: a revalidation waits until it closes (`revalidate()`).
+    @ObservationIgnored private var isViewerOpen = false
+    @ObservationIgnored private var revalidatesAfterViewer = false
 
     /// - Parameters:
     ///   - options: defaults to the library, oldest month first with the newest at the bottom like Photos.
@@ -197,6 +200,31 @@ public final class LibraryGridModel {
             return
         }
         await loadStartAndRevalidate(timeline: timeline, generation: generation, restoring: restoring)
+    }
+
+    /// Picks up changes made elsewhere (the Immich website, another device), e.g. when the app
+    /// comes back from the background. Uses the same path as `load()`: buckets first, then every
+    /// loaded month refetched in place, and the photo in the middle of the screen keeps its place
+    /// (`GridShift`). Unlike an explicit refresh it keeps confirmed local removals, which would
+    /// otherwise start a fresh timeline with every month unloaded. Skipped during a write or the
+    /// first load, and deferred while the viewer is open, so the grid doesn't move behind it.
+    public func revalidate() async {
+        guard !isMutating, phase != .loading else { return }
+        if isViewerOpen {
+            revalidatesAfterViewer = true
+            return
+        }
+        await load(reconcilingTrash: false)
+    }
+
+    /// The grid's viewer opened or closed. Closing runs a revalidation that waited for it;
+    /// returns that work, for tests to wait on.
+    @discardableResult
+    public func viewerPresentationChanged(isOpen: Bool) -> Task<Void, Never>? {
+        isViewerOpen = isOpen
+        guard !isOpen, revalidatesAfterViewer else { return nil }
+        revalidatesAfterViewer = false
+        return Task { await revalidate() }
     }
 
     /// Shows the months saved on disk while the server is asked for fresh ones.

@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import ImmichKit
 import Observation
+import SwiftUI
 
 /// One connection's shared services and library state; discarded when signing out.
 @MainActor
@@ -13,6 +14,7 @@ public final class ImmichSession: Identifiable {
     public let search: SearchModel
     public let snapshotStore: TimelineSnapshotStore?
     let backup: BackupModel
+    private var foregroundRefresh = LibraryForegroundRefresh()
 
     /// - Parameter backup: defaults to the preview photo library with a throwaway index.
     init(service: any ImmichService, disk: DiskImageCache?, snapshotStore: TimelineSnapshotStore? = nil,
@@ -33,6 +35,15 @@ public final class ImmichSession: Identifiable {
             guard let library else { return }
             Task { await library.load() }
         }
+    }
+
+    /// Forwarded by the tabs. Coming back after a while in the background revalidates the
+    /// Library (see `LibraryForegroundRefresh`); returns that work, for tests to wait on.
+    @discardableResult
+    func scenePhaseChanged(_ phase: ScenePhase, at now: Date = Date()) -> Task<Void, Never>? {
+        guard foregroundRefresh.phaseChanged(to: phase, at: now) else { return nil }
+        let library = self.library
+        return Task { await library.revalidate() }
     }
 }
 

@@ -12,11 +12,15 @@ final class ViewerStore {
     @ObservationIgnored private let service: any ImmichService
     @ObservationIgnored private let loader: ImageLoader
     @ObservationIgnored private let thumbnails: ThumbnailImageCache?
+    @ObservationIgnored private let onMissing: (@MainActor (String) -> Void)?
 
-    init(service: any ImmichService, loader: ImageLoader, thumbnails: ThumbnailImageCache? = nil) {
+    /// - Parameter onMissing: told the id of an asset the server no longer has.
+    init(service: any ImmichService, loader: ImageLoader, thumbnails: ThumbnailImageCache? = nil,
+         onMissing: (@MainActor (String) -> Void)? = nil) {
         self.service = service
         self.loader = loader
         self.thumbnails = thumbnails
+        self.onMissing = onMissing
     }
 
     /// Clear media on the existing models: lazy pages may still hold references to them.
@@ -46,6 +50,7 @@ final class ViewerStore {
         let retainsPreview = retainedIDs?.contains(asset.id) ?? true
         let thumbnail = retainsPreview ? thumbnails?.image(for: ImageKey(assetID: asset.id, size: .thumbnail)) : nil
         let model = ViewerAssetModel(asset: asset, service: service, loader: loader, placeholder: thumbnail)
+        model.onMissing = onMissing
         model.setPreviewRetained(retainsPreview)
         models[asset.id] = model
         return model

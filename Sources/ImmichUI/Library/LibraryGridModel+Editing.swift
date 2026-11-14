@@ -18,6 +18,17 @@ extension LibraryGridModel {
         scheduleSnapshotSave()
     }
 
+    /// The viewer found that the server no longer has `id` (deleted on the website or another
+    /// device). Hides it right away, like a confirmed move to trash (in Recently Deleted, like a
+    /// confirmed restore), rather than waiting for the next refresh. Ignored during a write,
+    /// whose own reload reconciles the grid.
+    public func assetMissingOnServer(_ id: String) {
+        guard !isMutating, gridIndex(ofAsset: id) != nil else { return }
+        if options.isTrashed == true { edits.restoredIDs.insert(id) } else { edits.trashedIDs.insert(id) }
+        apply(months)
+        scheduleSnapshotSave()
+    }
+
     /// Moves assets to Immich's trash (never deletes permanently). Only confirmed IDs disappear
     /// from the grid; uncertain results still invalidate old snapshots.
     public func moveToTrash(_ assets: [Asset]) async throws -> TrashResult {

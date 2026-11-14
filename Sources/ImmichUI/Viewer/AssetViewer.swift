@@ -41,7 +41,8 @@ public struct AssetViewer: View {
     public init(assets: [Asset], selectedID: String, service: any ImmichService,
                 loader: ImageLoader? = nil, thumbnails: ThumbnailImageCache? = nil,
                 onMoveToTrash: (@MainActor (Asset) async throws -> Void)? = nil,
-                onRestore: (@MainActor (Asset) async throws -> Void)? = nil, onSelection: @escaping (String) -> Void = { _ in }, onSettle: @escaping (String) -> Void = { _ in }) {
+                onRestore: (@MainActor (Asset) async throws -> Void)? = nil, onSelection: @escaping (String) -> Void = { _ in }, onSettle: @escaping (String) -> Void = { _ in },
+                onMissing: (@MainActor (String) -> Void)? = nil) {
         let loader = loader ?? ImageLoader(service: service)
         self.assets = assets
         self.service = service
@@ -55,7 +56,7 @@ public struct AssetViewer: View {
         self.indexByID = Dictionary(assets.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
         _selectedID = State(initialValue: selectedID)
         _pageWindow = State(initialValue: ViewerPageWindow.around(indexByID[selectedID] ?? 0, count: assets.count))
-        let store = ViewerStore(service: service, loader: loader, thumbnails: thumbnails)
+        let store = ViewerStore(service: service, loader: loader, thumbnails: thumbnails, onMissing: onMissing)
         store.updateSelection(index: indexByID[selectedID] ?? 0, assets: assets)
         _store = State(initialValue: store)
     }

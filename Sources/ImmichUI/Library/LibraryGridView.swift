@@ -204,6 +204,8 @@ public struct LibraryGridView: View {
                 }
             }
             .modifier(LibrarySelectionPresentation(selection: selection))
+            // A revalidation waits while the viewer is open, so the grid doesn't move behind it.
+            .onChange(of: viewerItem == nil) { _, closed in model.viewerPresentationChanged(isOpen: !closed) }
             .onDisappear {
                 model.stopPrefetching()
                 if selection.isPreparingShare { selection.cancelSharePreparation() }
@@ -240,6 +242,10 @@ public struct LibraryGridView: View {
             // but only once paging has come to rest: scrolling the grid on every swipe loads
             // thumbnails the user can't see and makes paging stutter.
             viewerScrollTarget = id
+        }, onMissing: { id in
+            model.assetMissingOnServer(id)
+            // Like a move to trash: closing the viewer must not zoom into a removed cell.
+            if transitionSourceID == id, model.gridIndex(ofAsset: id) == nil { transitionSourceID = nil }
         })
     }
 

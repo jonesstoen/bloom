@@ -146,6 +146,8 @@ private struct ImmichTabs: View {
         // neither stops it nor starts a new scan: the runner starts one only when it was in the background.
         // Coming back goes background → inactive → active, so the old phase can't tell that apart.
         .onChange(of: scenePhase, initial: true) { _, phase in
+            // Photos deleted or added elsewhere show up after a real return from the background.
+            session.scenePhaseChanged(phase)
             switch phase {
             case .active: session.backup.runner.appBecameActive()
             case .background: session.backup.runner.appLeftForeground()
