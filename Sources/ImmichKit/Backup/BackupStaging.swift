@@ -99,6 +99,12 @@ public actor BackupStaging {
         }
     }
 
+    /// The file in the staging folder called `name`, for an upload body recorded by name (see
+    /// `UploadJob.bodyFileName`). Only the last path component is used, so a name can't point outside.
+    public nonisolated func url(forBodyNamed name: String) -> URL {
+        directory.appendingPathComponent((name as NSString).lastPathComponent, isDirectory: false)
+    }
+
     /// Removes one staged file. Safe to call from a `defer`, and for a file that is already gone.
     public nonisolated func remove(_ url: URL) {
         try? FileManager.default.removeItem(at: url)

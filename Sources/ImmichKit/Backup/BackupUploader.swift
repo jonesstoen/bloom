@@ -619,12 +619,12 @@ public actor BackupUploader {
     }
 
     /// The resource whose server ID stands for the item: the photo, or the video.
-    private static func mainType(of types: Set<DeviceResourceType>) -> DeviceResourceType? {
+    static func mainType(of types: Set<DeviceResourceType>) -> DeviceResourceType? {
         let order: [DeviceResourceType] = [.fullSizePhoto, .photo, .fullSizeVideo, .video, .fullSizePairedVideo, .pairedVideo]
         return order.first { types.contains($0) }
     }
 
-    private enum ErrorKind {
+    enum ErrorKind {
         case cancelled
         /// No item can get past it: stop the run.
         case stop
@@ -633,8 +633,10 @@ public actor BackupUploader {
         case failed(String)
     }
 
-    private static func classify(_ error: Error) -> ErrorKind {
-        if error is CancellationError || Task.isCancelled { return .cancelled }
+    /// Shared with `BackupResultRecorder`, which passes `cancelled: false`: the recorder's own task being
+    /// cancelled says nothing about the upload it records.
+    static func classify(_ error: Error, cancelled: Bool = Task.isCancelled) -> ErrorKind {
+        if error is CancellationError || cancelled { return .cancelled }
         if BackupStaging.isOutOfSpace(error) { return .outOfSpace }
         switch error {
         case let BackupUploadError.rejected(status, message):

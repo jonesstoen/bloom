@@ -68,6 +68,20 @@ public actor BackupIndex {
     private struct Stored: Codable {
         var entries: [String: BackupEntry] = [:]
         var selection = BackupSelection()
+        /// Uploads handed to the transport whose result isn't recorded yet.
+        var jobs: [UploadJob] = []
+
+        init() {}
+
+        private enum CodingKeys: String, CodingKey { case entries, selection, jobs }
+
+        /// `jobs` is absent in indexes written before background uploads.
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            entries = try container.decode([String: BackupEntry].self, forKey: .entries)
+            selection = try container.decode(BackupSelection.self, forKey: .selection)
+            jobs = try container.decodeIfPresent([UploadJob].self, forKey: .jobs) ?? []
+        }
     }
 
     private let fileURL: URL
@@ -143,6 +157,41 @@ public actor BackupIndex {
         change(&entry)
         set(entry, for: assetID)
         return entry
+    }
+
+    // MARK: - Upload jobs
+
+    /// The uploads handed to the transport whose result isn't recorded yet, oldest first.
+    public var jobs: [UploadJob] { stored.jobs }
+
+    public func jobs(for assetID: String) -> [UploadJob] { stored.jobs.filter { $0.assetID == assetID } }
+
+    /// Records a job before it is handed to the transport. Adding the same attempt again changes nothing.
+    public func addJob(_ job: UploadJob) {
+        guard !stored.jobs.contains(where: { $0.attempt == job.attempt }) else { return }
+        stored.jobs.append(job)
+        hasChanges = true
+    }
+
+    /// Forgets the job of `attempt`. Returns whether there was one.
+    @discardableResult
+    public func removeJob(attempt: UUID) -> Bool {
+        guard let position = stored.jobs.firstIndex(where: { $0.attempt == attempt }) else { return false }
+        stored.jobs.remove(at: position)
+        hasChanges = true
+        return true
+    }
+
+    /// Finishes `job` in one step: forgets its record and, if the stored entry for its asset satisfies
+    /// `condition`, applies `change` to it. Returns `false` when no record of this attempt existed (its
+    /// result was recorded before), in which case nothing changes. Doing both inside the index means a
+    /// save in between can never persist the removal without the result.
+    func complete(
+        _ job: UploadJob, if condition: (BackupEntry) -> Bool, _ change: (inout BackupEntry) -> Void
+    ) -> Bool {
+        guard removeJob(attempt: job.attempt) else { return false }
+        update(job.assetID, if: condition, change)
+        return true
     }
 
     public func selection() -> BackupSelection { stored.selection }
