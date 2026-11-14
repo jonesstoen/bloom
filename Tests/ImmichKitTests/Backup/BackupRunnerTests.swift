@@ -391,6 +391,23 @@ final class BackupRunnerTests: XCTestCase {
         XCTAssertEqual(uploads, 2, "Check Now with the switch on uploads what it finds")
     }
 
+    /// Owner's phone test: uploaded with the switch on, purged on the web, then Check Now.
+    func testPurgedOnServerAfterUploadShowsUnderDeletedOnServer() async throws {
+        let setup = try await makeSetup(["a1"])
+        setup.runner.setEnabled(true)
+        setup.runner.appBecameActive()
+        await setup.runner.settle()
+        XCTAssertEqual(setup.model.counts.backedUp, 1)
+        await setup.mock.setServerChecksums([])   // trash emptied on the web
+        setup.runner.checkNow()
+        await setup.runner.settle()
+        await setup.model.settle()
+        XCTAssertEqual(setup.model.counts.deletedOnServer, 1, "\(setup.model.counts)")
+        XCTAssertEqual(setup.model.counts.backedUp, 0)
+        let uploads = await setup.mock.uploads.count
+        XCTAssertEqual(uploads, 1, "never uploaded again")
+    }
+
     func testCheckNowWithTheSwitchOffOnlyChecks() async throws {
         let setup = try await makeSetup(["a1"])
         setup.runner.appBecameActive()
