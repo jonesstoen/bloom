@@ -25,8 +25,14 @@ public final class ImmichSession: Identifiable {
         self.snapshotStore = snapshotStore
         let loader = ImageLoader(service: service, disk: disk)
         self.loader = loader
-        self.library = LibraryGridModel(service: service, loader: loader, snapshotStore: snapshotStore)
+        let library = LibraryGridModel(service: service, loader: loader, snapshotStore: snapshotStore)
+        self.library = library
         self.search = SearchModel(service: service, loader: loader)
+        // Photos uploaded from this iPhone appear in the Library without a manual refresh.
+        self.backup.onServerLibraryChanged = { [weak library] in
+            guard let library else { return }
+            Task { await library.load() }
+        }
     }
 }
 

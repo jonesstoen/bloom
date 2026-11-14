@@ -322,6 +322,11 @@ final class BackupModel {
         await refreshCounts()
     }
 
+    /// Called after uploads or restores put assets on the server, so the Library can reload its timeline.
+    @ObservationIgnored var onServerLibraryChanged: (@MainActor () -> Void)?
+
+    func serverLibraryChanged() { onServerLibraryChanged?() }
+
     /// An upload run stopped on something every item would run into: shown like a scan's error.
     func reportUploadFailure(_ failure: Error) {
         switch failure {

@@ -242,6 +242,8 @@ final class BackupRunner {
             await finishOperation()
             throw error
         }
+        // Restored or re-uploaded items are on the server again: the Library should show them.
+        model?.serverLibraryChanged()
         await finishOperation()
     }
 
@@ -392,6 +394,8 @@ final class BackupRunner {
             uploadProgress = nil
         }
         await model?.uploadsChanged()
+        // New assets on the server: once per run, so the Library isn't reloaded after every item.
+        if items.finished > 0 { model?.serverLibraryChanged() }
         return succeeded
     }
 

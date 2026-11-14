@@ -378,6 +378,28 @@ final class BackupRunnerTests: XCTestCase {
         XCTAssertEqual(setup.stagedFiles, [])
     }
 
+    func testFinishedUploadRunTellsTheLibraryOnce() async throws {
+        let setup = try await makeSetup(["a1", "a2"])
+        var changes = 0
+        setup.model.onServerLibraryChanged = { changes += 1 }
+        setup.runner.setEnabled(true)
+        setup.runner.appBecameActive()
+        await setup.runner.settle()
+        let uploads = await setup.mock.uploads.count
+        XCTAssertEqual(uploads, 2)
+        XCTAssertEqual(changes, 1, "One Library reload per upload run, not one per item")
+    }
+
+    func testRunWithNothingToUploadDoesNotReloadTheLibrary() async throws {
+        let setup = try await makeSetup([])
+        var changes = 0
+        setup.model.onServerLibraryChanged = { changes += 1 }
+        setup.runner.setEnabled(true)
+        setup.runner.appBecameActive()
+        await setup.runner.settle()
+        XCTAssertEqual(changes, 0)
+    }
+
     func testBecomingActiveWithoutBackgroundDoesNotScanAgain() async throws {
         let setup = try await makeSetup(["a1"])
         setup.runner.setEnabled(true)
