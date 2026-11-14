@@ -21,10 +21,25 @@ final class BackupModel {
         let reason: String
     }
 
+    /// An item the server had once and no longer has (see `BackupState.deletedOnServer`).
+    struct DeletedItem: Identifiable, Equatable {
+        let id: String
+        /// When the photo was taken, if the photo library still has it.
+        let date: Date?
+        /// Every missing copy is in the server's trash (so "In the Trash"); else at least one is gone for good.
+        let isTrashed: Bool
+        /// A small JPEG from the photo library.
+        let thumbnail: Data?
+    }
+
     enum AlbumState { case included, excluded, neither }
 
     /// The most failed items listed on screen.
     static let failedItemLimit = 50
+    /// The most deleted-on-server items listed on screen.
+    static let deletedItemLimit = 200
+    /// Pixel side of the thumbnails in the Deleted on Server list.
+    static let thumbnailPixelSide = 160
 
     private(set) var access: PhotoAccess?
     private(set) var counts = BackupCounts()
@@ -34,7 +49,16 @@ final class BackupModel {
     private(set) var albums: [DeviceAlbum] = []
     private(set) var selection = BackupSelection()
     private(set) var failedItems: [FailedItem] = []
+    /// The first `deletedItemLimit` items deleted on the server, newest first. `counts.deletedOnServer` has the total.
+    private(set) var deletedItems: [DeletedItem] = []
     private(set) var error: String?
+    /// Set when the Backup switch was turned on with no album chosen: the screen opens the album picker,
+    /// and clears it when the picker closes.
+    var needsAlbumChoice = false
+    /// Try Again or Re-upload calls under way.
+    private var workingCount = 0
+    /// Try Again or Re-upload is under way.
+    var isWorking: Bool { workingCount > 0 }
     var settings: BackupSettings {
         didSet {
             guard settings != oldValue else { return }
@@ -156,10 +180,18 @@ final class BackupModel {
             albums = []
             counts = BackupCounts()
             failedItems = []
+            deletedItems = []
             return
         }
         albums = await source.albums()
         await refreshCounts()
+    }
+
+    /// The Backup switch. Turning it on with no album chosen opens the album picker (`needsAlbumChoice`);
+    /// the switch stays on, so choosing an album starts the first run.
+    func setBackupEnabled(_ on: Bool) {
+        runner.setEnabled(on)
+        if on, hasLoaded, selection.included.isEmpty { needsAlbumChoice = true }
     }
 
     /// Whether Check Now makes sense: photo access and at least one included album.
@@ -323,14 +355,14 @@ final class BackupModel {
             counts = result
             completedScans += 1
         } else { await refreshCounts() }
-        await refreshFailures()
+        await refreshLists()
         scanTask = nil
         isScanning = false
     }
 
-    private func report(_ failure: Error) {
+    private func report(_ failure: Error, uploading: Bool = false) {
         if case BackupIndexError.unavailable = failure { indexWasUnavailable = true }
-        error = Self.message(for: failure)
+        error = Self.message(for: failure, uploading: uploading)
     }
 
     /// An index that couldn't be read (a locked device, say) stays unavailable until it is reloaded.
@@ -343,13 +375,14 @@ final class BackupModel {
         await index.setSelection(selection)
     }
 
-    private static func message(for error: Error) -> String {
+    private static func message(for error: Error, uploading: Bool = false) -> String {
         if case BackupIndexError.unavailable = error {
             return tr("Bloom couldn't open its backup records. Unlock your device and try again.")
         }
         if case ImmichServiceError.unauthorized = error {
             return tr("This API key can't check backups. Create a key with the View, Organize and Back Up permissions and sign in with it.")
         }
+        if uploading { return tr("Couldn't back up your photos: %@", error.localizedDescription) }
         return tr("Couldn't check your photos: %@", error.localizedDescription)
     }
 
@@ -445,27 +478,144 @@ final class BackupModel {
         let fresh = await scanner.counts()
         guard before == generation else { return }
         counts = fresh
+        await refreshLists()
+    }
+
+    private func refreshLists() async {
         await refreshFailures()
+        await refreshDeletedItems()
+    }
+
+    /// The entries of the selected photos that satisfy `isIncluded`, in ID order, left out when the photo
+    /// changed since the entry was recorded or is gone (`counts()` treats those as not checked yet).
+    private func currentEntries(where isIncluded: (BackupEntry) -> Bool) async -> [(id: String, entry: BackupEntry)] {
+        let index = await ensureIndex()
+        let ids = await index.selection().assetIDs(in: source)
+        let candidates = await index.entries(where: isIncluded, in: ids, limit: .max).sorted { $0.0 < $1.0 }
+        var result: [(id: String, entry: BackupEntry)] = []
+        for start in stride(from: 0, to: candidates.count, by: 500) {
+            let chunk = candidates[start..<min(start + 500, candidates.count)]
+            let dates = await source.modificationDates(chunk.map(\.0))
+            for (id, entry) in chunk where dates[id] == entry.modificationDate { result.append((id, entry)) }
+        }
+        return result
+    }
+
+    private static func isFailed(_ entry: BackupEntry) -> Bool {
+        if case .failed = entry.state { true } else { false }
+    }
+
+    private static func isDeletedOnServer(_ entry: BackupEntry) -> Bool {
+        if case .deletedOnServer = entry.state { true } else { false }
     }
 
     private func refreshFailures() async {
         guard counts.failed > 0 else { failedItems = []; return }
-        let index = await ensureIndex()
-        // Match counts(): a missing or edited asset no longer has its cached failure state.
-        let ids = await index.selection().assetIDs(in: source).sorted()
-        var items: [FailedItem] = []
-        for start in stride(from: 0, to: ids.count, by: 500) {
-            let chunk = Array(ids[start..<min(start + 500, ids.count)])
-            let dates = await source.modificationDates(chunk)
-            for id in chunk {
-                guard let date = dates[id], let entry = await index.entry(for: id),
-                      entry.modificationDate == date, case let .failed(reason) = entry.state else { continue }
-                items.append(FailedItem(id: id, reason: reason))
-                if items.count == Self.failedItemLimit { break }
-            }
-            if items.count == Self.failedItemLimit { break }
+        let failed = await currentEntries(where: Self.isFailed)
+        failedItems = failed.prefix(Self.failedItemLimit).compactMap { id, entry in
+            guard case let .failed(reason) = entry.state else { return nil }
+            return FailedItem(id: id, reason: reason)
         }
-        failedItems = items
+    }
+
+    private func refreshDeletedItems() async {
+        guard counts.deletedOnServer > 0 else { deletedItems = []; return }
+        let deleted = await currentEntries(where: Self.isDeletedOnServer).prefix(Self.deletedItemLimit)
+        let known = Dictionary(deletedItems.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let newIDs = deleted.map(\.id).filter { known[$0] == nil }
+        let created = Dictionary(
+            await source.assets(newIDs).map { ($0.id, $0.creationDate) }, uniquingKeysWith: { first, _ in first })
+        var items: [DeletedItem] = []
+        for (id, entry) in deleted {
+            guard case let .deletedOnServer(trashed, gone) = entry.state else { continue }
+            // Every missing copy is in the trash: it can be restored without uploading anything.
+            let isTrashed = !trashed.isEmpty && gone.isEmpty
+            var thumbnail = known[id]?.thumbnail
+            if thumbnail == nil {
+                thumbnail = await source.thumbnailData(id, pixelSide: Self.thumbnailPixelSide)
+            }
+            items.append(DeletedItem(id: id, date: known[id]?.date ?? created[id], isTrashed: isTrashed, thumbnail: thumbnail))
+        }
+        // Newest first; the photos' own order isn't known before their dates are.
+        deletedItems = items.sorted {
+            switch ($0.date, $1.date) {
+            case let (a?, b?) where a != b: a > b
+            case (_?, nil): true
+            case (nil, _?): false
+            default: $0.id < $1.id
+            }
+        }
+    }
+
+    // MARK: - Try Again and Re-upload
+
+    /// Sends failed items back to the queue; they are checked and uploaded by the next run. Never throws:
+    /// a stopped or cancelled retry just leaves them as they were.
+    func retry(_ ids: [String]) async {
+        guard !ids.isEmpty else { return }
+        workingCount += 1
+        defer { workingCount -= 1 }
+        await runner.retryFailed(ids)
+        await uploadsChanged()
+    }
+
+    /// Try Again for every failed item, not just the ones on screen.
+    func retryAll() async {
+        let ids = await currentEntries(where: Self.isFailed).map(\.id)
+        await retry(ids)
+    }
+
+    /// Re-upload for items deleted on the server: copies in the server's trash are restored, missing ones
+    /// are uploaded (see `BackupUploader.reupload`). Failures are shown in `error`, a cancelled one is not.
+    func reupload(_ ids: [String]) async {
+        guard !ids.isEmpty else { return }
+        workingCount += 1
+        defer { workingCount -= 1 }
+        error = nil
+        do {
+            try await runner.reupload(ids)
+        } catch is CancellationError {
+            // The user left the foreground, turned the switch off or signed out: nothing to report.
+        } catch ImmichServiceError.editingOff {
+            error = tr("Turn on Allow Changes in the account menu to restore photos from the server's trash.")
+        } catch {
+            report(error, uploading: true)
+        }
+        await uploadsChanged()
+    }
+
+    /// Re-upload for every item deleted on the server, not just the ones on screen.
+    func reuploadAll() async {
+        let ids = await currentEntries(where: Self.isDeletedOnServer).map(\.id)
+        await reupload(ids)
+    }
+}
+
+// MARK: - Preview data
+
+extension BackupModel {
+    /// For previews: records items as deleted on the server and as failed in the index, then loads, so the
+    /// Deleted on Server and Problems rows and lists have something to show. The first deleted item is in
+    /// the server's trash, the rest are gone for good.
+    func loadPreview(deletedOnServer: Int = 0, problems: Int = 0) async {
+        let index = await ensureIndex()
+        let date = PreviewPhotoLibrary.date
+        for number in 0..<deletedOnServer {
+            let state: BackupState = number % 2 == 0
+                ? .deletedOnServer(trashed: [.photo], gone: [])
+                : .deletedOnServer(trashed: [], gone: [.photo])
+            await index.set(
+                BackupEntry(modificationDate: date, checksums: [.photo: "preview-\(number)"], state: state),
+                for: "preview-\(number)")
+        }
+        let reasons = ["Couldn't read IMG_0012.HEIC: the file is in iCloud", "The server refused IMG_0031.MOV"]
+        for number in 0..<problems {
+            let id = "preview-\(30 + number)"
+            await index.set(
+                BackupEntry(modificationDate: date, checksums: [:], state: .failed(reason: reasons[number % reasons.count])),
+                for: id)
+        }
+        await load()
     }
 }
 
@@ -476,7 +626,7 @@ struct PreviewPhotoLibrary: PhotoLibrarySource {
     var access: PhotoAccess = .full
     var photoCount = 40
 
-    private static let date = Date(timeIntervalSince1970: 1_700_000_000)
+    static let date = Date(timeIntervalSince1970: 1_700_000_000)
 
     private var allIDs: [String] { (0..<photoCount).map { "preview-\($0)" } }
 

@@ -292,7 +292,7 @@
 "Photos over Cellular" = "Bilder over mobilnett";
 "Videos over Cellular" = "Videoer over mobilnett";
 "Photos that exist only in iCloud are checked on Wi-Fi, unless you allow cellular here." = "Bilder som bare finnes i iCloud, sjekkes på Wi-Fi med mindre du tillater mobilnett her.";
-"Uploading comes in a later update." = "Opplasting kommer i en senere oppdatering.";
+"Bloom uploads while the app is open." = "Bloom laster opp mens appen er åpen.";
 "Bloom never deletes photos from your iPhone." = "Bloom sletter aldri bilder fra iPhone.";
 "Photo Access Is Off" = "Tilgang til bilder er av";
 "Allow Bloom to read your photos in Settings so it can check which ones are already on your server." = "Gi Bloom tilgang til bildene dine i Innstillinger, så kan den sjekke hvilke som allerede ligger på serveren.";
@@ -308,3 +308,18 @@
 "Couldn't check your photos: %@" = "Kunne ikke sjekke bildene: %@";
 "This API key can't check backups. Create a key with the View, Organize and Back Up permissions and sign in with it." = "Denne API-nøkkelen kan ikke sjekke sikkerhetskopier. Lag en nøkkel med tillatelsene Se, endre og sikkerhetskopiere, og logg inn med den.";
 "Problems" = "Problemer";
+
+/* Backup: uploading, Deleted on Server, Try Again */
+"Deleted on Server" = "Slettet på serveren";
+"In the Trash" = "I papirkurven";
+"Deleted" = "Slettet";
+"Re-upload" = "Last opp igjen";
+"Re-upload All" = "Last opp alle igjen";
+"Try Again" = "Prøv igjen";
+"Try All Again" = "Prøv alle igjen";
+"Uploading %@ of %@ · %@" = "Laster opp %1$@ av %2$@ · %3$@";
+"Uploading %@ of %@" = "Laster opp %1$@ av %2$@";
+"These photos were on your server and are gone from it. Bloom doesn't upload them again unless you ask." = "Disse bildene lå på serveren, men er ikke der lenger. Bloom laster dem ikke opp igjen med mindre du ber om det.";
+"Nothing Deleted on Server" = "Ingenting slettet på serveren";
+"Turn on Allow Changes in the account menu to restore photos from the server's trash." = "Slå på Tillat endringer i kontomenyen for å hente bilder tilbake fra papirkurven på serveren.";
+"Couldn't back up your photos: %@" = "Kunne ikke sikkerhetskopiere bildene: %@";

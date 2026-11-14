@@ -468,7 +468,8 @@ final class BackupModelTests: XCTestCase {
         XCTAssertGreaterThan(model.counts.failed, 0)
         XCTAssertFalse(model.failedItems.isEmpty)
         XCTAssertEqual(model.failedItems.count, model.counts.failed)
-        XCTAssertEqual(model.counts.total, model.counts.backedUp + model.remaining + model.counts.failed)
+        XCTAssertEqual(model.counts.total,
+                       model.counts.backedUp + model.remaining + model.counts.deletedOnServer + model.counts.failed)
         XCTAssertEqual(model.selectionSummary, "Recents · 1 excluded")
     }
     func testLoadingOnlyListsFailuresForUnchangedExistingAssets() async throws {
@@ -502,4 +503,220 @@ final class BackupModelTests: XCTestCase {
         await model.stop()
     }
 
+    // MARK: Uploads, Deleted on Server, Try Again
+
+    /// An index holding `states` for assets of the fake library, with Recents saved as the selection.
+    private func seededDirectory(
+        _ states: [String: BackupState], serverIDs: [String: [DeviceResourceType: String]] = [:]
+    ) async throws -> URL {
+        let directory = makeDirectory()
+        let index = BackupIndex(directory: directory)
+        for (id, state) in states {
+            await index.set(
+                BackupEntry(modificationDate: Self.date, checksums: [.photo: "sum-\(id)"], state: state,
+                            serverIDs: serverIDs[id] ?? [:]),
+                for: id)
+        }
+        await index.setSelection(BackupSelection(included: ["recents"]))
+        try await index.save()
+        return directory
+    }
+
+    private func trashedAssets(_ ids: [String]) -> [Asset] {
+        ids.map { Asset(id: "srv-\($0)", kind: .image, takenAt: Self.date, isTrashed: true) }
+    }
+
+    func testCountsRowAddsUpWithDeletedOnServer() async throws {
+        let library = makeLibrary(count: 6)
+        library.thumbnails = ["a4": Data("thumb".utf8)]
+        let directory = try await seededDirectory([
+            "a1": .backedUp(serverAssetID: "s1"),
+            "a2": .pending(reason: .needsUpload),
+            "a3": .failed(reason: "Couldn't read a3.jpg"),
+            "a4": .deletedOnServer(trashed: [.photo], gone: []),
+            "a5": .deletedOnServer(trashed: [], gone: [.photo]),
+            "a6": .deletedOnServer(trashed: [.photo], gone: [.pairedVideo]),
+        ])
+        let model = makeModel(library, directory: directory)
+        await model.load()
+
+        let counts = model.counts
+        XCTAssertEqual(counts.deletedOnServer, 3)
+        XCTAssertEqual(counts.total, counts.backedUp + model.remaining + counts.deletedOnServer + counts.failed)
+        XCTAssertEqual(counts.total, 6)
+        XCTAssertEqual(model.deletedItems.count, counts.deletedOnServer)
+        XCTAssertEqual(Set(model.deletedItems.map(\.id)), ["a4", "a5", "a6"])
+        let byID = Dictionary(uniqueKeysWithValues: model.deletedItems.map { ($0.id, $0) })
+        XCTAssertEqual(byID["a4"]?.isTrashed, true, "Every missing half is in the trash")
+        XCTAssertEqual(byID["a5"]?.isTrashed, false)
+        XCTAssertEqual(byID["a6"]?.isTrashed, false, "One half is gone for good")
+        XCTAssertEqual(byID["a4"]?.date, Self.date)
+        XCTAssertEqual(byID["a4"]?.thumbnail, Data("thumb".utf8))
+        XCTAssertNil(byID["a5"]?.thumbnail)
+        await model.stop()
+    }
+
+    func testDeletedListIsLimitedButReuploadAllCoversEveryItem() async throws {
+        let count = BackupModel.deletedItemLimit + 5
+        let ids = (1...count).map { "a\($0)" }
+        let library = makeLibrary(count: count)
+        let service = MockImmichService(library: MockLibrary(assetCount: 1, years: 1))
+        await service.setAssets(trashedAssets(ids))
+        let directory = try await seededDirectory(
+            Dictionary(uniqueKeysWithValues: ids.map { ($0, .deletedOnServer(trashed: [.photo], gone: [])) }),
+            serverIDs: Dictionary(uniqueKeysWithValues: ids.map { ($0, [.photo: "srv-\($0)"]) }))
+        let model = makeModel(library, service: service, directory: directory)
+        await model.load()
+        XCTAssertEqual(model.counts.deletedOnServer, count)
+        XCTAssertEqual(model.deletedItems.count, BackupModel.deletedItemLimit)
+
+        await model.reuploadAll()
+
+        let restored = await service.requests.filter { if case .restoreAssets = $0 { true } else { false } }
+        XCTAssertEqual(Set(restored), Set(ids.map { .restoreAssets("srv-\($0)") }),
+                       "Re-upload All is not limited to the items on screen")
+        XCTAssertEqual(model.counts.deletedOnServer, 0)
+        XCTAssertEqual(model.counts.backedUp, count)
+        XCTAssertTrue(model.deletedItems.isEmpty)
+        XCTAssertNil(model.error)
+        await model.stop()
+    }
+
+    func testReuploadRestoresOnlyTheChosenItems() async throws {
+        let library = makeLibrary(count: 3)
+        let service = MockImmichService(library: MockLibrary(assetCount: 1, years: 1))
+        await service.setAssets(trashedAssets(["a1", "a2", "a3"]))
+        let state = BackupState.deletedOnServer(trashed: [.photo], gone: [])
+        let directory = try await seededDirectory(
+            ["a1": state, "a2": state, "a3": state],
+            serverIDs: ["a1": [.photo: "srv-a1"], "a2": [.photo: "srv-a2"], "a3": [.photo: "srv-a3"]])
+        let model = makeModel(library, service: service, directory: directory)
+        await model.load()
+
+        await model.reupload(["a2"])
+
+        let restored = await service.requests.filter { if case .restoreAssets = $0 { true } else { false } }
+        XCTAssertEqual(restored, [.restoreAssets("srv-a2")])
+        XCTAssertEqual(Set(model.deletedItems.map(\.id)), ["a1", "a3"])
+        XCTAssertEqual(model.counts.backedUp, 1)
+        await model.stop()
+    }
+
+    func testReuploadWithAllowChangesOffAsksToTurnItOn() async throws {
+        let library = makeLibrary(count: 1)
+        let mock = MockImmichService(library: MockLibrary(assetCount: 1, years: 1))
+        await mock.setAssets(trashedAssets(["a1"]))
+        let service = EditGuardedService(base: mock, permission: EditingPermission(isAllowed: false))
+        let directory = try await seededDirectory(
+            ["a1": .deletedOnServer(trashed: [.photo], gone: [])], serverIDs: ["a1": [.photo: "srv-a1"]])
+        let model = BackupModel(
+            source: library, service: service, directory: directory,
+            network: FixedNetwork(isOnCellular: false), defaults: makeDefaults())
+        await model.load()
+
+        await model.reuploadAll()
+
+        XCTAssertEqual(model.error, "Turn on Allow Changes in the account menu to restore photos from the server's trash.")
+        XCTAssertEqual(model.counts.deletedOnServer, 1, "Nothing was restored")
+        await model.stop()
+    }
+
+    func testReuploadCancelledByStopShowsNoError() async throws {
+        let library = makeLibrary(count: 1)
+        let directory = try await seededDirectory(
+            ["a1": .deletedOnServer(trashed: [.photo], gone: [])], serverIDs: ["a1": [.photo: "srv-a1"]])
+        let model = makeModel(library, directory: directory)
+        await model.load()
+        await model.stop()
+
+        await model.reuploadAll()
+
+        XCTAssertNil(model.error)
+    }
+
+    func testRetryAllRequeuesFailedItems() async throws {
+        let count = BackupModel.failedItemLimit + 3
+        let ids = (1...count).map { "a\($0)" }
+        let library = makeLibrary(count: count)
+        let directory = try await seededDirectory(
+            Dictionary(uniqueKeysWithValues: ids.map { ($0, .failed(reason: "Couldn't read \($0).jpg")) }))
+        let model = makeModel(library, directory: directory)
+        await model.load()
+        XCTAssertEqual(model.counts.failed, count)
+        XCTAssertEqual(model.failedItems.count, BackupModel.failedItemLimit)
+
+        await model.retryAll()
+
+        XCTAssertEqual(model.counts.failed, 0, "Try All Again is not limited to the items on screen")
+        XCTAssertEqual(model.remaining, count)
+        XCTAssertTrue(model.failedItems.isEmpty)
+        let saved = BackupIndex(directory: directory)
+        for id in ids {
+            let state = await saved.entry(for: id)?.state
+            XCTAssertEqual(state, .pending(reason: .notChecked), id)
+        }
+        await model.stop()
+    }
+
+    func testRetryRequeuesOnlyTheChosenItem() async throws {
+        let library = makeLibrary(count: 2)
+        let directory = try await seededDirectory(["a1": .failed(reason: "x"), "a2": .failed(reason: "y")])
+        let model = makeModel(library, directory: directory)
+        await model.load()
+
+        await model.retry(["a2"])
+
+        XCTAssertEqual(model.failedItems.map(\.id), ["a1"])
+        XCTAssertEqual(model.counts.failed, 1)
+        XCTAssertEqual(model.remaining, 1)
+        await model.stop()
+    }
+
+    func testTurningOnWithoutAlbumsAsksForAlbums() async {
+        let model = makeModel(makeLibrary())
+        await model.load()
+        XCTAssertFalse(model.needsAlbumChoice)
+
+        model.setBackupEnabled(true)
+
+        XCTAssertTrue(model.settings.isEnabled, "The switch is on; choosing an album starts the first run")
+        XCTAssertTrue(model.needsAlbumChoice)
+        await model.stop()
+    }
+
+    func testTurningOnWithAnAlbumDoesNotAskForAlbums() async {
+        let model = makeModel(makeLibrary())
+        await model.load()
+        model.setSelection(BackupSelection(included: ["recents"]))
+        await model.settle()
+
+        model.setBackupEnabled(true)
+
+        XCTAssertTrue(model.settings.isEnabled)
+        XCTAssertFalse(model.needsAlbumChoice)
+        await model.stop()
+    }
+
+    func testTurningOffNeverAsksForAlbums() async {
+        let model = makeModel(makeLibrary())
+        await model.load()
+        model.setBackupEnabled(false)
+        XCTAssertFalse(model.needsAlbumChoice)
+        await model.stop()
+    }
+
+    func testSwitchPersists() async {
+        let defaults = makeDefaults()
+        let model = makeModel(makeLibrary(), defaults: defaults)
+        XCTAssertFalse(model.settings.isEnabled)
+        model.setBackupEnabled(true)
+        XCTAssertTrue(BackupSettings.load(from: defaults).isEnabled)
+        model.setBackupEnabled(false)
+        XCTAssertFalse(BackupSettings.load(from: defaults).isEnabled)
+        model.setBackupEnabled(true)
+        let reopened = makeModel(makeLibrary(), defaults: defaults)
+        XCTAssertTrue(reopened.settings.isEnabled)
+        await model.stop()
+        await reopened.stop()
+    }
 }

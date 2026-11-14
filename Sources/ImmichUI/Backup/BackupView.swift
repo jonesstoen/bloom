@@ -4,14 +4,16 @@ import SwiftUI
 import UIKit
 #endif
 
-/// Backup: how many photos are on the server already, which album choices steer that, and the
-/// button to check again. Present it inside a `NavigationStack`.
+/// Backup: the switch that uploads while the app is open, how many photos are on the server already,
+/// which album choices steer that, the photos deleted on the server, and the button to check again.
+/// Present it inside a `NavigationStack`.
 struct BackupView: View {
     let model: BackupModel
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
 
     var body: some View {
+        @Bindable var model = model
         List {
             switch model.access {
             case .denied:
@@ -24,11 +26,12 @@ struct BackupView: View {
                 content
             }
             Section {} footer: {
-                // Phase 1 only reads. Reword once uploading exists.
-                Text(tr("Uploading comes in a later update.") + "\n" + tr("Bloom never deletes photos from your iPhone."))
+                Text(tr("Bloom uploads while the app is open.") + "\n" + tr("Bloom never deletes photos from your iPhone."))
             }
         }
         .navigationTitle(tr("Backup"))
+        // Turning the switch on before choosing albums opens the picker; popping it clears the flag.
+        .navigationDestination(isPresented: $model.needsAlbumChoice) { BackupAlbumPicker(model: model) }
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
@@ -47,8 +50,10 @@ struct BackupView: View {
     }
 
     @ViewBuilder private var content: some View {
+        switchSection
         albumsSection
         BackupCountsSection(model: model)
+        BackupUploadSection(model: model)
         BackupCheckSection(model: model)
         BackupFailedItemsSection(model: model)
         cellularSection
@@ -95,6 +100,14 @@ struct BackupView: View {
 
     // MARK: Sections
 
+    private var switchSection: some View {
+        Section {
+            Toggle(tr("Backup"), isOn: Binding(
+                get: { model.settings.isEnabled },
+                set: { model.setBackupEnabled($0) }))
+        }
+    }
+
     private var albumsSection: some View {
         Section {
             NavigationLink {
@@ -136,7 +149,14 @@ private struct BackupCountsSection: View {
                     }
                 }
             }
-            // So that Total always equals On Server + Remaining + Problems.
+            if model.counts.deletedOnServer > 0 {
+                NavigationLink {
+                    BackupDeletedOnServerList(model: model)
+                } label: {
+                    LabeledContent(tr("Deleted on Server")) { count(model.counts.deletedOnServer) }
+                }
+            }
+            // So that Total always equals On Server + Remaining + Deleted on Server + Problems.
             if model.counts.failed > 0 {
                 LabeledContent(tr("Problems")) { count(model.counts.failed) }
             }
@@ -147,6 +167,43 @@ private struct BackupCountsSection: View {
         Text(value, format: .number)
             .monospacedDigit()
             .foregroundStyle(.secondary)
+    }
+}
+
+/// "Uploading 4 of 15 · IMG_1234.HEIC" while an upload run goes. Progress changes only rebuild this section.
+private struct BackupUploadSection: View {
+    let model: BackupModel
+
+    var body: some View {
+        if let progress = model.runner.uploadProgress {
+            Section {
+                BackupUploadRow(progress: progress)
+            }
+        }
+    }
+}
+
+private struct BackupUploadRow: View {
+    let progress: UploadProgress
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(text)
+                .monospacedDigit()
+                .lineLimit(1)
+                .truncationMode(.middle)
+            ProgressView(value: Double(progress.done), total: Double(max(progress.total, 1)))
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var text: String {
+        // `done` counts finished items: with a file in flight, that is the next one.
+        let current = progress.currentFilename == nil ? progress.done : min(progress.done + 1, progress.total)
+        let done = current.formatted(.number.locale(Localization.locale))
+        let total = progress.total.formatted(.number.locale(Localization.locale))
+        guard let filename = progress.currentFilename else { return tr("Uploading %@ of %@", done, total) }
+        return tr("Uploading %@ of %@ · %@", done, total, filename)
     }
 }
 
@@ -193,10 +250,18 @@ private struct BackupFailedItemsSection: View {
         if !model.failedItems.isEmpty {
             Section {
                 ForEach(model.failedItems) { item in
-                    Label(item.reason, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.primary)
-                        .symbolRenderingMode(.multicolor)
+                    HStack(spacing: 12) {
+                        Label(item.reason, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.primary)
+                            .symbolRenderingMode(.multicolor)
+                        Spacer(minLength: 8)
+                        Button(tr("Try Again")) { Task { await model.retry([item.id]) } }
+                            .buttonStyle(.borderless)
+                            .disabled(model.isWorking)
+                    }
                 }
+                Button(tr("Try All Again")) { Task { await model.retryAll() } }
+                    .disabled(model.isWorking)
             } header: {
                 Text(tr("Items with Problems"))
             } footer: {
@@ -223,11 +288,24 @@ private struct BackupFailedItemsSection: View {
 #Preview("Backup problems") {
     let model = BackupModel.preview(selected: ["recents"])
     List { BackupFailedItemsSection(model: model) }
-        .task { await model.load() }
+        .task { await model.loadPreview(problems: 2) }
+}
+
+#Preview("Backup uploading") {
+    List {
+        Section { BackupUploadRow(progress: UploadProgress(done: 3, total: 15, currentFilename: "IMG_1234.HEIC")) }
+        Section { BackupUploadRow(progress: UploadProgress(done: 4, total: 15, currentFilename: nil)) }
+    }
 }
 
 #Preview("Backup") {
     NavigationStack { BackupView(model: .preview(selected: ["recents"], excluded: ["screenshots"])) }
+}
+
+#Preview("Backup, deleted on server and problems") {
+    let model = BackupModel.preview(selected: ["recents"], excluded: ["screenshots"])
+    NavigationStack { BackupView(model: model) }
+        .task { await model.loadPreview(deletedOnServer: 3, problems: 2) }
 }
 
 #Preview("Backup, first setup") {
