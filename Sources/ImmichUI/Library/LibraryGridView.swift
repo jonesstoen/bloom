@@ -186,6 +186,9 @@ public struct LibraryGridView: View {
             }
             #endif
             .task {
+                // A grid rebuilt while its viewer was up (the scene was torn down) never gets the cover's
+                // onDismiss: without this, deferred refreshes would wait for a viewer that is gone.
+                if viewerItem == nil, model.isViewerOpen { model.viewerPresentationChanged(isOpen: false) }
                 if usesLargeTitle, let stored = GridDensity(rawValue: storedColumns) { model.density = stored }
                 // Resolve saved sort/filter choices before a fast disk restore can expose
                 // the default library partition. The separate task still handles later changes.
