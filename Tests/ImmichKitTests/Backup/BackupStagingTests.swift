@@ -5,6 +5,46 @@ private struct StagingReadFailure: Error, LocalizedError {
     var errorDescription: String? { "disk on fire" }
 }
 
+/// A photo library whose `read` waits at a gate (cancellably) before handing out its data, so a test
+/// can hold several `stageBody` calls in the middle of their read. Everything else is the fake.
+private final class GatedLibrary: PhotoLibrarySource, @unchecked Sendable {
+    let inner = FakePhotoLibrary()
+    private let lock = NSLock()
+    private var isOpen = false
+    private var arrivals = 0
+
+    func open() { lock.withLock { isOpen = true } }
+    var readCount: Int { lock.withLock { arrivals } }
+
+    /// Returns once `count` reads have started.
+    func waitForReads(_ count: Int) async throws {
+        for _ in 0..<2000 {
+            if lock.withLock({ arrivals }) >= count { return }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTFail("Timed out waiting for \(count) reads")
+    }
+
+    func read(_ resource: DeviceResource, of assetID: String, allowNetwork: Bool,
+              onData: @escaping @Sendable (Data) -> Void) async throws {
+        lock.withLock { arrivals += 1 }
+        while !lock.withLock({ isOpen }) {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try await inner.read(resource, of: assetID, allowNetwork: allowNetwork, onData: onData)
+    }
+
+    func authorization() async -> PhotoAccess { await inner.authorization() }
+    func requestAuthorization() async -> PhotoAccess { await inner.requestAuthorization() }
+    func albums() async -> [DeviceAlbum] { await inner.albums() }
+    func assetIDs(inAlbum id: String) async -> Set<String> { await inner.assetIDs(inAlbum: id) }
+    func asset(_ id: String) async -> DeviceAsset? { await inner.asset(id) }
+    func assets(_ ids: [String]) async -> [DeviceAsset] { await inner.assets(ids) }
+    func modificationDates(_ ids: [String]) async -> [String: Date] { await inner.modificationDates(ids) }
+    func changes() -> AsyncStream<Void> { inner.changes() }
+    func thumbnailData(_ id: String, pixelSide: Int) async -> Data? { await inner.thumbnailData(id, pixelSide: pixelSide) }
+}
+
 /// Hands out a scripted series of free-space answers, then the last one again.
 private final class Counter: @unchecked Sendable {
     private let lock = NSLock()
@@ -308,10 +348,10 @@ final class BackupStagingTests: XCTestCase {
         let photo = DeviceResource(type: .photo, filename: "IMG_9.HEIC")
         let data = Data(repeating: 3, count: 100)
         library.setData([data], for: photo)
-        // Budget 1_000 bytes with a 600-byte estimate: the first body fits (nothing staged yet), the
-        // second would take the total past the limit.
+        // The estimate (600) fits the budget (700) alone; the first body's bytes on disk plus another
+        // estimate don't.
         let staging = BackupStaging(directory: directory, freeSpace: { Self.plenty }, recheckInterval: 1024,
-                                    budget: 1_000, estimate: { _, _ in 600 })
+                                    budget: 700, estimate: { _, _ in 600 })
 
         let first = try await staging.stageBody(photo, of: asset([photo]), from: library, allowNetwork: false,
                                                 fields: fields(), expectedChecksum: checksum(data))
@@ -324,13 +364,105 @@ final class BackupStagingTests: XCTestCase {
             XCTAssertEqual(error, .overBudget)
         }
         XCTAssertEqual(library.reads.count, readsBefore, "Nothing is read when the budget is used up")
-        XCTAssertEqual(contents(of: directory), [first.bodyFile.lastPathComponent])
+        XCTAssertEqual(contents(of: directory), [first.bodyFile.lastPathComponent], "The refused body leaves no file")
 
         // Once the first body is recorded and removed, there is room again.
         staging.remove(first.bodyFile)
         let again = try await staging.stageBody(photo, of: asset([photo]), from: library, allowNetwork: false,
                                                 fields: fields(), expectedChecksum: checksum(data))
         staging.remove(again.bodyFile)
+    }
+
+    /// The positive case: a second body that fits next to the first is staged.
+    func testBudgetAllowsBodiesThatFitTogether() async throws {
+        let directory = makeDirectory()
+        let library = FakePhotoLibrary()
+        let photo = DeviceResource(type: .photo, filename: "IMG_9.HEIC")
+        let data = Data(repeating: 3, count: 100)
+        library.setData([data], for: photo)
+        let staging = BackupStaging(directory: directory, freeSpace: { Self.plenty }, recheckInterval: 1024,
+                                    budget: 10_000, estimate: { _, _ in 600 })
+
+        let first = try await staging.stageBody(photo, of: asset([photo]), from: library, allowNetwork: false,
+                                                fields: fields(), expectedChecksum: checksum(data))
+        let second = try await staging.stageBody(photo, of: asset([photo]), from: library, allowNetwork: false,
+                                                 fields: fields(), expectedChecksum: checksum(data))
+        XCTAssertEqual(contents(of: directory).count, 2)
+        XCTAssertNotEqual(first.bodyFile, second.bodyFile)
+    }
+
+    /// `stageBody` is reentrant at the photo library read: a second body started while the first is
+    /// still being read must count the first's reserved estimate, not just the bytes on disk so far.
+    func testConcurrentBodiesCountEachOthersReservations() async throws {
+        let directory = makeDirectory()
+        let library = GatedLibrary()
+        let photo = DeviceResource(type: .photo, filename: "IMG_9.HEIC")
+        let data = Data(repeating: 3, count: 100)
+        library.inner.setData([data], for: photo)
+        // The first body has only its header (a few hundred bytes) on disk while it waits, so a check
+        // that looks at the disk alone would let the second through: 500 + 5000 < 6000.
+        let staging = BackupStaging(directory: directory, freeSpace: { Self.plenty }, recheckInterval: 1024,
+                                    budget: 6_000, estimate: { _, _ in 5_000 })
+
+        let first = Task {
+            try await staging.stageBody(photo, of: self.asset([photo]), from: library, allowNetwork: false,
+                                        fields: self.fields(), expectedChecksum: self.checksum(data))
+        }
+        try await library.waitForReads(1)
+        let second = Task {
+            try await staging.stageBody(photo, of: self.asset([photo]), from: library, allowNetwork: false,
+                                        fields: self.fields(), expectedChecksum: self.checksum(data))
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(library.readCount, 1, "The second body is refused before it reads anything")
+        library.open() // so a wrongly accepted second body finishes instead of hanging the test
+        do {
+            _ = try await second.value
+            XCTFail("Expected overBudget: 5000 reserved + 5000 estimated > 6000")
+        } catch let error as BackupStagingError {
+            XCTAssertEqual(error, .overBudget)
+        }
+        let staged = try await first.value
+        XCTAssertEqual(contents(of: directory), [staged.bodyFile.lastPathComponent])
+    }
+
+    func testConcurrentBodiesThatFitTogetherAreBothStaged() async throws {
+        let directory = makeDirectory()
+        let library = GatedLibrary()
+        let photo = DeviceResource(type: .photo, filename: "IMG_9.HEIC")
+        let data = Data(repeating: 3, count: 100)
+        library.inner.setData([data], for: photo)
+        let staging = BackupStaging(directory: directory, freeSpace: { Self.plenty }, recheckInterval: 1024,
+                                    budget: 10_500, estimate: { _, _ in 5_000 })
+
+        let tasks = (0..<2).map { _ in
+            Task {
+                try await staging.stageBody(photo, of: self.asset([photo]), from: library, allowNetwork: false,
+                                            fields: self.fields(), expectedChecksum: self.checksum(data))
+            }
+        }
+        try await library.waitForReads(2)
+        library.open()
+        let first = try await tasks[0].value
+        let second = try await tasks[1].value
+        XCTAssertNotEqual(first.bodyFile, second.bodyFile)
+        XCTAssertEqual(contents(of: directory).count, 2)
+    }
+
+    /// A leftover of an earlier run counts as bytes, but doesn't stop a body larger than the budget.
+    func testOrphanDoesNotBlockAnOversizedBody() async throws {
+        let directory = makeDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("orphan".utf8).write(to: directory.appendingPathComponent("old.multipart"))
+        let library = FakePhotoLibrary()
+        let video = DeviceResource(type: .video, filename: "IMG_9.MOV")
+        let data = Data(repeating: 3, count: 100)
+        library.setData([data], for: video)
+        let staging = BackupStaging(directory: directory, freeSpace: { Self.plenty }, recheckInterval: 1024,
+                                    budget: 10, estimate: { _, _ in 600 })
+        let staged = try await staging.stageBody(video, of: asset([video], isVideo: true), from: library,
+                                                 allowNetwork: false, fields: fields(), expectedChecksum: checksum(data))
+        staging.remove(staged.bodyFile)
     }
 
     /// A body larger than the whole budget still goes through when nothing else is staged,
@@ -371,6 +503,118 @@ final class BackupStagingTests: XCTestCase {
         await staging.removeUnreferenced(keeping: [])
         XCTAssertEqual(contents(of: directory), [])
         await staging.removeUnreferenced(keeping: []) // a missing or empty folder is fine
+    }
+
+    /// Cleanup that runs while a body is being written leaves that body alone.
+    func testRemoveUnreferencedSkipsABodyBeingWritten() async throws {
+        let directory = makeDirectory()
+        let library = GatedLibrary()
+        let photo = DeviceResource(type: .photo, filename: "IMG_9.HEIC")
+        let data = Data("pixels".utf8)
+        library.inner.setData([data], for: photo)
+        let staging = BackupStaging(directory: directory, freeSpace: { Self.plenty })
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("orphan".utf8).write(to: directory.appendingPathComponent("old.multipart"))
+
+        let task = Task {
+            try await staging.stageBody(photo, of: self.asset([photo]), from: library, allowNetwork: false,
+                                        fields: self.fields(), expectedChecksum: self.checksum(data))
+        }
+        try await library.waitForReads(1)
+        XCTAssertEqual(contents(of: directory).count, 2)
+
+        await staging.removeUnreferenced(keeping: [])
+
+        XCTAssertEqual(contents(of: directory).count, 1, "The orphan goes, the body being written stays")
+        library.open()
+        let staged = try await task.value
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staged.bodyFile.path))
+        XCTAssertEqual(contents(of: directory), [staged.bodyFile.lastPathComponent])
+        let text = String(decoding: try Data(contentsOf: staged.bodyFile), as: UTF8.self)
+        XCTAssertTrue(text.contains("pixels"), "The body is complete")
+    }
+
+    /// Cancelling the task stops the read and leaves no file and no reservation behind.
+    func testCancellingMidBodyLeavesNoFile() async throws {
+        let directory = makeDirectory()
+        let library = GatedLibrary()
+        let photo = DeviceResource(type: .photo, filename: "IMG_9.HEIC")
+        let data = Data("pixels".utf8)
+        library.inner.setData([data], for: photo)
+        let staging = BackupStaging(directory: directory, freeSpace: { Self.plenty }, recheckInterval: 1024,
+                                    budget: 700, estimate: { _, _ in 600 })
+
+        let task = Task {
+            try await staging.stageBody(photo, of: self.asset([photo]), from: library, allowNetwork: false,
+                                        fields: self.fields(), expectedChecksum: self.checksum(data))
+        }
+        try await library.waitForReads(1)
+        XCTAssertEqual(contents(of: directory).count, 1)
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancellation")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "\(error)")
+        }
+        XCTAssertEqual(contents(of: directory), [])
+
+        // The reservation is gone too: a body that needs the whole budget is staged now.
+        library.open()
+        let again = try await staging.stageBody(photo, of: asset([photo]), from: library, allowNetwork: false,
+                                                fields: fields(), expectedChecksum: checksum(data))
+        staging.remove(again.bodyFile)
+    }
+
+    /// Exact bytes of a hidden motion half, as the upload would send them.
+    func testHiddenBodyMatchesTheFixtureByteForByte() async throws {
+        let directory = makeDirectory()
+        let library = FakePhotoLibrary()
+        let motion = DeviceResource(type: .pairedVideo, filename: "IMG_9.MOV")
+        let bytes = Data([0x01, 0xFF, 0x42])
+        library.setData([bytes], for: motion)
+        let staging = BackupStaging(directory: directory, freeSpace: { Self.plenty })
+        let hiddenFields = MultipartFields(
+            filename: "IMG_9.MOV", mimeType: "video/quicktime", createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            modifiedAt: Date(timeIntervalSince1970: 1_700_000_100.5), isFavorite: false, duration: 1.5,
+            livePhotoVideoID: nil, hidden: true)
+
+        let staged = try await staging.stageBody(
+            motion, of: asset([motion]), from: library, allowNetwork: false, fields: hiddenFields,
+            expectedChecksum: checksum(bytes))
+
+        func field(_ name: String, _ value: String) -> String {
+            "--\(staged.boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n"
+        }
+        var expected = Data()
+        expected.append(Data(field("fileCreatedAt", "2023-11-14T22:13:20.000Z").utf8))
+        expected.append(Data(field("fileModifiedAt", "2023-11-14T22:15:00.500Z").utf8))
+        expected.append(Data(field("filename", "IMG_9.MOV").utf8))
+        expected.append(Data(field("isFavorite", "false").utf8))
+        expected.append(Data(field("duration", "1500").utf8))
+        expected.append(Data(field("visibility", "hidden").utf8))
+        expected.append(Data(("--\(staged.boundary)\r\nContent-Disposition: form-data; name=\"assetData\"; "
+            + "filename=\"IMG_9.MOV\"\r\nContent-Type: video/quicktime\r\n\r\n").utf8))
+        expected.append(bytes)
+        expected.append(Data("\r\n--\(staged.boundary)--\r\n".utf8))
+        XCTAssertEqual(try Data(contentsOf: staged.bodyFile), expected)
+    }
+
+    /// The body is kept out of device backups. (The file-protection class
+    /// `.completeUntilFirstUserAuthentication` is set on iOS only and can't be read back on macOS.)
+    func testBodyIsExcludedFromBackup() async throws {
+        let directory = makeDirectory()
+        let library = FakePhotoLibrary()
+        let photo = DeviceResource(type: .photo, filename: "IMG_9.HEIC")
+        library.setData([Data("x".utf8)], for: photo)
+        let staging = BackupStaging(directory: directory, freeSpace: { Self.plenty })
+
+        let staged = try await staging.stageBody(
+            photo, of: asset([photo]), from: library, allowNetwork: false, fields: fields(),
+            expectedChecksum: checksum(Data("x".utf8)))
+
+        let values = try staged.bodyFile.resourceValues(forKeys: [.isExcludedFromBackupKey])
+        XCTAssertEqual(values.isExcludedFromBackup, true)
     }
 
     func testFailedBodyReadRethrowsAndLeavesNoFile() async throws {

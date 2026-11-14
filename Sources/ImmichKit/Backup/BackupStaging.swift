@@ -46,6 +46,12 @@ public actor BackupStaging {
     private let freeSpace: @Sendable () -> Int64
     private let recheckInterval: Int64
     private let budget: Int64
+    /// Bodies being written right now, with the size reserved for each (the estimate). `stageBody` is
+    /// reentrant at the photo library read, so the budget check can't rely on what is on disk yet.
+    private var reservations: [URL: Int64] = [:]
+    /// Bodies this actor finished and handed out, and the files the last `removeUnreferenced` kept: the
+    /// ones that really are staged-but-unrecorded uploads. Anything else in the folder is a leftover.
+    private var referenced: Set<String> = []
     private let estimate: @Sendable (DeviceResource, DeviceAsset) -> Int64
 
     /// `freeSpace` gives the bytes available on the volume of `directory`
@@ -118,7 +124,9 @@ public actor BackupStaging {
     ///
     /// Throws, with no file left: `notEnoughSpace` (needs room for the body once plus `margin`; checked
     /// again while a larger file is written), `overBudget` (the unrecorded bodies already staged plus this
-    /// one would pass the budget; a body is always allowed when nothing else is staged),
+    /// one, and the bodies being staged at the same time, would pass the budget; a body is always allowed
+    /// when no other body is being staged and none is waiting for its upload, else a video larger than the
+    /// whole budget could never be backed up),
     /// `checksumMismatch` (the bytes don't hash to `expectedChecksum`), read errors
     /// (`PhotoLibraryReadError.needsNetwork` among them) and cancellation.
     public func stageBody(
@@ -127,8 +135,6 @@ public actor BackupStaging {
     ) async throws -> (bodyFile: URL, boundary: String) {
         let expected = max(estimate(resource, asset), 0)
         guard freeSpace() >= expected + Self.margin else { throw BackupStagingError.notEnoughSpace }
-        let used = stagedBytes()
-        if used > 0, used + expected > budget { throw BackupStagingError.overBudget }
 
         try Self.createDirectory(directory)
         let boundary = "bloom-\(UUID().uuidString)"
@@ -140,11 +146,21 @@ public actor BackupStaging {
         guard FileManager.default.createFile(atPath: url.path, contents: nil, attributes: attributes) else {
             throw CocoaError(.fileWriteUnknown)
         }
+        // The budget check and the reservation happen in one synchronous stretch (no await between), so
+        // two bodies started together can't both see the same free budget.
+        let taken = stagedBytes()
+        if !taken.exempt, taken.bytes + expected > budget {
+            remove(url)
+            throw BackupStagingError.overBudget
+        }
+        reservations[url] = expected
+        defer { reservations[url] = nil }
         do {
             // Staged bodies are rebuilt from the photo library if lost; no reason to put them in a backup.
             var excluded = URLResourceValues()
             excluded.isExcludedFromBackup = true
             var mutableURL = url
+            // `try?`: a file system without the flag only loses an optimisation, the upload still works.
             try? mutableURL.setResourceValues(excluded)
 
             let sink = try StagingSink(
@@ -161,6 +177,7 @@ public actor BackupStaging {
             try Task.checkCancellation()
             let checksum = try sink.finish(suffix: MultipartBody.suffix(boundary: boundary))
             guard checksum == expectedChecksum else { throw BackupStagingError.checksumMismatch }
+            referenced.insert(url.lastPathComponent)
             return (url, boundary)
         } catch {
             remove(url)
@@ -188,15 +205,21 @@ public actor BackupStaging {
 
     /// Removes every file in the staging folder that isn't in `keeping`: leftovers from an app that was
     /// stopped mid-staging, and bodies whose upload no longer exists. Pass the body files of the
-    /// uploads still recorded or in flight; never removes those.
+    /// uploads still recorded or in flight; never removes those. Never removes a body that is being
+    /// written by `stageBody` either. A body `stageBody` has returned must be recorded in the index (or
+    /// be in `keeping`) before the next cleanup, or the cleanup deletes it.
     public func removeUnreferenced(keeping: Set<URL>) {
         let directoryPath = directory.standardizedFileURL.path
         // Only files directly in the staging folder count as kept; same name elsewhere doesn't.
         let kept = Set(keeping.filter {
             $0.standardizedFileURL.deletingLastPathComponent().path == directoryPath
         }.map { $0.standardizedFileURL.lastPathComponent })
+        let writing = Set(reservations.keys.map(\.lastPathComponent))
         let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
-        for name in names where !kept.contains(name) { remove(directory.appendingPathComponent(name)) }
+        for name in names where !kept.contains(name) && !writing.contains(name) {
+            remove(directory.appendingPathComponent(name))
+        }
+        referenced = kept
     }
 
     /// Empties the staging folder: staged files and any upload bodies left behind by an app that was
@@ -204,6 +227,7 @@ public actor BackupStaging {
     public func removeAll() {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
         for name in names { remove(directory.appendingPathComponent(name)) }
+        referenced = []
     }
 
     /// Free bytes on the volume holding `directory` (or its nearest existing parent), as iOS counts
@@ -234,14 +258,25 @@ public actor BackupStaging {
 
     // MARK: - Helpers
 
-    /// Bytes the files in the staging folder take now (bodies being written count as far as they got).
-    private func stagedBytes() -> Int64 {
-        let urls = (try? FileManager.default.contentsOfDirectory(
-            at: directory, includingPropertiesForKeys: [.fileSizeKey], options: [])) ?? []
-        return urls.reduce(0) { total, url in
-            total + Int64((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+    /// What the staging folder takes against the budget: for each file the larger of its size on disk
+    /// and its reservation (a body still being written counts at least its estimate). `exempt` is true
+    /// when nothing else is being written and no finished, unrecorded body is waiting, so a body larger
+    /// than the budget can still go through; leftovers of an earlier run count as bytes but don't block it.
+    private func stagedBytes() -> (bytes: Int64, exempt: Bool) {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        var total: Int64 = 0
+        var waiting = false
+        for name in names {
+            let url = directory.appendingPathComponent(name)
+            let size = Int64((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+            total += max(size, reservations[url] ?? 0)
+            if referenced.contains(name) { waiting = true }
         }
+        referenced.formIntersection(names)
+        return (total, reservations.isEmpty && !waiting)
     }
+
+    // MARK: - Estimates
 
     static func estimate(_ resource: DeviceResource, of asset: DeviceAsset) -> Int64 {
         switch resource.type {
