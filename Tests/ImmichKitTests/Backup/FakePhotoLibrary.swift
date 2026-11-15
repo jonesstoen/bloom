@@ -26,6 +26,9 @@ final class FakePhotoLibrary: PhotoLibrarySource, @unchecked Sendable {
     private var _dateLookups: [Int] = []
     private var _thumbnails: [String: Data] = [:]
     private var _changeListeners: [UUID: AsyncStream<Void>.Continuation] = [:]
+    private var _currentToken: Data?
+    private var _changesSince: [Data: (ids: Set<String>, token: Data)] = [:]
+    private var _tokenRequests: [Data?] = []
 
     /// `accessAfterRequest` is what the user answers when asked (used when `access` is `.notDetermined`).
     init(access: PhotoAccess = .full, accessAfterRequest: PhotoAccess = .full) {
@@ -80,6 +83,17 @@ final class FakePhotoLibrary: PhotoLibrarySource, @unchecked Sendable {
         let listeners = lock.withLock { Array(_changeListeners.values) }
         for listener in listeners { listener.yield() }
     }
+
+    /// The library's current change token: what `changedAssetIDs(since:)` hands out for a full scan.
+    func setCurrentChangeToken(_ token: Data?) { lock.withLock { _currentToken = token } }
+
+    /// Since `token`, the assets `ids` changed and the next token is `next`. Any other token counts as expired.
+    func setChanges(since token: Data, ids: Set<String>, next: Data) {
+        lock.withLock { _changesSince[token] = (ids, next) }
+    }
+
+    /// The tokens `changedAssetIDs(since:)` was called with, in order.
+    var changeTokenRequests: [Data?] { lock.withLock { _tokenRequests } }
 
     // PhotoLibrarySource
 
@@ -140,4 +154,14 @@ final class FakePhotoLibrary: PhotoLibrarySource, @unchecked Sendable {
     }
 
     func thumbnailData(_ id: String, pixelSide: Int) async -> Data? { lock.withLock { _thumbnails[id] } }
+
+    /// Like PhotoKit: a known token gives its changes, no token or an unknown (expired) one gives nil IDs and
+    /// the current token.
+    func changedAssetIDs(since token: Data?) async -> (ids: Set<String>?, token: Data?) {
+        lock.withLock {
+            _tokenRequests.append(token)
+            guard let token, let changes = _changesSince[token] else { return (nil, _currentToken) }
+            return (changes.ids, changes.token)
+        }
+    }
 }

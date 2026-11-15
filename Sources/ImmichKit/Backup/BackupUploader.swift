@@ -82,6 +82,34 @@ public struct BackupUploadConnection: Sendable {
     }
 }
 
+/// How an upload run goes: with the app open it waits for its results (and retries within the run); a
+/// background task enqueues what it may and returns, leaving the results to the session's delegate wakes.
+public struct BackupRunOptions: Sendable, Equatable {
+    /// Returns once every item has its result (`true`), or as soon as nothing more can be enqueued right now.
+    public var waitsForResults: Bool
+    /// Upload jobs on the transport at once.
+    public var maxInFlight: Int
+    /// The background refresh: only items `BackupRefreshPolicy` allows, staged without iCloud downloads; an
+    /// item only in iCloud is left as it is.
+    public var smallLocalOnly: Bool
+
+    public init(waitsForResults: Bool, maxInFlight: Int, smallLocalOnly: Bool) {
+        self.waitsForResults = waitsForResults
+        self.maxInFlight = max(1, maxInFlight)
+        self.smallLocalOnly = smallLocalOnly
+    }
+
+    /// The app is open: a few uploads at a time, results waited for.
+    public static let foreground = BackupRunOptions(
+        waitsForResults: true, maxInFlight: BackupUploader.maxInFlight, smallLocalOnly: false)
+    /// The nightly processing task (on power): enqueues as much as the staging budget allows and returns. The
+    /// staging budget (2 GB of bodies) is the real limit; the job cap only keeps a backlog of small photos from
+    /// handing the session thousands of tasks in one go.
+    public static let processing = BackupRunOptions(waitsForResults: false, maxInFlight: 64, smallLocalOnly: false)
+    /// The short refresh task: a few small, already-local photos, enqueued, and return.
+    public static let refresh = BackupRunOptions(waitsForResults: false, maxInFlight: 6, smallLocalOnly: true)
+}
+
 /// Hands the selected items the server doesn't have to the transport, newest first, and links Live Photos.
 ///
 /// Each item is re-read from the photo library and staged resource by resource, straight into its upload
@@ -197,11 +225,16 @@ public actor BackupUploader {
     /// Before it stages anything the transport has finished starting up (`BackupTransport.inFlight()`), and
     /// before it enqueues it checks that the server answers at its own address (`preflight`).
     ///
+    /// `options` (default `.foreground`, as described above): a background run (`waitsForResults == false`)
+    /// stages and enqueues up to its own in-flight limit and the staging budget, then returns without
+    /// waiting for any result, back-off or room in the budget.
+    ///
     /// Throws `ImmichServiceError.unauthorized` (and other errors no item can get past, also when an upload's
     /// result says so), `BackupStagingError.notEnoughSpace` after failing the item, and
     /// `BackupTransportError.redirectBlocked`; cancellation removes the body being staged and rethrows. The
     /// index is saved after each item. A second call while a run (or a `reupload`) is going returns at once.
     public func run(
+        options: BackupRunOptions = .foreground,
         progress: @escaping @Sendable (UploadProgress) -> Void,
         shouldPause: @escaping @Sendable () async -> Bool
     ) async throws {
@@ -220,7 +253,7 @@ public actor BackupUploader {
         _ = await transport.inFlight()
         await clampRetryTimes()
 
-        let (candidates, waits) = try await queuedItems()
+        let (candidates, waits) = try await queuedItems(smallLocalOnly: options.smallLocalOnly)
         var queue = candidates
         var queued = Set(queue.map(\.id))
         let total = queue.count
@@ -280,10 +313,10 @@ public actor BackupUploader {
                let position = queue.firstIndex(where: { !busy.contains($0.id) && (notBefore[$0.id] ?? .distantPast) <= now }) {
                 let item = queue[position]
                 // In order: a Live Photo that doesn't fit waits for room rather than letting the next one go.
-                if active.isEmpty || active.count + item.resourceCount <= Self.maxInFlight {
+                if active.isEmpty || active.count + item.resourceCount <= options.maxInFlight {
                     if let error = signal.takeStop() { throw await stopping(error, transport) }
                     report(item.filename)
-                    switch try await attempt(item.id, connection: connection) {
+                    switch try await attempt(item.id, connection: connection, smallLocalOnly: options.smallLocalOnly) {
                     case .finished:
                         queue.remove(at: position)
                         queued.remove(item.id)
@@ -307,7 +340,9 @@ public actor BackupUploader {
                 }
             }
 
-            // Nothing can start now: wait for a result, the end of a back-off or hold, or a nudge.
+            // Nothing can start now. A background run is done here: what it enqueued finishes without it.
+            guard options.waitsForResults else { break }
+            // Wait for a result, the end of a back-off or hold, or a nudge.
             let ends = queue.compactMap { item -> Date? in
                 guard !busy.contains(item.id) else { return nil }
                 return max(notBefore[item.id] ?? now, held ? holdUntil ?? now : now)
@@ -329,7 +364,9 @@ public actor BackupUploader {
     /// network and the cellular switches are read once: queued items not allowed are marked waiting for
     /// Wi-Fi in one pass, with one index save, instead of one by one (`attempt` still checks each item, as
     /// the network can change).
-    private func queuedItems() async throws -> ([Candidate], [String: (until: Date, holdsRun: Bool)]) {
+    private func queuedItems(
+        smallLocalOnly: Bool = false
+    ) async throws -> ([Candidate], [String: (until: Date, holdsRun: Bool)]) {
         let ids = await index.selection().assetIDs(in: source)
         let now = clock.date()
         let queued = await index.entries(where: { Self.isQueued($0.state) && !Self.isGivenUp($0.retry, at: now) },
@@ -347,6 +384,7 @@ public actor BackupUploader {
                 guard let entry = entries[asset.id] else { continue }
                 let resources = BackupResourcePolicy.upload(from: asset.resources)
                 guard let main = resources.first else { continue }
+                if smallLocalOnly, !BackupRefreshPolicy.allows(asset) { continue }
                 let waiting = entry.state == .pending(reason: .waitingForWiFi)
                 if waiting, !Self.hasChecksums(entry, for: resources) { continue }
                 if onCellular == nil { onCellular = await network.isOnCellular }
@@ -460,7 +498,9 @@ public actor BackupUploader {
 
     /// One attempt at one item: sends the resources the server doesn't have, or links a Live Photo whose
     /// halves are both there, or finds it done.
-    private func attempt(_ id: String, connection: BackupUploadConnection) async throws -> Attempt {
+    private func attempt(
+        _ id: String, connection: BackupUploadConnection, smallLocalOnly: Bool = false
+    ) async throws -> Attempt {
         let transport = connection.transport
         guard let entry = await index.entry(for: id), Self.isQueued(entry.state),
               let asset = await source.asset(id) else { return .finished }
@@ -504,10 +544,13 @@ public actor BackupUploader {
             let body: (bodyFile: URL, boundary: String)
             do {
                 body = try await staging.stageBody(
-                    resource, of: asset, from: source, allowNetwork: true,
+                    resource, of: asset, from: source, allowNetwork: !smallLocalOnly,
                     fields: Self.fields(for: resource, of: asset), expectedChecksum: expected)
             } catch BackupStagingError.overBudget {
                 return sent ? .started : .overBudget
+            } catch PhotoLibraryReadError.needsNetwork where smallLocalOnly {
+                // Only in iCloud: left as it is for a run that may download.
+                return sent ? .started : .finished
             } catch BackupStagingError.checksumMismatch {
                 await sendBack(id, from: entry)
                 try await index.saveIfChanged()

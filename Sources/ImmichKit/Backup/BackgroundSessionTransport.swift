@@ -147,8 +147,10 @@ public final class BackgroundSessionTransport: BackupTransport, Sendable {
     }
 
     /// Cancels everything and invalidates the session (sign-out). Every later `enqueue` throws
-    /// `CancellationError`.
+    /// `CancellationError`, and a redirect seen afterwards is no longer written to disk (the account's
+    /// directory is about to be removed and must not be recreated).
     public func invalidate() {
+        redirectBlock.close()
         access.invalidate()
     }
 
@@ -323,6 +325,8 @@ final class RedirectBlock: @unchecked Sendable {
     private let fileURL: URL
     private let lock = NSLock()
     private var blocked: Bool
+    /// After sign-out: `set()` keeps the block in memory only.
+    private var closed = false
 
     init(directory: URL) {
         fileURL = directory.appendingPathComponent("redirect-blocked", isDirectory: false)
@@ -334,6 +338,7 @@ final class RedirectBlock: @unchecked Sendable {
     func set() {
         lock.withLock {
             blocked = true
+            guard !closed else { return }
             try? FileManager.default.createDirectory(
                 at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             var options: Data.WritingOptions = .atomic
@@ -345,9 +350,15 @@ final class RedirectBlock: @unchecked Sendable {
         }
     }
 
+    /// Nothing is written or removed on disk from now on.
+    func close() {
+        lock.withLock { closed = true }
+    }
+
     func clear() {
         lock.withLock {
             blocked = false
+            guard !closed else { return }
             try? FileManager.default.removeItem(at: fileURL)
         }
     }

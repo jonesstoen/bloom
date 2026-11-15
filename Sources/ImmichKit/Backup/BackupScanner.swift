@@ -90,11 +90,21 @@ public actor BackupScanner {
     ///
     /// Only one scan runs at a time: a call made while one is running waits for it and returns its
     /// result (its own `progress` is not called). Cancelling the caller that started the scan stops it.
+    ///
+    /// - Parameters:
+    ///   - only: checks just these assets of the selection (those a change token says changed), or the whole
+    ///     selection when nil. The counts returned then cover only these.
+    ///   - smallLocalOnly: the background refresh: hashes only what `BackupRefreshPolicy` allows, never
+    ///     downloading from iCloud. Other new or changed items, and items only in iCloud, are left as they
+    ///     are for a full scan (items hashed before are still checked with the server).
     @discardableResult
-    public func scan(progress: @escaping @Sendable (BackupCounts, Int) -> Void) async throws -> BackupCounts {
+    public func scan(
+        only: Set<String>? = nil, smallLocalOnly: Bool = false,
+        progress: @escaping @Sendable (BackupCounts, Int) -> Void
+    ) async throws -> BackupCounts {
         if let running { return try await running.task.value }
         let id = UUID()
-        let task = Task { try await self.performScan(progress: progress) }
+        let task = Task { try await self.performScan(only: only, smallLocalOnly: smallLocalOnly, progress: progress) }
         running = (id, task)
         defer { if running?.id == id { running = nil } }
         return try await withTaskCancellationHandler {
@@ -104,10 +114,14 @@ public actor BackupScanner {
         }
     }
 
-    private func performScan(progress: @Sendable (BackupCounts, Int) -> Void) async throws -> BackupCounts {
+    private func performScan(
+        only: Set<String>?, smallLocalOnly: Bool, progress: @Sendable (BackupCounts, Int) -> Void
+    ) async throws -> BackupCounts {
         // Fails fast on an unavailable index, so no work is done that couldn't be kept.
         try await index.save()
-        let ids = await index.selection().assetIDs(in: source).sorted()
+        var selected = await index.selection().assetIDs(in: source)
+        if let only { selected.formIntersection(only) }
+        let ids = selected.sorted()
 
         // A first estimate from the index; corrected per item once its asset is fetched.
         var states: [String: BackupState] = [:]
@@ -210,9 +224,13 @@ public actor BackupScanner {
                         // Already hashed: ask the server again, no reads. It may have the file by now,
                         // or have deleted or restored what it had.
                         if Self.isRechecked(entry.state) { try await enqueue(id, resources, entry) }
+                    } else if smallLocalOnly, !BackupRefreshPolicy.allows(asset) {
+                        continue // left for a full scan
                     } else {
                         try await probeServer()
-                        let (checksums, state) = try await hash(asset, resources: resources)
+                        let (checksums, state) = try await hash(asset, resources: resources, allowsNetwork: !smallLocalOnly)
+                        // Only in iCloud: the refresh doesn't download, and doesn't mark it as waiting either.
+                        if smallLocalOnly, state == .pending(reason: .waitingForWiFi) { continue }
                         var recorded = BackupEntry(modificationDate: asset.modificationDate, checksums: checksums, state: state)
                         if state == .pending(reason: .notChecked), let entry, entry.checksums == checksums {
                             // Only the date changed (a favourite, hide, caption or location change), not the
@@ -347,9 +365,10 @@ public actor BackupScanner {
     /// `.pending(.waitingForWiFi)` when a resource is only in iCloud and the network isn't allowed,
     /// `.failed` for other read errors. Cancellation is rethrown.
     private func hash(
-        _ asset: DeviceAsset, resources: [DeviceResource]
+        _ asset: DeviceAsset, resources: [DeviceResource], allowsNetwork: Bool = true
     ) async throws -> ([DeviceResourceType: String], BackupState) {
-        let allowNetwork = settings.allowsNetwork(for: asset, onCellular: await network.isOnCellular)
+        let onCellular = await network.isOnCellular
+        let allowNetwork = allowsNetwork && settings.allowsNetwork(for: asset, onCellular: onCellular)
         var checksums: [DeviceResourceType: String] = [:]
         for resource in resources {
             let sink = HashSink()

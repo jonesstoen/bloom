@@ -154,6 +154,39 @@ public struct PhotoKitLibrarySource: PhotoLibrarySource {
         }
     }
 
+    /// `PHPhotoLibrary.fetchPersistentChanges(since:)` from the archived `PHPersistentChangeToken`: the assets
+    /// inserted or updated since then, and the token of the last change read. Without a token, with one that
+    /// can't be read, or when PhotoKit can't say (an expired token, `persistentChangeTokenExpired`, or details
+    /// that aren't available any more), the IDs are nil (scan everything) and the token is the library's
+    /// current one, read before the scan starts.
+    public func changedAssetIDs(since token: Data?) async -> (ids: Set<String>?, token: Data?) {
+        let library = PHPhotoLibrary.shared()
+        let current = Self.archive(library.currentChangeToken)
+        guard let token, let previous = Self.unarchiveChangeToken(token) else { return (nil, current) }
+        do {
+            let changes = try library.fetchPersistentChanges(since: previous)
+            var ids: Set<String> = []
+            var latest = previous
+            for change in changes {
+                let details = try change.changeDetails(for: PHObjectType.asset)
+                ids.formUnion(details.insertedLocalIdentifiers)
+                ids.formUnion(details.updatedLocalIdentifiers)
+                latest = change.changeToken
+            }
+            return (ids, Self.archive(latest) ?? token)
+        } catch {
+            return (nil, current)
+        }
+    }
+
+    private static func archive(_ token: PHPersistentChangeToken) -> Data? {
+        try? NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true)
+    }
+
+    private static func unarchiveChangeToken(_ data: Data) -> PHPersistentChangeToken? {
+        try? NSKeyedUnarchiver.unarchivedObject(ofClass: PHPersistentChangeToken.self, from: data)
+    }
+
     /// A JPEG from what is on the device already: `.fastFormat`, no network.
     public func thumbnailData(_ id: String, pixelSide: Int) async -> Data? {
         guard let asset = Self.phAsset(id) else { return nil }

@@ -258,22 +258,46 @@ public actor BackupIndex {
     /// Retries loading after the file couldn't be read. Replaces the in-memory state.
     public func reload() throws { try load() }
 
+    /// Throws `CancellationError` once the index is closed (the account signed out), so nothing recreates
+    /// its directory.
     public func save() throws {
+        guard !isClosed else { throw CancellationError() }
         guard isAvailable else { throw BackupIndexError.unavailable }
         try FileManager.default.createDirectory(
             at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true
         )
         let data = try JSONEncoder().encode(stored)
-        try data.write(to: fileURL, options: CacheProtection.writingOptions)
+        try data.write(to: fileURL, options: Self.writingOptions)
         hasChanges = false
         saveCount += 1
     }
 
     /// A scanner checkpoint; unchanged records need no additional disk write.
     func saveIfChanged() throws {
+        guard !isClosed else { throw CancellationError() }
         guard isAvailable else { throw BackupIndexError.unavailable }
         guard hasChanges else { return }
         try save()
+    }
+
+    /// Forgets everything and removes the file for good (sign-out): every later save throws
+    /// `CancellationError` and writes nothing, so a result or a run that ends after this can't recreate the
+    /// account's directory, and nothing more is recorded for the account.
+    public func close() {
+        isClosed = true
+        clear()
+    }
+
+    /// Whether `close()` was called.
+    public private(set) var isClosed = false
+
+    /// The index is read and written by background wakes while the phone is locked (after its first unlock).
+    static var writingOptions: Data.WritingOptions {
+        #if os(iOS)
+        [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
+        #else
+        .atomic
+        #endif
     }
 
     /// Forgets everything and removes the file. Also makes an unavailable index usable again.

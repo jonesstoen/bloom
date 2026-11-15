@@ -135,6 +135,9 @@ final class BackupModel {
     @ObservationIgnored let staging: BackupStaging
     @ObservationIgnored private let uploads: Uploads?
     @ObservationIgnored private var connection: BackupUploadConnection?
+    /// The account's backup engine, when the model works on one: its index, staging folder, transport and
+    /// uploader are the ones background launches use too (see `BackupEngine`).
+    @ObservationIgnored let engine: BackupEngine?
     /// `load()` has run: the selection and photo access on the model are known.
     @ObservationIgnored private(set) var hasLoaded = false
 
@@ -142,7 +145,7 @@ final class BackupModel {
     ///   - directory: where the account's `index.json` lives; the index is opened on first use.
     ///   - network: defaults to a path monitor, started when the first scan needs it.
     ///   - uploads: how uploads are sent; without it nothing is uploaded.
-    init(
+    convenience init(
         source: some PhotoLibrarySource,
         service: any ImmichService,
         directory: URL,
@@ -150,18 +153,40 @@ final class BackupModel {
         defaults: UserDefaults = .standard,
         uploads: Uploads? = nil
     ) {
+        self.init(
+            source: source, service: service, directory: directory, network: network, defaults: defaults,
+            uploads: uploads, engine: nil)
+    }
+
+    /// The account's Backup screen on its engine: the engine's photo library, server, network, index, staging
+    /// folder, transport and uploader. `defaults` must be where the engine reads the switches from.
+    convenience init(engine: BackupEngine, defaults: UserDefaults = .standard) {
+        self.init(
+            source: engine.source, service: engine.service, directory: engine.directory, network: engine.network,
+            defaults: defaults, uploads: nil, engine: engine)
+    }
+
+    private init(
+        source: any PhotoLibrarySource, service: any ImmichService, directory: URL, network: (any NetworkConditions)?,
+        defaults: UserDefaults, uploads: Uploads?, engine: BackupEngine?
+    ) {
         self.source = source
         self.service = service
         self.directory = directory
         self.network = network
         self.defaults = defaults
         self.uploads = uploads
+        self.engine = engine
         let settings = BackupSettings.load(from: defaults)
         self.settings = settings
         sharedSettings = OSAllocatedUnfairLock(initialState: settings)
-        let stagingDirectory = directory.appendingPathComponent("Staging", isDirectory: true)
-        staging = BackupStaging(
-            directory: stagingDirectory, freeSpace: { BackupStaging.availableCapacity(at: stagingDirectory) })
+        if let engine {
+            staging = engine.staging
+        } else {
+            let stagingDirectory = directory.appendingPathComponent("Staging", isDirectory: true)
+            staging = BackupStaging(
+                directory: stagingDirectory, freeSpace: { BackupStaging.availableCapacity(at: stagingDirectory) })
+        }
     }
 
     /// Decides when scans and uploads run (the Backup switch, the app being open, library changes).
@@ -184,6 +209,8 @@ final class BackupModel {
 
     /// The uploader for this account: same index, photo library, server and settings as the scans.
     func makeUploader(clock: BackupRetryClock = .live) async -> BackupUploader {
+        // One uploader per account: background runs use it too, and a second run waits its turn.
+        if let engine { return engine.uploader }
         let index = await ensureIndex()
         let connection = await uploadConnection(clock: clock)
         let network = networkConditions
@@ -194,11 +221,14 @@ final class BackupModel {
     }
 
     /// The account's transport, its result recorder and request builder, made on first use; nil without
-    /// `uploads`. `clock` dates the retry times the recorder keeps (the first caller's is used).
+    /// `uploads`. `clock` dates the retry times the recorder keeps (the first caller's is used). On an engine,
+    /// the engine's. Once stopped, only one made before: a transport is never made just to be cancelled.
     func uploadConnection(clock: BackupRetryClock = .live) async -> BackupUploadConnection? {
-        guard let uploads else { return nil }
+        if let engine { return engine.connection }
+        guard let uploads, !isStopped else { return connection }
         let index = await ensureIndex()
         if let connection { return connection }
+        guard !isStopped else { return nil }
         let recorder = BackupResultRecorder(index: index, staging: staging, now: clock.date)
         let made = BackupUploadConnection(
             transport: uploads.makeTransport(index, staging, recorder), recorder: recorder, requests: uploads.requests)
@@ -530,6 +560,7 @@ final class BackupModel {
     // MARK: - Helpers
 
     private func ensureIndex() async -> BackupIndex {
+        if let engine { return engine.index }
         if let indexTask { return await indexTask.value }
         let directory = directory
         // Reads the saved file, which can be large: keep it off the main thread.

@@ -58,21 +58,41 @@ public final class RootModel {
     @ObservationIgnored private let makeService: ConnectionTester.ServiceFactory
     @ObservationIgnored private var restoring = false
     @ObservationIgnored private var persistsImages = true
+    /// Where the signed-in account's backup engine comes from; without it the Backup screen scans but
+    /// uploads nothing (tests and previews that don't need uploads).
+    @ObservationIgnored private let backupEngines: BackupEngineRegistry?
     /// Allow Changes, shared with every session's service (see `LibraryChanges`).
     @ObservationIgnored public let editing: EditingPermission
 
+    /// The app's root model: the Keychain, the live server and the process's backup engines (shared with
+    /// background launches, see `BackupEngine`).
+    public convenience init() {
+        let engines = BackupEngineRegistry.shared
+        self.init(
+            store: CredentialStore(), makeService: { LiveImmichService(credentials: $0) }, editing: engines.editing,
+            backupEngines: engines)
+    }
+
+    /// Without backup engines: the Backup screen scans but doesn't upload.
     /// - Parameter editing: defaults to the saved Allow Changes setting (off unless turned on).
-    public init(store: CredentialStore = CredentialStore(),
-                makeService: @escaping ConnectionTester.ServiceFactory = { LiveImmichService(credentials: $0) },
-                editing: EditingPermission? = nil) {
+    public convenience init(store: CredentialStore,
+                            makeService: @escaping ConnectionTester.ServiceFactory = { LiveImmichService(credentials: $0) },
+                            editing: EditingPermission? = nil) {
+        self.init(store: store, makeService: makeService, editing: editing, backupEngines: nil)
+    }
+
+    init(store: CredentialStore, makeService: @escaping ConnectionTester.ServiceFactory, editing: EditingPermission?,
+         backupEngines: BackupEngineRegistry?) {
         self.store = store
         self.makeService = makeService
         self.editing = editing ?? EditingPermission(isAllowed: LibraryChanges.storedValue)
+        self.backupEngines = backupEngines
     }
 
     init(previewService: any ImmichService) {
         store = CredentialStore(storage: InMemorySecureStorage())
         makeService = { _ in previewService }
+        backupEngines = nil
         editing = EditingPermission(isAllowed: true)
         session = ImmichSession(service: previewService, disk: nil)
         persistsImages = false
@@ -88,8 +108,19 @@ public final class RootModel {
             let credentials = try await Task.detached { try store.load() }.value
             try Task.checkCancellation()
             guard phase == .loading else { return }
-            if let credentials { connected(credentials) }
-            else { phase = .signedOut }
+            guard let credentials else {
+                phase = .signedOut
+                return
+            }
+            let service = makeSessionService(credentials)
+            // Opening the engine reads the account's index, which can be large: off the main thread.
+            var engine: BackupEngine?
+            if let engines = backupEngines {
+                engine = await Task.detached { engines.engine(for: credentials, service: service) }.value
+            }
+            try Task.checkCancellation()
+            guard phase == .loading else { return }
+            connected(credentials, service: service, engine: engine)
         } catch is CancellationError { return }
         catch {
             self.error = tr("Couldn't read your saved connection. Unlock your device and try again, or remove the saved connection.")
@@ -124,6 +155,8 @@ public final class RootModel {
             // A running scan or upload saves the index and stages files: wait for both (this also
             // stops the runner and empties its staging folder) before the directory is removed.
             await session?.backup.stop()
+            // Then the account's engine: background runs, its session, its index and its directory.
+            await session?.backup.engine?.close()
             await session?.snapshotStore?.invalidate()
             await session?.loader.invalidate()
             if persistsImages {
@@ -142,16 +175,24 @@ public final class RootModel {
 
     public func dismissError() { error = nil }
 
-    private func connected(_ credentials: ServerCredentials) {
-        let service = EditGuardedService(base: makeService(credentials), permission: editing)
+    private func makeSessionService(_ credentials: ServerCredentials) -> any ImmichService {
+        EditGuardedService(base: makeService(credentials), permission: editing)
+    }
+
+    /// `engine`: the account's backup engine if the caller has it already; else made here (or none, without
+    /// engines). A new sign-in has no index on disk yet, so making it here reads nothing large.
+    private func connected(
+        _ credentials: ServerCredentials, service: (any ImmichService)? = nil, engine: BackupEngine? = nil
+    ) {
+        let service = service ?? makeSessionService(credentials)
+        let engine = engine ?? backupEngines?.engine(for: credentials, service: service)
         let disk = persistsImages ? DiskImageCache(directory: Self.cacheDirectory(for: credentials)) : nil
         let snapshots = persistsImages ? TimelineSnapshotStore(
             directory: Self.cacheDirectory(for: credentials).appendingPathComponent("Timeline", isDirectory: true)
         ) : nil
-        let session = ImmichSession(
-            service: service, disk: disk, snapshotStore: snapshots,
-            backup: BackupModel(
-                source: Self.photoLibrary, service: service, directory: Self.backupDirectory(for: credentials)))
+        let backup = engine.map { BackupModel(engine: $0) } ?? BackupModel(
+            source: Self.photoLibrary, service: service, directory: Self.backupDirectory(for: credentials))
+        let session = ImmichSession(service: service, disk: disk, snapshotStore: snapshots, backup: backup)
         // Staged files left by an upload the system ended. Queued before the first run, which waits for it.
         session.backup.runner.removeLeftoverStaging()
         self.session = session
@@ -164,13 +205,7 @@ public final class RootModel {
     }
 
     /// The device's photo library on iOS; the preview library where PhotoKit isn't available.
-    private static var photoLibrary: any PhotoLibrarySource {
-        #if os(iOS)
-        PhotoKitLibrarySource()
-        #else
-        PreviewPhotoLibrary()
-        #endif
-    }
+    private static var photoLibrary: any PhotoLibrarySource { BackupEngineRegistry.photoLibrary }
 
     /// Other accounts' caches and share files from a quit or crashed app. Nothing is being shared
     /// at sign-in or sign-out, so no share folder in use can be removed.
@@ -194,11 +229,12 @@ public final class RootModel {
 
     /// `<Application Support>/Bloom/Backup/<digest>`. Unlike the caches this must survive low-storage
     /// purges, because the index holds checksums that are expensive to recompute.
-    static func backupDirectory(for credentials: ServerCredentials) -> URL {
+    nonisolated static func backupDirectory(for credentials: ServerCredentials) -> URL {
         backupRoot.appendingPathComponent(accountDigest(for: credentials), isDirectory: true)
     }
 
-    private static func accountDigest(for credentials: ServerCredentials) -> String {
+    /// The account's name on disk (its cache and backup folders) and in its backup session identifier.
+    nonisolated static func accountDigest(for credentials: ServerCredentials) -> String {
         let identity = Data((credentials.serverURL.absoluteString + "\u{0}" + credentials.apiKey).utf8)
         return SHA256.hash(data: identity).map { String(format: "%02x", $0) }.joined()
     }
