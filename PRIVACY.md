@@ -32,9 +32,9 @@ third-party SDKs.
   once. Bloom detects the redirect afterwards, stops backup and needs your OK (Try Again on the
   Backup screen) before it continues.
 
-Bloom never sends your API key anywhere except to your server. It refuses unencrypted http to
-servers on the internet, asks before using unencrypted http on a local network, and never follows a
-redirect to another server.
+Bloom sends your API key only to your server. It refuses unencrypted http to servers on the
+internet, asks before using unencrypted http on a local network, and never follows a redirect to
+another server, except for background uploads as described above.
 
 ## What Bloom stores on your iPhone
 
@@ -99,9 +99,9 @@ tredjeparts-SDK-er.
   med den, til en annen adresse én gang. Bloom oppdager videresendingen etterpå, stopper
   sikkerhetskopien og trenger OK fra deg (Prøv igjen på Sikkerhetskopi-skjermen) før den fortsetter.
 
-Bloom sender aldri API-nøkkelen andre steder enn til serveren din. Appen nekter ukryptert http til
-servere på internett, spør før den bruker ukryptert http på et lokalt nettverk, og følger aldri en
-videresending til en annen server.
+Bloom sender API-nøkkelen bare til serveren din. Appen nekter ukryptert http til servere på
+internett, spør før den bruker ukryptert http på et lokalt nettverk, og følger aldri en videresending
+til en annen server, unntatt ved bakgrunnsopplastinger som beskrevet over.
 
 ## Hva Bloom lagrer på iPhonen
 
