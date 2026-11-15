@@ -352,3 +352,6 @@
 "Choose Albums" = "Velg album";
 "Background App Refresh" = "Bakgrunnsoppdatering";
 "Overview" = "Oversikt";
+"Checking Now" = "Sjekkes nå";
+"Reading and comparing with the server…" = "Leser og sammenligner med serveren …";
+"Bloom reads each photo once to see whether your server already has it. Photos only in iCloud are downloaded first." = "Bloom leser hvert bilde én gang for å se om serveren allerede har det. Bilder som bare ligger i iCloud, lastes ned først.";

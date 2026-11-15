@@ -97,14 +97,20 @@ public actor BackupScanner {
     ///   - smallLocalOnly: the background refresh: hashes only what `BackupRefreshPolicy` allows, never
     ///     downloading from iCloud. Other new or changed items, and items only in iCloud, are left as they
     ///     are for a full scan (items hashed before are still checked with the server).
+    ///   - reading: gets the ID and creation date of each item just before its files are read (and maybe
+    ///     downloaded from iCloud) to be hashed, and nil once that read has ended. Items hashed before, which
+    ///     are only asked about again, are not reported.
     @discardableResult
     public func scan(
         only: Set<String>? = nil, smallLocalOnly: Bool = false,
+        reading: @escaping @Sendable ((id: String, date: Date)?) -> Void = { _ in },
         progress: @escaping @Sendable (BackupCounts, Int) -> Void
     ) async throws -> BackupCounts {
         if let running { return try await running.task.value }
         let id = UUID()
-        let task = Task { try await self.performScan(only: only, smallLocalOnly: smallLocalOnly, progress: progress) }
+        let task = Task {
+            try await self.performScan(only: only, smallLocalOnly: smallLocalOnly, reading: reading, progress: progress)
+        }
         running = (id, task)
         defer { if running?.id == id { running = nil } }
         return try await withTaskCancellationHandler {
@@ -115,7 +121,8 @@ public actor BackupScanner {
     }
 
     private func performScan(
-        only: Set<String>?, smallLocalOnly: Bool, progress: @Sendable (BackupCounts, Int) -> Void
+        only: Set<String>?, smallLocalOnly: Bool, reading: @Sendable ((id: String, date: Date)?) -> Void,
+        progress: @Sendable (BackupCounts, Int) -> Void
     ) async throws -> BackupCounts {
         // Fails fast on an unavailable index, so no work is done that couldn't be kept.
         try await index.save()
@@ -228,7 +235,16 @@ public actor BackupScanner {
                         continue // left for a full scan
                     } else {
                         try await probeServer()
-                        let (checksums, state) = try await hash(asset, resources: resources, allowsNetwork: !smallLocalOnly)
+                        reading((id, asset.creationDate))
+                        let hashed: ([DeviceResourceType: String], BackupState)
+                        do {
+                            hashed = try await hash(asset, resources: resources, allowsNetwork: !smallLocalOnly)
+                        } catch {
+                            reading(nil)
+                            throw error
+                        }
+                        reading(nil)
+                        let (checksums, state) = hashed
                         // Only in iCloud: the refresh doesn't download, and doesn't mark it as waiting either.
                         if smallLocalOnly, state == .pending(reason: .waitingForWiFi) { continue }
                         var recorded = BackupEntry(modificationDate: asset.modificationDate, checksums: checksums, state: state)

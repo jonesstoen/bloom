@@ -53,6 +53,13 @@ final class BackupModel {
         let status: Status
     }
 
+    /// The photo a scan is reading (and maybe downloading from iCloud) to hash it, for "Checking Now".
+    struct CheckingItem: Equatable {
+        let id: String
+        /// When the photo was taken, if the photo library still has it.
+        let date: Date?
+    }
+
     /// The remaining items of one state, a section of the Remaining list (see `remainingSections`).
     struct RemainingSection: Identifiable, Equatable {
         /// The states in the order the list shows them.
@@ -98,6 +105,9 @@ final class BackupModel {
     private(set) var counts = BackupCounts()
     /// Non-nil while a scan runs.
     private(set) var progress: Progress?
+    /// The photo the running scan reads now, at most four changes a second; nil when no scan has read
+    /// anything for about a second (it may still be asking the server about photos it read before).
+    private(set) var checkingItem: CheckingItem?
     private(set) var isScanning = false
     private(set) var albums: [DeviceAlbum] = []
     private(set) var selection = BackupSelection()
@@ -197,6 +207,8 @@ final class BackupModel {
     /// Decoded thumbnails of the Remaining and Deleted on Server rows, by asset ID, and the IDs that had none.
     @ObservationIgnored private var thumbnailCache: [String: CGImage] = [:]
     @ObservationIgnored private var thumbnailMisses: Set<String> = []
+    /// Clears `checkingItem` a moment after the last read ended, unless another read starts first.
+    @ObservationIgnored private var checkingClear: Task<Void, Never>?
     /// The remaining items as the last index pass read them, and the assets the transport has in flight
     /// (`refreshBackgroundStatus()`); `remainingItems` is made from both.
     @ObservationIgnored private var remainingBase: [RemainingBase] = []
@@ -448,8 +460,18 @@ final class BackupModel {
                     self?.apply(counts, handled: handled, generation: current)
                 }
             }
+            // The photo being read: only the newest is kept, shown at most every 250 ms.
+            let (reads, readContinuation) = AsyncStream<(id: String, date: Date)?>.makeStream(
+                bufferingPolicy: .bufferingNewest(1))
+            let readDelivery = Task { [weak self] in
+                for await item in reads {
+                    guard !Task.isCancelled else { break }
+                    self?.showChecking(item, generation: current)
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
+            }
             do {
-                result = try await scanner.scan { counts, handled in
+                result = try await scanner.scan(reading: { readContinuation.yield($0) }) { counts, handled in
                     continuation.yield((counts, handled))
                 }
             } catch {
@@ -459,7 +481,10 @@ final class BackupModel {
             if result != nil { engine?.storeChangeToken(token) }
             await engine?.gate.release()
             continuation.finish()
+            readContinuation.finish()
+            readDelivery.cancel()
             await delivery.value
+            await readDelivery.value
             await self?.finishScan(result: result, failure: failure)
             return result != nil
         }
@@ -545,12 +570,49 @@ final class BackupModel {
         progress = Progress(done: handled, total: max(counts.total, handled))
     }
 
+    /// Shows `item` as the photo being checked, if the scan of `current` still runs. A read that ended (nil)
+    /// clears it only when no other read starts within a second, so it doesn't flicker between photos. The
+    /// photo it replaces gives up its thumbnail unless a list shows it, so a long scan doesn't keep one per photo.
+    private func showChecking(_ item: (id: String, date: Date)?, generation current: Int) {
+        guard isScanning, current == generation else { return }
+        guard let item else {
+            guard checkingItem != nil, checkingClear == nil else { return }
+            checkingClear = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled, let self else { return }
+                self.checkingClear = nil
+                guard current == self.generation, let shown = self.checkingItem?.id else { return }
+                self.checkingItem = nil
+                self.forgetThumbnailIfUnlisted(shown)
+            }
+            return
+        }
+        checkingClear?.cancel()
+        checkingClear = nil
+        guard checkingItem?.id != item.id else { return }
+        let previous = checkingItem?.id
+        checkingItem = CheckingItem(id: item.id, date: item.date)
+        if let previous { forgetThumbnailIfUnlisted(previous) }
+    }
+
+    private func forgetThumbnailIfUnlisted(_ id: String) {
+        guard !remainingBase.contains(where: { $0.id == id }), !deletedItems.contains(where: { $0.id == id }) else { return }
+        thumbnailCache[id] = nil
+        thumbnailMisses.remove(id)
+    }
+
     private func finishScan(result: BackupCounts?, failure: Error?) async {
         if let failure, !(failure is CancellationError) { report(failure) }
         // Before the first await: a late progress callback must not bring `progress` back or
         // overwrite the final counts.
         generation += 1
         progress = nil
+        checkingClear?.cancel()
+        checkingClear = nil
+        if let checked = checkingItem?.id {
+            checkingItem = nil
+            forgetThumbnailIfUnlisted(checked)
+        }
         if let result {
             counts = result
             completedScans += 1
@@ -1012,6 +1074,8 @@ final class BackupModel {
             return nil
         }
         let image = await Task.detached { Self.decode(data) }.value
+        // The row went away meanwhile (a photo that was being checked): don't keep what nobody shows.
+        guard !Task.isCancelled else { return image }
         if let image { thumbnailCache[id] = image } else { thumbnailMisses.insert(id) }
         return image
     }
@@ -1074,7 +1138,9 @@ extension BackupModel {
     /// Deleted on Server and Problems rows and lists have something to show. The first deleted item is in
     /// the server's trash, the rest are gone for good.
     /// The first `uploading` remaining items are shown in flight, one with progress and the rest without yet.
-    func loadPreview(deletedOnServer: Int = 0, problems: Int = 0, remaining: Int = 0, uploading: Int = 0) async {
+    func loadPreview(
+        deletedOnServer: Int = 0, problems: Int = 0, remaining: Int = 0, uploading: Int = 0, checking: Bool = false
+    ) async {
         let index = await ensureIndex()
         let date = PreviewPhotoLibrary.date
         for number in 0..<deletedOnServer {
@@ -1117,6 +1183,11 @@ extension BackupModel {
         await load()
         await refreshBackgroundStatus()
         await refreshUploadProgress()
+        if checking {
+            isScanning = true
+            progress = Progress(done: 7_012, total: 12_969)
+            checkingItem = CheckingItem(id: "preview-checking", date: PreviewPhotoLibrary.date)
+        }
     }
 }
 

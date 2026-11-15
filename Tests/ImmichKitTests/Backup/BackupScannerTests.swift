@@ -165,6 +165,27 @@ final class BackupScannerTests: XCTestCase {
         assertInvariant(counts)
     }
 
+    func testReadingReportsEachItemBeforeItIsHashedAndNotItemsOnlyAskedAgain() async throws {
+        let library = makeLibrary(album: ["1", "2", "3"])
+        for id in ["1", "2", "3"] { addAsset(id, to: library) }
+        let index = await makeIndex()
+        let read = Box<[String]>([])
+        let readsAtReport = Box<[Int]>([])
+
+        try await makeScanner(library, MockImmichService(), index).scan(reading: { item in
+            read.mutate { $0.append(item?.id ?? "end") }
+            readsAtReport.mutate { $0.append(library.reads.count) }
+        }) { _, _ in }
+        XCTAssertEqual(read.value, ["1", "end", "2", "end", "3", "end"])
+        XCTAssertEqual(readsAtReport.value, [0, 1, 1, 2, 2, 3], "reported before its own file is read, ended after")
+
+        read.mutate { $0 = [] }
+        try await makeScanner(library, MockImmichService(), index).scan(reading: { item in
+            read.mutate { $0.append(item?.id ?? "end") }
+        }) { _, _ in }
+        XCTAssertEqual(read.value, [], "already hashed: only asked about again, nothing read")
+    }
+
     func testUnchangedItemsAreNotRehashedOnTheNextScan() async throws {
         let library = makeLibrary(album: ["1", "2", "3"])
         let one = addAsset("1", to: library)

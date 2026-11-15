@@ -10,7 +10,8 @@ struct BackupRemainingList: View {
 
     var body: some View {
         List {
-            if model.remainingItems.isEmpty {
+            BackupCheckingNowSection(model: model)
+            if model.remainingItems.isEmpty, model.checkingItem == nil {
                 Section {
                     ContentUnavailableView(tr("Nothing Remaining"), systemImage: "checkmark.circle")
                         .listRowBackground(Color.clear)
@@ -72,6 +73,51 @@ struct BackupRemainingList: View {
         case .waitingForWiFi: tr("Waiting for Wi-Fi")
         case .retrying: tr("Trying Again Later")
         case .notChecked: tr("Not Checked Yet")
+        }
+    }
+}
+
+/// "Checking Now": the photo the scan reads, with how far the check has got. It stays in its own section
+/// below too, so rows don't move as the photo changes. Its own view, so those changes redraw only this
+/// section (the list reads `checkingItem` only while it has no remaining items).
+private struct BackupCheckingNowSection: View {
+    let model: BackupModel
+
+    var body: some View {
+        if let item = model.checkingItem {
+            Section {
+                HStack(spacing: 12) {
+                    BackupThumbnail(id: item.id, model: model)
+                        .id(item.id) // a new photo starts without the last one's image
+                        .frame(width: 56, height: 56)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 4) {
+                        if let date = item.date {
+                            Text(date, format: .dateTime.day().month(.abbreviated).year().locale(Localization.locale))
+                        }
+                        HStack(spacing: 6) {
+                            ProgressView()
+                                .controlSize(.mini)
+                            Text(tr("Reading and comparing with the server…"))
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .accessibilityElement(children: .combine)
+            } header: {
+                HStack {
+                    Text(tr("Checking Now"))
+                    Spacer()
+                    if let progress = model.progress {
+                        Text(tr("%lld of %lld", Int64(progress.done), Int64(progress.total)))
+                            .monospacedDigit()
+                    }
+                }
+            } footer: {
+                Text(tr("Bloom reads each photo once to see whether your server already has it. Photos only in iCloud are downloaded first."))
+            }
         }
     }
 }
@@ -140,6 +186,12 @@ private struct RemainingItemProgress: View {
     let model = BackupModel.preview(selected: ["recents"])
     NavigationStack { BackupRemainingList(model: model) }
         .task { await model.loadPreview(remaining: 6, uploading: 2) }
+}
+
+#Preview("Remaining, checking") {
+    let model = BackupModel.preview(selected: ["recents"])
+    NavigationStack { BackupRemainingList(model: model) }
+        .task { await model.loadPreview(remaining: 6, checking: true) }
 }
 
 #Preview("Remaining, empty") {

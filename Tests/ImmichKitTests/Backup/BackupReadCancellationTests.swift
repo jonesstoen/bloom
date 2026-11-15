@@ -62,6 +62,47 @@ final class BackupReadCancellationTests: XCTestCase {
         try await checkReadFailure(cancel: false)
     }
 
+    func testThePhotoBeingReadIsShownAsCheckingNowUntilTheScanEnds() async throws {
+        let (model, gate, cleanup) = try await makeModel()
+        defer { cleanup() }
+        await gate.waitForRead()
+        // "a" may be shown first; the newest read replaces it after at most 250 ms.
+        for _ in 0..<300 where model.checkingItem?.id != "b" { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(model.checkingItem, BackupModel.CheckingItem(id: "b", date: Self.date))
+
+        await gate.fail()
+        await model.settle()
+        XCTAssertNil(model.checkingItem, "Nothing is read once the scan has ended")
+        await model.stop()
+    }
+
+    private static let date = Date(timeIntervalSince1970: 1_700_000_000)
+
+    private func makeModel() async throws -> (BackupModel, ReadFailureGate, () -> Void) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BackupReadChecking-\(UUID().uuidString)")
+        let suite = "BackupReadChecking-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let library = FakePhotoLibrary()
+        for id in ["a", "b"] {
+            let resource = DeviceResource(type: .photo, filename: "\(id).jpg")
+            library.setData([Data(id.utf8)], for: resource)
+            library.addAsset(DeviceAsset(id: id, isVideo: false, creationDate: Self.date, modificationDate: Self.date,
+                                         isFavorite: false, duration: 0, resources: [resource]))
+        }
+        library.addAlbum(id: "recents", title: "Recents", assetIDs: ["a", "b"])
+        let gate = ReadFailureGate()
+        let model = BackupModel(source: GatedPhotoLibrary(base: library, gate: gate),
+                                service: MockImmichService(), directory: directory,
+                                network: ReadTestNetwork(), defaults: defaults)
+        await model.load()
+        model.setSelection(BackupSelection(included: ["recents"]))
+        return (model, gate, {
+            try? FileManager.default.removeItem(at: directory)
+            UserDefaults.standard.removePersistentDomain(forName: suite)
+        })
+    }
+
     private func checkReadFailure(cancel: Bool) async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("BackupReadCancel-\(UUID().uuidString)")
