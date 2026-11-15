@@ -237,6 +237,32 @@ final class BackgroundSessionTransportTests: XCTestCase {
         XCTAssertNotNil(progress[second.attempt])
     }
 
+    func testDelegateForwardsBodyProgressOfARealTask() async throws {
+        let process = await launch(makeAccount())
+        let job = UploadJob(assetID: "p1", resource: .photo, attempt: UUID(), bodyFileName: "a.multipart", checksum: "aa")
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        let task = session.dataTask(with: request())
+        task.taskDescription = Self.description(of: job)
+        let delegate = BackgroundSessionDelegate(events: process.transport.events)
+
+        delegate.urlSession(session, task: task, didSendBodyData: 40, totalBytesSent: 40, totalBytesExpectedToSend: 160)
+
+        XCTAssertEqual(process.transport.uploadProgress()[job.attempt], UploadBytes(sent: 40, expected: 160))
+    }
+
+    func testInvalidateClearsUploadProgress() async throws {
+        let process = await launch(makeAccount())
+        let job = UploadJob(assetID: "p1", resource: .photo, attempt: UUID(), bodyFileName: "a.multipart", checksum: "aa")
+        let task = FakeUploadTask(id: 1, description: Self.description(of: job), request: request())
+        process.transport.events.didSendBodyData(for: task, totalBytesSent: 1, totalBytesExpectedToSend: 2)
+        XCTAssertEqual(process.transport.uploadProgress().count, 1)
+
+        process.transport.invalidate()
+
+        XCTAssertEqual(process.transport.uploadProgress(), [:], "Nothing of a signed-out account's uploads is kept")
+    }
+
     func testRelaunchRecordsAFinishedTaskOnce() async throws {
         let account = makeAccount()
         let first = await launch(account)

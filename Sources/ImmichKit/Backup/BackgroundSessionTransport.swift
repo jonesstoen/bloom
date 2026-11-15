@@ -160,6 +160,7 @@ public final class BackgroundSessionTransport: BackupTransport, Sendable {
     public func invalidate() {
         redirectBlock.close()
         access.invalidate()
+        events.clearProgress()
         events.releaseHandlers()
     }
 
@@ -479,6 +480,11 @@ final class BackgroundSessionEvents: @unchecked Sendable {
         guard let job = BackgroundSessionTransport.job(in: task.taskDescription) else { return }
         let bytes = UploadBytes(sent: totalBytesSent, expected: totalBytesExpectedToSend)
         lock.withLock { state.progress[job.attempt] = bytes }
+    }
+
+    /// Forgets every task's progress (the session is invalidated: none of them reports again).
+    func clearProgress() {
+        lock.withLock { state.progress = [:] }
     }
 
     /// The latest bytes sent of each task in flight, by attempt.

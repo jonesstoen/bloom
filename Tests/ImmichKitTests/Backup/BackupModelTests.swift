@@ -1112,6 +1112,60 @@ final class BackupModelTests: XCTestCase {
         await model.stop()
     }
 
+    func testShownProgressNeverGoesBackWhileTheAssetIsInFlight() async throws {
+        let directory = makeDirectory()
+        let index = BackupIndex(directory: directory)
+        for id in ["a1", "a2"] {
+            await index.set(
+                BackupEntry(modificationDate: Self.date, checksums: [.photo: "sum-\(id)"], state: .pending(reason: .needsUpload)), for: id)
+        }
+        await index.setSelection(BackupSelection(included: ["recents"]))
+        let photo = makeJob("a1")
+        let video = UploadJob(assetID: "a1", resource: .pairedVideo, attempt: UUID(), bodyFileName: "v.multipart", checksum: "bb")
+        let plain = makeJob("a2")
+        for job in [photo, video, plain] { await index.addJob(job) }
+        try await index.save()
+        let box = TransportBox()
+        let uploads = BackupModel.Uploads(requests: .test) { index, staging, recorder in
+            let made = FakeTransport(index: index, staging: staging, recorder: recorder, service: MockImmichService(), mode: .manual)
+            box.set(made)
+            return made
+        }
+        let model = BackupModel(
+            source: makeLibrary(count: 2), service: MockImmichService(), directory: directory,
+            network: FixedNetwork(isOnCellular: false), defaults: makeDefaults(), uploads: uploads)
+        await model.load()
+        await model.refreshBackgroundStatus()
+        let transport = try XCTUnwrap(box.value)
+        transport.setProgress([
+            photo.attempt: UploadBytes(sent: 100, expected: 100), video.attempt: UploadBytes(sent: 0, expected: 100),
+            plain.attempt: UploadBytes(sent: 100, expected: 100),
+        ])
+        await model.refreshUploadProgress()
+        XCTAssertEqual(model.uploadProgress.fractions["a1"]!, 0.5, accuracy: 0.0001)
+        XCTAssertEqual(model.uploadProgress.fractions["a2"]!, 1, accuracy: 0.0001)
+
+        // The photo half and the plain asset finished: their reports are gone before the job list is read again.
+        transport.setProgress([video.attempt: UploadBytes(sent: 10, expected: 100)])
+        await model.refreshUploadProgress()
+        XCTAssertEqual(
+            model.uploadProgress.fractions["a1"]!, 0.55, accuracy: 0.0001,
+            "Doesn't drop back while still in flight: the finished half keeps its 100 bytes, 110 of 200")
+        XCTAssertEqual(model.uploadProgress.fractions["a2"]!, 1, accuracy: 0.0001, "Doesn't turn indeterminate")
+
+        transport.setProgress([video.attempt: UploadBytes(sent: 80, expected: 100)])
+        await model.refreshUploadProgress()
+        XCTAssertEqual(
+            model.uploadProgress.fractions["a1"]!, 0.9, accuracy: 0.0001,
+            "A finished half counts with its last bytes while the asset is in flight: 180 of 200")
+
+        await transport.finish(where: { $0.assetID == "a2" }, with: .uploaded(AssetUploadResult(id: "S2", status: .created)))
+        await model.refreshBackgroundStatus()
+        await model.refreshUploadProgress()
+        XCTAssertNil(model.uploadProgress.fractions["a2"], "An asset no longer in flight is dropped")
+        await model.stop()
+    }
+
     func testRemainingSummaryFractionIsBackedUpOverBackedUpAndPending() async throws {
         let directory = makeDirectory()
         let index = BackupIndex(directory: directory)

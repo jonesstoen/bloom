@@ -26,6 +26,7 @@ struct BackupRemainingList: View {
                             ProgressView(value: fraction)
                         }
                         .padding(.vertical, 4)
+                        .accessibilityElement(children: .combine)
                     }
                 }
                 let sections = model.remainingSections
@@ -42,7 +43,7 @@ struct BackupRemainingList: View {
                         }
                     } footer: {
                         if section.id == sections.last?.id, model.isRemainingCut {
-                            Text(tr("Showing the first %lld.", Int64(model.remainingItems.count)))
+                            Text(tr("Showing %lld.", Int64(model.remainingItems.count)))
                         }
                     }
                 }
@@ -79,6 +80,11 @@ private struct RemainingItemRow: View {
     let item: BackupModel.RemainingItem
     let model: BackupModel
 
+    /// What the progress is of: the date taken, or the section's name without one.
+    private var accessibilityLabel: String {
+        item.date?.formatted(.dateTime.day().month(.wide).year().locale(Localization.locale)) ?? tr("Uploading Now")
+    }
+
     var body: some View {
         HStack(spacing: 12) {
             BackupThumbnail(id: item.id, model: model)
@@ -91,7 +97,7 @@ private struct RemainingItemRow: View {
                 }
                 switch item.status {
                 case .uploading:
-                    RemainingItemProgress(id: item.id, progress: model.uploadProgress)
+                    RemainingItemProgress(id: item.id, label: accessibilityLabel, progress: model.uploadProgress)
                 case let .retrying(at):
                     Text(tr("Trying again at %@", at.formatted(.dateTime.hour().minute().locale(Localization.locale))))
                         .font(.footnote)
@@ -108,15 +114,19 @@ private struct RemainingItemRow: View {
 /// not the list.
 private struct RemainingItemProgress: View {
     let id: String
+    let label: String
     let progress: BackupUploadProgress
 
     var body: some View {
-        if let fraction = progress.fractions[id] {
-            ProgressView(value: fraction)
-        } else {
-            ProgressView(value: nil as Double?)
-                .progressViewStyle(.linear)
+        Group {
+            if let fraction = progress.fractions[id] {
+                ProgressView(value: fraction)
+            } else {
+                ProgressView(value: nil as Double?)
+                    .progressViewStyle(.linear)
+            }
         }
+        .accessibilityLabel(label)
     }
 }
 

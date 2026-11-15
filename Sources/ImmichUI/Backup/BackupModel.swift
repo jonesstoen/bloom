@@ -201,6 +201,9 @@ final class BackupModel {
     /// (`refreshBackgroundStatus()`); `remainingItems` is made from both.
     @ObservationIgnored private var remainingBase: [RemainingBase] = []
     @ObservationIgnored private var inFlightJobs: [UploadJob] = []
+    /// The last bytes the transport reported of each in-flight attempt. A finished attempt stops reporting
+    /// before the job list is read again; its last bytes count until it leaves the list.
+    @ObservationIgnored private var lastUploadBytes: [UUID: UploadBytes] = [:]
     /// Previews only: stands in for the account's transport when reading what is in flight.
     @ObservationIgnored private var previewTransport: (any BackupTransport)?
     @ObservationIgnored private var uploadingIDs: Set<String> = []
@@ -700,6 +703,8 @@ final class BackupModel {
         uploadingIDs = Set(jobs.map(\.assetID))
         // An upload of an item the last pass cut from the list: a new pass keeps it (in-flight rows are never cut).
         if counts.pending > 0, !uploadingIDs.isSubset(of: listedInFlightIDs.union(remainingBase.map(\.id))) {
+            // Marked before the pass, so a pass that is discarded or doesn't find them doesn't fire again.
+            listedInFlightIDs.formUnion(uploadingIDs)
             await refreshLists()
         }
         publishRemaining()
@@ -953,14 +958,37 @@ final class BackupModel {
         return result
     }
 
+    /// Progress shown never goes back while an asset stays in flight: a finished half of a Live Photo, or a
+    /// finished asset, stops reporting before the job list is read again. Assets no longer in flight are dropped.
+    private static func monotonicFractions(
+        old: [String: Double], new: [String: Double], inFlight: Set<String>
+    ) -> [String: Double] {
+        var result: [String: Double] = [:]
+        for id in inFlight {
+            switch (old[id], new[id]) {
+            case let (before?, now?): result[id] = max(before, now)
+            case let (before?, nil): result[id] = before
+            case let (nil, now?): result[id] = now
+            case (nil, nil): break
+            }
+        }
+        return result
+    }
+
     /// Reads the transport's progress for the uploads in flight (as the last `refreshBackgroundStatus()`
     /// found them) into `uploadProgress`. Cheap: the Remaining list calls it a few times a second.
     func refreshUploadProgress() async {
         guard !isStopped, !inFlightJobs.isEmpty, let transport = await statusTransport() else {
+            lastUploadBytes = [:]
             if !uploadProgress.fractions.isEmpty { uploadProgress.fractions = [:] }
             return
         }
-        let fractions = Self.uploadFractions(jobs: inFlightJobs, progress: transport.uploadProgress())
+        let attempts = Set(inFlightJobs.map(\.attempt))
+        var bytes = lastUploadBytes.filter { attempts.contains($0.key) }
+        for (attempt, reported) in transport.uploadProgress() where attempts.contains(attempt) { bytes[attempt] = reported }
+        lastUploadBytes = bytes
+        let fresh = Self.uploadFractions(jobs: inFlightJobs, progress: bytes)
+        let fractions = Self.monotonicFractions(old: uploadProgress.fractions, new: fresh, inFlight: uploadingIDs)
         if uploadProgress.fractions != fractions { uploadProgress.fractions = fractions }
     }
 

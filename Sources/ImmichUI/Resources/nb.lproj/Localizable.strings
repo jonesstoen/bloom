@@ -290,6 +290,7 @@
 "Checking %@ of %@" = "Sjekker %1$@ av %2$@";
 "Items with Problems" = "Objekter med problemer";
 "Showing the first %lld." = "Viser de første %lld.";
+"Showing %lld." = "Viser %lld.";
 "Photos over Cellular" = "Bilder over mobilnett";
 "Videos over Cellular" = "Videoer over mobilnett";
 "Photos that exist only in iCloud are checked on Wi-Fi, unless you allow cellular here." = "Bilder som bare finnes i iCloud, sjekkes på Wi-Fi med mindre du tillater mobilnett her.";
@@ -329,7 +330,6 @@
 "These photos were on your server and are gone from it. Bloom doesn't upload them again unless you ask." = "Disse bildene lå på serveren, men er ikke der lenger. Bloom laster dem ikke opp igjen med mindre du ber om det.";
 "Nothing Deleted on Server" = "Ingenting slettet på serveren";
 "Nothing Remaining" = "Ingenting gjenstår";
-"Uploading" = "Lastes opp";
 "Waiting to Upload" = "I kø";
 "Waiting for Wi-Fi" = "Venter på Wi-Fi";
 "Not Checked Yet" = "Ikke sjekket ennå";
