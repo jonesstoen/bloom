@@ -41,6 +41,8 @@ The result shown on the store page is **Data Not Collected**. Tracking: **No**.
 | Key | Value | Why |
 |---|---|---|
 | `NSLocalNetworkUsageDescription` | see below | iOS asks before an app reaches devices on the local network (a server at home). Without it the connection fails silently. |
+| `UIBackgroundModes` | `fetch`, `processing` | Backup runs while Bloom is closed (Xcode: Background Modes › Background fetch, Background processing). |
+| `BGTaskSchedulerPermittedIdentifiers` | `no.johannesstoen.bloom.backup.processing`, `no.johannesstoen.bloom.backup.refresh` | The two background tasks Backup schedules. Missing, the app crashes at launch. Steps: [`app-target/BACKGROUND_BACKUP.md`](app-target/BACKGROUND_BACKUP.md). |
 | `ITSAppUsesNonExemptEncryption` | `NO` | Bloom only uses the encryption built into iOS (HTTPS/TLS), which is exempt; this skips the export compliance question on every upload. |
 
 Text for `NSLocalNetworkUsageDescription`:
@@ -49,8 +51,10 @@ Text for `NSLocalNetworkUsageDescription`:
 - Norwegian (`nb.lproj/InfoPlist.strings` in the app target):
   `"NSLocalNetworkUsageDescription" = "Bloom kobler til Immich-serveren din når den er på det lokale nettverket.";`
 
-Bloom uses no camera, microphone, location, contacts or Photos library, so no other usage
-descriptions are needed. (Uploading from the Photos library would add `NSPhotoLibraryUsageDescription`.)
+Bloom uses no camera, microphone, location or contacts, so no other usage descriptions are needed.
+Backup reads the Photos library (read-only), which needs `NSPhotoLibraryUsageDescription`. In the review
+notes, say that Backup is optional, off by default and uploads only to the user's own server, and that
+the background modes exist only to send those uploads while the app is closed.
 
 ## App Transport Security
 

@@ -42,6 +42,7 @@ public actor BackupResultRecorder {
         let claimed = await index.complete(
             attempt: job.attempt, if: { stored, entry in entry.checksums[stored.resource] == stored.checksum },
             { stored, entry in Self.apply(outcome, of: stored, to: &entry, now: now) })
+        if claimed != nil, case .uploaded = outcome { await index.noteSuccess(at: now) }
         let name = claimed?.bodyFileName ?? job.bodyFileName
         // The body stays when the index couldn't be saved: the result is only in memory then, and
         // cleanup of unreferenced files removes it later.

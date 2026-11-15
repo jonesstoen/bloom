@@ -42,6 +42,23 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(memory.title(), "Kari har bursdag")
     }
 
+    func testBackgroundBackupStatusIsTranslated() {
+        Localization.languageOverride = "nb"
+        XCTAssertEqual(ImmichUI.tr("Uploading in the background: %lld", Int64(3)), "Lastes opp i bakgrunnen: 3")
+        XCTAssertEqual(ImmichUI.tr("Last backup: %@", "for 2 timer siden"), "Siste sikkerhetskopi: for 2 timer siden")
+        XCTAssertEqual(
+            ImmichUI.tr("Bloom backs up when it is open and at night while charging. iOS decides the exact time."),
+            "Bloom tar sikkerhetskopi når appen er åpen og om natten mens den lader. iOS bestemmer nøyaktig når.")
+        XCTAssertEqual(
+            ImmichUI.tr("Background App Refresh is off for Bloom. Turn it on in Settings to back up when Bloom is closed."),
+            "Bakgrunnsoppdatering er av for Bloom. Slå den på i Innstillinger for å ta sikkerhetskopi når Bloom er lukket.")
+        XCTAssertEqual(
+            ImmichUI.tr("Backup stopped: the server redirected an upload to another address. Check your server setup, then open Backup again."),
+            "Sikkerhetskopiering stoppet: serveren sendte en opplasting videre til en annen adresse. Sjekk serveroppsettet og åpne Sikkerhetskopi igjen.")
+        Localization.languageOverride = "en"
+        XCTAssertEqual(ImmichUI.tr("Last backup: %@", "2 hours ago"), "Last backup: 2 hours ago")
+    }
+
     func testEnglishIsTheKeyItself() {
         Localization.languageOverride = "en"
         XCTAssertEqual(ImmichUI.tr("Library"), "Library")

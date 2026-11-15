@@ -293,7 +293,11 @@
 "Photos over Cellular" = "Bilder over mobilnett";
 "Videos over Cellular" = "Videoer over mobilnett";
 "Photos that exist only in iCloud are checked on Wi-Fi, unless you allow cellular here." = "Bilder som bare finnes i iCloud, sjekkes på Wi-Fi med mindre du tillater mobilnett her.";
-"Bloom uploads while the app is open." = "Bloom laster opp mens appen er åpen.";
+"Uploading in the background: %lld" = "Lastes opp i bakgrunnen: %lld";
+"Last backup: %@" = "Siste sikkerhetskopi: %@";
+"Bloom backs up when it is open and at night while charging. iOS decides the exact time." = "Bloom tar sikkerhetskopi når appen er åpen og om natten mens den lader. iOS bestemmer nøyaktig når.";
+"Background App Refresh is off for Bloom. Turn it on in Settings to back up when Bloom is closed." = "Bakgrunnsoppdatering er av for Bloom. Slå den på i Innstillinger for å ta sikkerhetskopi når Bloom er lukket.";
+"Backup stopped: the server redirected an upload to another address. Check your server setup, then open Backup again." = "Sikkerhetskopiering stoppet: serveren sendte en opplasting videre til en annen adresse. Sjekk serveroppsettet og åpne Sikkerhetskopi igjen.";
 "Bloom never deletes photos from your iPhone." = "Bloom sletter aldri bilder fra iPhone.";
 "Photo Access Is Off" = "Tilgang til bilder er av";
 "Allow Bloom to read your photos in Settings so it can check which ones are already on your server." = "Gi Bloom tilgang til bildene dine i Innstillinger, så kan den sjekke hvilke som allerede ligger på serveren.";

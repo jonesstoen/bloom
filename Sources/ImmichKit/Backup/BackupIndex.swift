@@ -97,10 +97,12 @@ public actor BackupIndex {
         var selection = BackupSelection()
         /// Uploads handed to the transport whose result isn't recorded yet.
         var jobs: [UploadJob] = []
+        /// When an upload last succeeded (see `BackupIndex.lastSuccess`).
+        var lastSuccess: Date?
 
         init() {}
 
-        private enum CodingKeys: String, CodingKey { case entries, selection, jobs }
+        private enum CodingKeys: String, CodingKey { case entries, selection, jobs, lastSuccess }
 
         /// `jobs` is absent in indexes written before background uploads.
         init(from decoder: Decoder) throws {
@@ -111,6 +113,7 @@ public actor BackupIndex {
             // (Its body file is then unreferenced and cleanup removes it.)
             jobs = ((try? container.decodeIfPresent([Lossy<UploadJob>].self, forKey: .jobs)) ?? nil)?
                 .compactMap(\.value) ?? []
+            lastSuccess = (try? container.decodeIfPresent(Date.self, forKey: .lastSuccess)) ?? nil
         }
 
         private struct Lossy<Value: Decodable>: Decodable {
@@ -215,6 +218,18 @@ public actor BackupIndex {
 
     /// The uploads handed to the transport whose result isn't recorded yet, oldest first.
     public var jobs: [UploadJob] { stored.jobs }
+
+    /// When the result of an upload that reached the server was last recorded: "Last backup" on the Backup
+    /// screen. It lives in the index so it is saved together with the result it dates (one write, no second
+    /// file to keep in step) and goes with the account's directory at sign-out. `nil` before the first one.
+    public var lastSuccess: Date? { stored.lastSuccess }
+
+    /// Notes that an upload succeeded at `date`. Never moves the time backwards.
+    func noteSuccess(at date: Date) {
+        guard stored.lastSuccess.map({ $0 < date }) ?? true else { return }
+        stored.lastSuccess = date
+        hasChanges = true
+    }
 
     public func jobs(for assetID: String) -> [UploadJob] { stored.jobs.filter { $0.assetID == assetID } }
 

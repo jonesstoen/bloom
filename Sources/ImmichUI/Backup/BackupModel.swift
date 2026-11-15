@@ -3,6 +3,9 @@ import ImageIO
 import ImmichKit
 import Observation
 import os
+#if os(iOS)
+import UIKit
+#endif
 
 /// What the Backup screens show: which photos are on the server, which still aren't, and the
 /// choices that steer that (albums, cellular, the Backup switch). Uploads are started by `runner`.
@@ -77,6 +80,25 @@ final class BackupModel {
     var connectionStatus: ConnectionStatus? {
         guard cannotReachServer else { return nil }
         return settings.isEnabled && madeRunner?.isOffline == true ? .waitingForNetwork : .serverUnreachable
+    }
+    /// Uploads iOS is sending (or has queued) for this account, including while Bloom is closed. Read by
+    /// `refreshBackgroundStatus()`.
+    private(set) var inFlightCount = 0
+    /// When an upload last reached the server (the index's `lastSuccess`); `nil` before the first.
+    private(set) var lastBackup: Date?
+    /// The transport saw an upload redirected to another address and sends nothing until the server answers
+    /// at its own address again.
+    private(set) var isRedirectBlocked = false
+    /// Background App Refresh is off for Bloom (set from `backgroundRefreshIsDenied`).
+    private(set) var isBackgroundRefreshOff = false
+    /// Whether the user has turned Background App Refresh off for Bloom. Injected so tests can set it;
+    /// the live value asks iOS (always `false` elsewhere).
+    @ObservationIgnored var backgroundRefreshIsDenied: @MainActor () -> Bool = {
+        #if os(iOS)
+        UIApplication.shared.backgroundRefreshStatus == .denied
+        #else
+        false
+        #endif
     }
     /// Set when the Backup switch was turned on with no album chosen: the screen opens the album picker,
     /// and clears it when the picker closes.
@@ -584,6 +606,25 @@ final class BackupModel {
         let index = await ensureIndex()
         let network = networkConditions
         return BackupScanner(source: source, service: service, index: index, network: network, settings: settings)
+    }
+
+    /// Reads what the background upload session is doing: the uploads in flight, the redirect block, the time
+    /// of the last success and the Background App Refresh setting. The screen calls it every few seconds.
+    func refreshBackgroundStatus() async {
+        guard !isStopped else { return }
+        isBackgroundRefreshOff = backgroundRefreshIsDenied()
+        let index = await ensureIndex()
+        let last = await index.lastSuccess
+        if last != lastBackup { lastBackup = last }
+        guard let transport = await uploadConnection()?.transport else {
+            inFlightCount = 0
+            isRedirectBlocked = false
+            return
+        }
+        let count = await transport.inFlight().count
+        let blocked = transport.isRedirectBlocked
+        if count != inFlightCount { inFlightCount = count }
+        if blocked != isRedirectBlocked { isRedirectBlocked = blocked }
     }
 
     private func refreshCounts() async {

@@ -26,7 +26,7 @@ struct BackupView: View {
                 content
             }
             Section {} footer: {
-                Text(tr("Bloom uploads while the app is open.") + "\n" + tr("Bloom never deletes photos from your iPhone."))
+                Text(tr("Bloom never deletes photos from your iPhone."))
             }
         }
         .navigationTitle(tr("Backup"))
@@ -41,6 +41,13 @@ struct BackupView: View {
             }
         }
         .task { await model.load(); model.runner.backupScreenOpened() }
+        // Uploads go on while the screen is open (and after it is closed): look at them every few seconds.
+        .task {
+            while !Task.isCancelled {
+                await model.refreshBackgroundStatus()
+                try? await Task.sleep(for: .seconds(3))
+            }
+        }
         #if os(iOS)
         // Keep the screen awake while a scan or an upload runs: auto-lock would suspend the app and stop
         // a long first run.
@@ -57,6 +64,7 @@ struct BackupView: View {
 
     @ViewBuilder private var content: some View {
         switchSection
+        BackupBackgroundSection(model: model)
         albumsSection
         BackupCountsSection(model: model)
         BackupUploadSection(model: model)
@@ -132,6 +140,73 @@ struct BackupView: View {
         } footer: {
             Text(tr("Photos that exist only in iCloud are checked on Wi-Fi, unless you allow cellular here."))
         }
+    }
+}
+
+/// What the background uploads are doing: how many are under way, when the last one succeeded, why nothing
+/// is sent (redirect, Background App Refresh off), and when Bloom backs up. Its own view so the polling
+/// status only rebuilds this section.
+private struct BackupBackgroundSection: View {
+    let model: BackupModel
+
+    var body: some View {
+        Section {
+            BackupBackgroundRows(
+                inFlight: model.inFlightCount, lastBackup: model.lastBackup,
+                isRedirectBlocked: model.isRedirectBlocked,
+                isRefreshOff: model.isBackgroundRefreshOff && model.settings.isEnabled)
+        } footer: {
+            Text(tr("Bloom backs up when it is open and at night while charging. iOS decides the exact time."))
+        }
+    }
+}
+
+private struct BackupBackgroundRows: View {
+    let inFlight: Int
+    let lastBackup: Date?
+    let isRedirectBlocked: Bool
+    let isRefreshOff: Bool
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        if isRedirectBlocked {
+            Label(
+                tr("Backup stopped: the server redirected an upload to another address. Check your server setup, then open Backup again."),
+                systemImage: "exclamationmark.triangle.fill")
+                .font(.subheadline)
+                .foregroundStyle(.red)
+        }
+        if inFlight > 0 {
+            Label(tr("Uploading in the background: %lld", Int64(inFlight)), systemImage: "arrow.up.circle")
+                .monospacedDigit()
+        }
+        if let lastBackup {
+            Text(tr("Last backup: %@", Self.relative(lastBackup)))
+        }
+        if isRefreshOff {
+            VStack(alignment: .leading, spacing: 8) {
+                Label(
+                    tr("Background App Refresh is off for Bloom. Turn it on in Settings to back up when Bloom is closed."),
+                    systemImage: "arrow.clockwise.circle")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                #if os(iOS)
+                Button(tr("Open Settings")) {
+                    if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                }
+                .buttonStyle(.bordered)
+                #endif
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    /// "2 hours ago", in the app's language.
+    static func relative(_ date: Date, now: Date = .now) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Localization.locale
+        formatter.unitsStyle = .full
+        return formatter.localizedString(for: date, relativeTo: now)
     }
 }
 
@@ -306,6 +381,19 @@ private struct BackupFailedItemsSection: View {
     List {
         Section { BackupUploadRow(progress: UploadProgress(done: 3, total: 15, currentFilename: "IMG_1234.HEIC")) }
         Section { BackupUploadRow(progress: UploadProgress(done: 4, total: 15, currentFilename: nil)) }
+    }
+}
+
+#Preview("Backup, background status") {
+    List {
+        BackupBackgroundRows(
+            inFlight: 3, lastBackup: .now.addingTimeInterval(-7200), isRedirectBlocked: false, isRefreshOff: true)
+    }
+}
+
+#Preview("Backup, redirect blocked") {
+    List {
+        BackupBackgroundRows(inFlight: 0, lastBackup: nil, isRedirectBlocked: true, isRefreshOff: false)
     }
 }
 

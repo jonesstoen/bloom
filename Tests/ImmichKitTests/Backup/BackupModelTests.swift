@@ -10,6 +10,13 @@ private struct FixedNetwork: NetworkConditions {
     func changes() -> AsyncStream<NetworkPath> { AsyncStream { $0.finish() } }
 }
 
+private final class TransportBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var transport: FakeTransport?
+    var value: FakeTransport? { lock.withLock { transport } }
+    func set(_ transport: FakeTransport) { lock.withLock { self.transport = transport } }
+}
+
 @MainActor
 final class BackupModelTests: XCTestCase {
     private var directories: [URL] = []
@@ -856,5 +863,111 @@ final class BackupModelTests: XCTestCase {
         XCTAssertTrue(reopened.settings.isEnabled)
         await model.stop()
         await reopened.stop()
+    }
+
+    // MARK: Background status
+
+    /// A model with an upload connection on a fake transport (jobs wait until finished), on a directory whose
+    /// index was seeded with `jobs` and their entries.
+    private func makeUploadModel(
+        jobs: [UploadJob] = [], now: Date = Date(timeIntervalSince1970: 1_700_000_000)
+    ) async throws -> (model: BackupModel, transport: FakeTransport, recorder: BackupResultRecorder, directory: URL) {
+        let directory = makeDirectory()
+        let seeded = BackupIndex(directory: directory)
+        for job in jobs {
+            await seeded.set(
+                BackupEntry(modificationDate: Self.date, checksums: [job.resource: job.checksum], state: .pending(reason: .needsUpload)),
+                for: job.assetID)
+            await seeded.addJob(job)
+        }
+        try await seeded.save()
+        let box = TransportBox()
+        let uploads = BackupModel.Uploads(requests: .test) { index, staging, recorder in
+            let made = FakeTransport(
+                index: index, staging: staging, recorder: recorder, service: MockImmichService(), mode: .manual)
+            box.set(made)
+            return made
+        }
+        let model = BackupModel(
+            source: makeLibrary(), service: MockImmichService(), directory: directory,
+            network: FixedNetwork(isOnCellular: false), defaults: makeDefaults(), uploads: uploads)
+        let clock = BackupRetryClock(now: { ContinuousClock.now }, sleep: { _ in }, date: { now })
+        let made = await model.uploadConnection(clock: clock)
+        let connection = try XCTUnwrap(made)
+        return (model, try XCTUnwrap(box.value), connection.recorder, directory)
+    }
+
+    private func makeJob(_ asset: String) -> UploadJob {
+        UploadJob(assetID: asset, resource: .photo, attempt: UUID(), bodyFileName: "\(UUID().uuidString).multipart", checksum: "aa")
+    }
+
+    func testInFlightCountShowsUploadingInTheBackground() async throws {
+        let setup = try await makeUploadModel(jobs: [makeJob("a1"), makeJob("a2")])
+        XCTAssertEqual(setup.model.inFlightCount, 0, "Nothing is read before the status is refreshed")
+
+        await setup.model.refreshBackgroundStatus()
+
+        XCTAssertEqual(setup.model.inFlightCount, 2)
+        await setup.model.stop()
+    }
+
+    func testRedirectBlockIsShownAndCleared() async throws {
+        let setup = try await makeUploadModel()
+        await setup.model.refreshBackgroundStatus()
+        XCTAssertFalse(setup.model.isRedirectBlocked)
+
+        setup.transport.setRedirectBlocked(true)
+        await setup.model.refreshBackgroundStatus()
+        XCTAssertTrue(setup.model.isRedirectBlocked)
+
+        setup.transport.setRedirectBlocked(false)
+        await setup.model.refreshBackgroundStatus()
+        XCTAssertFalse(setup.model.isRedirectBlocked)
+        await setup.model.stop()
+    }
+
+    func testLastBackupComesFromTheLastRecordedSuccess() async throws {
+        let first = makeJob("a1")
+        let second = makeJob("a2")
+        let recordedAt = Date(timeIntervalSince1970: 1_700_500_000)
+        let setup = try await makeUploadModel(jobs: [first, second], now: recordedAt)
+        await setup.model.refreshBackgroundStatus()
+        XCTAssertNil(setup.model.lastBackup, "No upload has succeeded yet")
+
+        // A failure is not a backup.
+        await setup.recorder.record(first, .failed(.service(.unexpectedStatus(503))))
+        await setup.model.refreshBackgroundStatus()
+        XCTAssertNil(setup.model.lastBackup)
+
+        await setup.recorder.record(second, .uploaded(AssetUploadResult(id: "srv-2", status: .created)))
+        await setup.model.refreshBackgroundStatus()
+        XCTAssertEqual(setup.model.lastBackup, recordedAt)
+        await setup.model.stop()
+    }
+
+    func testLastBackupSurvivesReopeningTheIndex() async throws {
+        let job = makeJob("a1")
+        let recordedAt = Date(timeIntervalSince1970: 1_700_500_000)
+        let setup = try await makeUploadModel(jobs: [job], now: recordedAt)
+        await setup.recorder.record(job, .uploaded(AssetUploadResult(id: "srv-1", status: .created)))
+        await setup.model.stop()
+
+        let reopened = BackupIndex(directory: setup.directory)
+        let last = await reopened.lastSuccess
+        XCTAssertEqual(last, recordedAt)
+    }
+
+    func testRefreshOffHintShowsWhenDenied() async throws {
+        let model = makeModel(makeLibrary())
+        XCTAssertFalse(model.isBackgroundRefreshOff)
+
+        model.backgroundRefreshIsDenied = { true }
+        await model.refreshBackgroundStatus()
+        XCTAssertTrue(model.isBackgroundRefreshOff)
+
+        model.backgroundRefreshIsDenied = { false }
+        await model.refreshBackgroundStatus()
+        XCTAssertFalse(model.isBackgroundRefreshOff)
+        await model.stop()
     }
 }
