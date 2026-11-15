@@ -211,6 +211,32 @@ final class BackgroundSessionTransportTests: XCTestCase {
         XCTAssertTrue(process.session.created.isEmpty, "nothing is sent again")
     }
 
+    func testUploadProgressIsKeyedByAttemptAndClearedOnCompletion() async throws {
+        let process = await launch(makeAccount())
+        let first = UploadJob(assetID: "p1", resource: .photo, attempt: UUID(), bodyFileName: "a.multipart", checksum: "aa")
+        let second = UploadJob(assetID: "p1", resource: .pairedVideo, attempt: UUID(), bodyFileName: "b.multipart", checksum: "bb")
+        let a = FakeUploadTask(id: 1, description: Self.description(of: first), request: request())
+        let b = FakeUploadTask(id: 2, description: Self.description(of: second), request: request())
+        let unreadable = FakeUploadTask(id: 3, description: "not a job", request: request())
+        XCTAssertEqual(process.transport.uploadProgress(), [:])
+
+        process.transport.events.didSendBodyData(for: a, totalBytesSent: 10, totalBytesExpectedToSend: 100)
+        process.transport.events.didSendBodyData(for: a, totalBytesSent: 25, totalBytesExpectedToSend: 100)
+        process.transport.events.didSendBodyData(for: b, totalBytesSent: 10, totalBytesExpectedToSend: NSURLSessionTransferSizeUnknown)
+        process.transport.events.didSendBodyData(for: unreadable, totalBytesSent: 5, totalBytesExpectedToSend: 10)
+
+        var progress = process.transport.uploadProgress()
+        XCTAssertEqual(progress.count, 2, "One per attempt; a task without a readable job is left out")
+        XCTAssertEqual(progress[first.attempt], UploadBytes(sent: 25, expected: 100), "The latest report wins")
+        XCTAssertEqual(progress[first.attempt]?.fraction, 0.25)
+        XCTAssertNil(progress[second.attempt]?.fraction, "An unknown size has no fraction")
+
+        finish(a, in: process, status: 500)
+        progress = process.transport.uploadProgress()
+        XCTAssertNil(progress[first.attempt], "A finished task no longer reports progress")
+        XCTAssertNotNil(progress[second.attempt])
+    }
+
     func testRelaunchRecordsAFinishedTaskOnce() async throws {
         let account = makeAccount()
         let first = await launch(account)

@@ -1019,6 +1019,115 @@ final class BackupModelTests: XCTestCase {
         await model.stop()
     }
 
+    func testUploadFractionsAreByAssetAndCombineLivePhotoHalves() {
+        func job(_ asset: String, _ resource: DeviceResourceType) -> UploadJob {
+            UploadJob(assetID: asset, resource: resource, attempt: UUID(), bodyFileName: "x", checksum: "aa")
+        }
+        let photo = job("live", .photo), video = job("live", .pairedVideo)
+        let plain = job("plain", .photo), quiet = job("quiet", .photo)
+        let half = job("half", .photo), otherHalf = job("half", .pairedVideo)
+        let stale = UUID()
+        let progress: [UUID: UploadBytes] = [
+            photo.attempt: UploadBytes(sent: 100, expected: 100),
+            video.attempt: UploadBytes(sent: 100, expected: 300),
+            plain.attempt: UploadBytes(sent: 1, expected: 4),
+            half.attempt: UploadBytes(sent: 50, expected: 100),
+            stale: UploadBytes(sent: 1, expected: 2),
+        ]
+        let fractions = BackupModel.uploadFractions(jobs: [photo, video, plain, quiet, half, otherHalf], progress: progress)
+
+        XCTAssertEqual(fractions.count, 3, "One per asset; an asset without progress yet has none (indeterminate)")
+        XCTAssertEqual(fractions["live"]!, 0.5, accuracy: 0.0001, "Both halves of a Live Photo by bytes: 200 of 400")
+        XCTAssertEqual(fractions["plain"]!, 0.25, accuracy: 0.0001)
+        XCTAssertEqual(fractions["half"]!, 0.25, accuracy: 0.0001, "A half not started yet counts as nothing sent")
+        XCTAssertNil(fractions["quiet"])
+    }
+
+    func testRemainingSectionsGroupByStateInOrderNewestFirst() {
+        let retryAt = Date().addingTimeInterval(600)
+        func item(_ id: String, _ offset: TimeInterval?, _ status: BackupModel.RemainingItem.Status) -> BackupModel.RemainingItem {
+            BackupModel.RemainingItem(id: id, date: offset.map { Self.date.addingTimeInterval($0) }, status: status)
+        }
+        let items = [
+            item("n1", 1, .notChecked), item("w1", 2, .waiting), item("u1", 3, .uploading), item("r1", 4, .retrying(at: retryAt)),
+            item("f1", 5, .waitingForWiFi), item("w2", 9, .waiting), item("w3", nil, .waiting),
+        ]
+        let sections = BackupModel.remainingSections(items)
+
+        XCTAssertEqual(sections.map(\.kind), [.uploading, .waiting, .waitingForWiFi, .retrying, .notChecked])
+        XCTAssertEqual(sections.map { $0.items.map(\.id) }, [["u1"], ["w2", "w1", "w3"], ["f1"], ["r1"], ["n1"]])
+        XCTAssertTrue(BackupModel.remainingSections([item("w1", 1, .waiting)]).allSatisfy { !$0.items.isEmpty }, "Empty sections are left out")
+    }
+
+    func testRemainingCapNeverCutsInFlightItemsAndProgressIsByAsset() async throws {
+        let count = BackupModel.remainingItemLimit + 3
+        let ids = (1...count).map { "a\($0)" }
+        let library = FakePhotoLibrary()
+        let directory = makeDirectory()
+        let index = BackupIndex(directory: directory)
+        for (offset, id) in ids.enumerated() {
+            let date = Self.date.addingTimeInterval(TimeInterval(offset))
+            let resource = DeviceResource(type: .photo, filename: "\(id).jpg")
+            library.addAsset(DeviceAsset(
+                id: id, isVideo: false, creationDate: date, modificationDate: date,
+                isFavorite: false, duration: 0, resources: [resource]))
+            await index.set(
+                BackupEntry(modificationDate: date, checksums: [.photo: "sum-\(id)"], state: .pending(reason: .needsUpload)),
+                for: id)
+        }
+        library.addAlbum(id: "recents", title: "Recents", assetIDs: Set(ids))
+        await index.setSelection(BackupSelection(included: ["recents"]))
+        // The oldest item, which the cut would drop, is uploading: both halves of a Live Photo.
+        let photo = makeJob("a1")
+        let video = UploadJob(assetID: "a1", resource: .pairedVideo, attempt: UUID(), bodyFileName: "v.multipart", checksum: "bb")
+        await index.addJob(photo)
+        await index.addJob(video)
+        try await index.save()
+        let box = TransportBox()
+        let uploads = BackupModel.Uploads(requests: .test) { index, staging, recorder in
+            let made = FakeTransport(index: index, staging: staging, recorder: recorder, service: MockImmichService(), mode: .manual)
+            box.set(made)
+            return made
+        }
+        let model = BackupModel(
+            source: library, service: MockImmichService(), directory: directory,
+            network: FixedNetwork(isOnCellular: false), defaults: makeDefaults(), uploads: uploads)
+        await model.load()
+        await model.refreshBackgroundStatus()
+
+        XCTAssertEqual(model.remainingItems.count, BackupModel.remainingItemLimit, "Still capped in total")
+        XCTAssertEqual(model.remainingItems.filter { $0.id == "a1" }.map(\.status), [.uploading], "One row for both halves, never cut")
+        XCTAssertFalse(model.remainingItems.contains { ["a2", "a3", "a4"].contains($0.id) }, "The oldest others make room")
+        XCTAssertEqual(model.remainingTotal, count)
+        XCTAssertTrue(model.isRemainingCut, "The footer shows when the real total is larger")
+        XCTAssertEqual(model.remainingSections.first?.kind, .uploading)
+        XCTAssertEqual(model.remainingSections.first?.items.map(\.id), ["a1"])
+
+        XCTAssertEqual(model.uploadProgress.fractions, [:], "No progress reported yet")
+        try XCTUnwrap(box.value).setProgress([
+            photo.attempt: UploadBytes(sent: 30, expected: 100), video.attempt: UploadBytes(sent: 10, expected: 100),
+        ])
+        await model.refreshUploadProgress()
+        XCTAssertEqual(model.uploadProgress.fractions["a1"]!, 0.2, accuracy: 0.0001)
+        await model.stop()
+    }
+
+    func testRemainingSummaryFractionIsBackedUpOverBackedUpAndPending() async throws {
+        let directory = makeDirectory()
+        let index = BackupIndex(directory: directory)
+        for number in 0..<4 {
+            let state: BackupState = number == 0 ? .pending(reason: .needsUpload) : .backedUp(serverAssetID: "s\(number)")
+            await index.set(BackupEntry(modificationDate: Self.date, checksums: [.photo: "sum-\(number)"], state: state), for: "a\(number + 1)")
+        }
+        await index.setSelection(BackupSelection(included: ["recents"]))
+        try await index.save()
+        let model = makeModel(makeLibrary(count: 4), directory: directory)
+        await model.load()
+        XCTAssertEqual(model.backedUpFraction ?? -1, 0.75, accuracy: 0.0001)
+        XCTAssertFalse(model.isRemainingCut)
+        await model.stop()
+    }
+
     func testRemainingListIsEmptyWhenEverythingIsBackedUp() async throws {
         let library = makeLibrary(count: 2)
         let directory = try await seededDirectory(["a1": .backedUp(serverAssetID: "s1"), "a2": .backedUp(serverAssetID: "s2")])

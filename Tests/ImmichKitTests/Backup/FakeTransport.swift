@@ -139,6 +139,11 @@ final class FakeTransport: BackupTransport, @unchecked Sendable {
 
     var isRedirectBlocked: Bool { lock.withLock { _blocked } }
 
+    private var _progress: [UUID: UploadBytes] = [:]
+    /// What `uploadProgress()` reports, as a test sets it.
+    func setProgress(_ progress: [UUID: UploadBytes]) { lock.withLock { _progress = progress } }
+    func uploadProgress() -> [UUID: UploadBytes] { lock.withLock { _progress } }
+
     func clearRedirectBlock() {
         lock.withLock {
             _blocked = false

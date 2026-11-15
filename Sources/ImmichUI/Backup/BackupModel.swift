@@ -53,6 +53,19 @@ final class BackupModel {
         let status: Status
     }
 
+    /// The remaining items of one state, a section of the Remaining list (see `remainingSections`).
+    struct RemainingSection: Identifiable, Equatable {
+        /// The states in the order the list shows them.
+        enum Kind: Int, CaseIterable, Equatable {
+            case uploading, waiting, waitingForWiFi, retrying, notChecked
+        }
+
+        let kind: Kind
+        /// Newest first.
+        let items: [RemainingItem]
+        var id: Kind { kind }
+    }
+
     /// What `refreshLists()` read of a remaining item: its status is worked out from this when it is shown,
     /// since in-flight uploads and retry times change between index passes.
     private struct RemainingBase: Equatable {
@@ -97,6 +110,9 @@ final class BackupModel {
     private(set) var remainingItems: [RemainingItem] = []
     /// How many items are still to back up as the last pass found them (all of them, not just the listed ones).
     private(set) var remainingTotal = 0
+    /// How far each upload in flight has got, by asset ID. A separate observable, so the fast progress
+    /// updates (`refreshUploadProgress()`) only redraw the views that read it.
+    @ObservationIgnored let uploadProgress = BackupUploadProgress()
     private(set) var error: String?
     /// The last scan or upload stopped because the server couldn't be reached (offline, VPN off, server
     /// down). Shown as `connectionStatus` instead of `error`; cleared when a scan or upload run gets through.
@@ -184,7 +200,12 @@ final class BackupModel {
     /// The remaining items as the last index pass read them, and the assets the transport has in flight
     /// (`refreshBackgroundStatus()`); `remainingItems` is made from both.
     @ObservationIgnored private var remainingBase: [RemainingBase] = []
+    @ObservationIgnored private var inFlightJobs: [UploadJob] = []
+    /// Previews only: stands in for the account's transport when reading what is in flight.
+    @ObservationIgnored private var previewTransport: (any BackupTransport)?
     @ObservationIgnored private var uploadingIDs: Set<String> = []
+    /// The in-flight assets the last `refreshLists()` kept in the list, so a new one can trigger a pass.
+    @ObservationIgnored private var listedInFlightIDs: Set<String> = []
     @ObservationIgnored private var progressGate = BackupProgressGate()
     @ObservationIgnored private var isStopped = false
     @ObservationIgnored private var selectionRevision = 0
@@ -663,20 +684,33 @@ final class BackupModel {
         let index = await ensureIndex()
         let last = await index.lastSuccess
         if last != lastBackup { lastBackup = last }
-        guard let transport = await uploadConnection()?.transport else {
+        guard let transport = await statusTransport() else {
             inFlightCount = 0
             isRedirectBlocked = false
+            inFlightJobs = []
             uploadingIDs = []
             publishRemaining()
+            if !uploadProgress.fractions.isEmpty { uploadProgress.fractions = [:] }
             return
         }
         let jobs = await transport.inFlight()
         let count = jobs.count
         let blocked = transport.isRedirectBlocked
+        inFlightJobs = jobs
         uploadingIDs = Set(jobs.map(\.assetID))
+        // An upload of an item the last pass cut from the list: a new pass keeps it (in-flight rows are never cut).
+        if counts.pending > 0, !uploadingIDs.isSubset(of: listedInFlightIDs.union(remainingBase.map(\.id))) {
+            await refreshLists()
+        }
         publishRemaining()
         if count != inFlightCount { inFlightCount = count }
         if blocked != isRedirectBlocked { isRedirectBlocked = blocked }
+    }
+
+    /// The transport whose uploads in flight and progress the screen shows.
+    private func statusTransport() async -> (any BackupTransport)? {
+        if let previewTransport { return previewTransport }
+        return await uploadConnection()?.transport
     }
 
     /// The latest `cancelUploadsNotAllowedOnCellular`, kept so tests can wait for it.
@@ -731,7 +765,8 @@ final class BackupModel {
         var failed: [FailedItem] = []
         var deleted: [(id: String, entry: BackupEntry)] = []
         var remaining: (total: Int, items: [PendingItem]) = (0, [])
-        if wantsRemaining { remaining = await currentRemaining() }
+        let inFlight = uploadingIDs
+        if wantsRemaining { remaining = await currentRemaining(keeping: inFlight) }
         if wantsFailed || wantsDeleted {
             let entries = await currentEntries {
                 (wantsFailed && Self.isFailed($0)) || (wantsDeleted && Self.isDeletedOnServer($0))
@@ -771,6 +806,7 @@ final class BackupModel {
         }.sorted { Self.isNewer(($0.id, $0.date), ($1.id, $1.date)) }
         if remainingBase != bases { remainingBase = bases }
         if remainingTotal != remaining.total { remainingTotal = remaining.total }
+        listedInFlightIDs = inFlight
         publishRemaining()
         // Thumbnails of rows that are gone aren't needed any more.
         let shown = Set(items.map(\.id)).union(bases.map(\.id))
@@ -800,10 +836,11 @@ final class BackupModel {
         let retryNotBefore: Date?
     }
 
-    /// The selected photos still to back up, the newest edits first and cut at `remainingItemLimit`, with
+    /// The selected photos still to back up, the newest edits first and cut at `remainingItemLimit` (the items
+    /// in `keeping`, those in flight, are never cut: the others make room for them), with
     /// the total before the cut. Counts what `BackupScanner.counts()` counts as pending: queued entries, and
     /// photos with no entry or a stale one (changed since it was recorded), which are not checked yet.
-    private func currentRemaining() async -> (total: Int, items: [PendingItem]) {
+    private func currentRemaining(keeping: Set<String>) async -> (total: Int, items: [PendingItem]) {
         let index = await ensureIndex()
         let ids = await index.selection().assetIDs(in: source).sorted()
         var found: [(id: String, modified: Date, item: PendingItem)] = []
@@ -823,7 +860,9 @@ final class BackupModel {
             }
         }
         let newest = found.sorted { Self.isNewerEdit(($0.id, $0.modified), ($1.id, $1.modified)) }
-        return (found.count, newest.prefix(Self.remainingItemLimit).map(\.item))
+        let kept = newest.filter { keeping.contains($0.id) }.map(\.item)
+        let others = newest.filter { !keeping.contains($0.id) }.prefix(max(0, Self.remainingItemLimit - kept.count))
+        return (found.count, kept + others.map(\.item))
     }
 
     /// The order of lists cut to a limit: the later edit first, ties by ID.
@@ -860,6 +899,69 @@ final class BackupModel {
             return RemainingItem(id: base.id, date: base.date, status: status)
         }
         if remainingItems != items { remainingItems = items }
+    }
+
+    /// `remainingItems` grouped by state, in the list's order, without empty sections.
+    var remainingSections: [RemainingSection] { Self.remainingSections(remainingItems) }
+
+    /// The list shows fewer items than remain (its footer says so).
+    var isRemainingCut: Bool { remainingTotal > remainingItems.count }
+
+    /// The share of the selection on the server, of what is on it or still to back up; nil when nothing
+    /// remains.
+    var backedUpFraction: Double? {
+        guard counts.pending > 0 else { return nil }
+        return Double(counts.backedUp) / Double(counts.backedUp + counts.pending)
+    }
+
+    /// Groups items into sections in `RemainingSection.Kind` order, each newest first (by date taken,
+    /// undated last), leaving out empty ones.
+    static func remainingSections(_ items: [RemainingItem]) -> [RemainingSection] {
+        let grouped = Dictionary(grouping: items) { item -> RemainingSection.Kind in
+            switch item.status {
+            case .uploading: .uploading
+            case .waiting: .waiting
+            case .waitingForWiFi: .waitingForWiFi
+            case .retrying: .retrying
+            case .notChecked: .notChecked
+            }
+        }
+        return RemainingSection.Kind.allCases.compactMap { kind in
+            guard let items = grouped[kind], !items.isEmpty else { return nil }
+            return RemainingSection(kind: kind, items: items.sorted { isNewer(($0.id, $0.date), ($1.id, $1.date)) })
+        }
+    }
+
+    /// How far each asset's upload has got, from the transport's bytes by attempt. The halves of a Live
+    /// Photo (or any asset with several jobs) make one fraction: by bytes when every job knows its size,
+    /// otherwise the mean of the jobs' fractions, a job without one counting as nothing sent. An asset none
+    /// of whose jobs has reported a fraction is left out (its row shows indeterminate progress).
+    static func uploadFractions(jobs: [UploadJob], progress: [UUID: UploadBytes]) -> [String: Double] {
+        var result: [String: Double] = [:]
+        for (asset, assetJobs) in Dictionary(grouping: jobs, by: \.assetID) {
+            let reports = assetJobs.map { progress[$0.attempt] }
+            guard reports.contains(where: { $0?.fraction != nil }) else { continue }
+            let sized = reports.compactMap { $0 }.filter { $0.expected > 0 }
+            if sized.count == reports.count {
+                let sent = sized.reduce(0.0) { $0 + Double(min($1.sent, $1.expected)) }
+                let expected = sized.reduce(0.0) { $0 + Double($1.expected) }
+                result[asset] = min(1, max(0, sent / expected))
+            } else {
+                result[asset] = reports.reduce(0.0) { $0 + ($1?.fraction ?? 0) } / Double(reports.count)
+            }
+        }
+        return result
+    }
+
+    /// Reads the transport's progress for the uploads in flight (as the last `refreshBackgroundStatus()`
+    /// found them) into `uploadProgress`. Cheap: the Remaining list calls it a few times a second.
+    func refreshUploadProgress() async {
+        guard !isStopped, !inFlightJobs.isEmpty, let transport = await statusTransport() else {
+            if !uploadProgress.fractions.isEmpty { uploadProgress.fractions = [:] }
+            return
+        }
+        let fractions = Self.uploadFractions(jobs: inFlightJobs, progress: transport.uploadProgress())
+        if uploadProgress.fractions != fractions { uploadProgress.fractions = fractions }
     }
 
     private static func isFailed(_ entry: BackupEntry) -> Bool {
@@ -943,7 +1045,8 @@ extension BackupModel {
     /// For previews: records items as deleted on the server and as failed in the index, then loads, so the
     /// Deleted on Server and Problems rows and lists have something to show. The first deleted item is in
     /// the server's trash, the rest are gone for good.
-    func loadPreview(deletedOnServer: Int = 0, problems: Int = 0, remaining: Int = 0) async {
+    /// The first `uploading` remaining items are shown in flight, one with progress and the rest without yet.
+    func loadPreview(deletedOnServer: Int = 0, problems: Int = 0, remaining: Int = 0, uploading: Int = 0) async {
         let index = await ensureIndex()
         let date = PreviewPhotoLibrary.date
         for number in 0..<deletedOnServer {
@@ -974,8 +1077,33 @@ extension BackupModel {
                 BackupEntry(modificationDate: date, checksums: [:], state: .failed(reason: reasons[number % reasons.count])),
                 for: id)
         }
+        if uploading > 0 {
+            let jobs = (0..<min(uploading, remaining)).map { number in
+                UploadJob(
+                    assetID: "preview-\(10 + number)", resource: .photo, attempt: UUID(),
+                    bodyFileName: "preview-\(number).multipart", checksum: "preview")
+            }
+            let progress = jobs.first.map { [$0.attempt: UploadBytes(sent: 1_400_000, expected: 3_200_000)] } ?? [:]
+            previewTransport = PreviewTransport(jobs: jobs, progress: progress)
+        }
         await load()
+        await refreshBackgroundStatus()
+        await refreshUploadProgress()
     }
+}
+
+/// For previews: uploads that stay in flight with fixed progress. Sends nothing.
+private struct PreviewTransport: BackupTransport {
+    let jobs: [UploadJob]
+    let progress: [UUID: UploadBytes]
+
+    func enqueue(_ job: UploadJob, request: URLRequest) async throws {}
+    func inFlight() async -> [UploadJob] { jobs }
+    func cancelAll() async {}
+    func cancel(attempts: Set<UUID>) async {}
+    var isRedirectBlocked: Bool { false }
+    func clearRedirectBlock() {}
+    func uploadProgress() -> [UUID: UploadBytes] { progress }
 }
 
 // MARK: - Preview source
@@ -1036,4 +1164,11 @@ struct PreviewPhotoLibrary: PhotoLibrarySource {
     func changes() -> AsyncStream<Void> { AsyncStream { $0.finish() } }
 
     func thumbnailData(_ id: String, pixelSide: Int) async -> Data? { nil }
+}
+
+/// How far each upload in flight has got (0...1), by asset ID; an asset without a fraction yet is missing.
+/// Kept apart from `BackupModel` so its several updates a second only redraw the progress views.
+@MainActor @Observable
+final class BackupUploadProgress {
+    var fractions: [String: Double] = [:]
 }

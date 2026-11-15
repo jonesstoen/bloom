@@ -169,6 +169,9 @@ public final class BackgroundSessionTransport: BackupTransport, Sendable {
     /// Kept on disk; while set, `enqueue` throws `BackupTransportError.redirectBlocked`.
     public var isRedirectBlocked: Bool { redirectBlock.isSet }
 
+    /// The bytes sent of each task that reported any (`urlSession(_:task:didSendBodyData:…)`), by attempt.
+    public func uploadProgress() -> [UUID: UploadBytes] { events.progress() }
+
     /// Lifts the redirect block. Only the user's Try Again on the Backup screen calls it.
     public func clearRedirectBlock() {
         redirectBlock.clear()
@@ -444,6 +447,8 @@ final class BackgroundSessionEvents: @unchecked Sendable {
         var requeue = Requeue.notReady
         /// Index jobs without a task at startup.
         var suspects: [UploadJob] = []
+        /// Bytes sent of tasks in flight, by attempt; removed when the task completes.
+        var progress: [UUID: UploadBytes] = [:]
     }
 
     private let recorder: BackupResultRecorder
@@ -468,6 +473,19 @@ final class BackgroundSessionEvents: @unchecked Sendable {
         }
     }
 
+    /// iOS reports how much of a task's body it sent. Only the latest report is kept; a task whose job
+    /// can't be read is ignored.
+    func didSendBodyData(for task: any UploadTaskHandle, totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        guard let job = BackgroundSessionTransport.job(in: task.taskDescription) else { return }
+        let bytes = UploadBytes(sent: totalBytesSent, expected: totalBytesExpectedToSend)
+        lock.withLock { state.progress[job.attempt] = bytes }
+    }
+
+    /// The latest bytes sent of each task in flight, by attempt.
+    func progress() -> [UUID: UploadBytes] {
+        lock.withLock { state.progress }
+    }
+
     /// `status` is the HTTP status of the task's response, `nil` without one.
     func didComplete(_ task: any UploadTaskHandle, status: Int?, error: Error?) {
         let job = BackgroundSessionTransport.job(in: task.taskDescription)
@@ -479,6 +497,7 @@ final class BackgroundSessionEvents: @unchecked Sendable {
             state.pendingWork += 1
             state.eventsFinished = false
             if let job {
+                state.progress[job.attempt] = nil
                 state.delivered.insert(job.attempt)
                 state.recording[job.attempt] = job.bodyFileName
             }
@@ -642,6 +661,11 @@ final class BackgroundSessionDelegate: NSObject, URLSessionDataDelegate, Sendabl
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         events.didReceive(data, for: dataTask)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
+                    totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        events.didSendBodyData(for: task, totalBytesSent: totalBytesSent, totalBytesExpectedToSend: totalBytesExpectedToSend)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {

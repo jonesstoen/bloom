@@ -334,5 +334,8 @@
 "Waiting for Wi-Fi" = "Venter på Wi-Fi";
 "Not Checked Yet" = "Ikke sjekket ennå";
 "Trying again at %@" = "Prøver igjen kl. %@";
+"Uploading Now" = "Lastes opp nå";
+"Trying Again Later" = "Prøver igjen senere";
+"%lld of %lld backed up" = "%1$lld av %2$lld sikkerhetskopiert";
 "Turn on Allow Changes in the account menu to restore photos from the server's trash." = "Slå på Tillat endringer i kontomenyen for å hente bilder tilbake fra papirkurven på serveren.";
 "Couldn't back up your photos: %@" = "Kunne ikke sikkerhetskopiere bildene: %@";

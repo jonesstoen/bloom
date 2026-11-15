@@ -126,6 +126,32 @@ public protocol BackupTransport: Sendable {
     /// Lifts the redirect block. Only on the user's explicit Try Again (`BackupModel.retryAfterRedirect`):
     /// a passing check doesn't prove the uploads themselves aren't redirected.
     func clearRedirectBlock()
+    /// The bytes sent so far of each upload in flight that has reported any, by job attempt. Cheap and
+    /// synchronous: a screen polls it (a few times a second at most) to show progress.
+    func uploadProgress() -> [UUID: UploadBytes]
+}
+
+extension BackupTransport {
+    /// A transport that can't tell reports nothing; uploads then show without a fraction.
+    public func uploadProgress() -> [UUID: UploadBytes] { [:] }
+}
+
+/// How much of one upload's body has been sent.
+public struct UploadBytes: Sendable, Equatable {
+    public let sent: Int64
+    /// The body's size, or a negative number when the transport doesn't know it.
+    public let expected: Int64
+
+    public init(sent: Int64, expected: Int64) {
+        self.sent = sent
+        self.expected = expected
+    }
+
+    /// `sent / expected` in 0...1, nil while the size is unknown.
+    public var fraction: Double? {
+        guard expected > 0 else { return nil }
+        return min(1, max(0, Double(sent) / Double(expected)))
+    }
 }
 
 extension BackupTransportError: LocalizedError {
