@@ -5,8 +5,12 @@ import XCTest
 /// response data, completions and "finished events" the way `URLSession` calls its delegate.
 final class BackgroundSessionTransportTests: XCTestCase {
     private var directories: [URL] = []
+    private var gates: [Gate] = []
 
     override func tearDown() {
+        // Lets every waiting grace period end, so no task is left suspended.
+        for gate in gates { gate.open() }
+        gates = []
         for url in directories { try? FileManager.default.removeItem(at: url) }
         directories = []
         super.tearDown()
@@ -29,6 +33,8 @@ final class BackgroundSessionTransportTests: XCTestCase {
         let recorder: BackupResultRecorder
         let session: FakeUploadSession
         let transport: BackgroundSessionTransport
+        /// The grace period for jobs without a task: it passes when the test opens it.
+        let grace: Gate
     }
 
     private func makeAccount() -> Account {
@@ -61,11 +67,17 @@ final class BackgroundSessionTransportTests: XCTestCase {
         let index = BackupIndex(directory: account.directory)
         let staging = BackupStaging(directory: account.stagingDirectory, freeSpace: { .max })
         let recorder = BackupResultRecorder(index: index, staging: staging)
-        let transport = BackgroundSessionTransport(index: index, staging: staging, recorder: recorder) { events in
+        let grace = Gate()
+        gates.append(grace)
+        let transport = BackgroundSessionTransport(
+            directory: account.directory, index: index, staging: staging, recorder: recorder,
+            graceDelay: { await grace.wait() }
+        ) { events in
             onSessionCreation(events)
             return session
         }
-        return Process(index: index, staging: staging, recorder: recorder, session: session, transport: transport)
+        return Process(
+            index: index, staging: staging, recorder: recorder, session: session, transport: transport, grace: grace)
     }
 
     private func entry(_ state: BackupState = .pending(reason: .needsUpload), checksum: String = "aa") -> BackupEntry {
@@ -94,10 +106,15 @@ final class BackgroundSessionTransportTests: XCTestCase {
     }
 
     /// What iOS does when a task ends: it stops reporting it, delivers the response body and the completion.
+    /// The response comes from `responseURL`, by default where the request went.
     private func finish(
-        _ task: FakeUploadTask, in process: Process, status: Int?, body: Data = Data(), error: Error? = nil
+        _ task: FakeUploadTask, in process: Process, status: Int?, body: Data = Data(), error: Error? = nil,
+        responseURL: URL? = nil
     ) {
         process.session.forget(task)
+        if let status, let url = responseURL ?? task.originalRequest?.url {
+            task.response = HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil)
+        }
         if !body.isEmpty { process.transport.events.didReceive(body, for: task) }
         process.transport.events.didComplete(task, status: status, error: error)
     }
@@ -109,6 +126,15 @@ final class BackgroundSessionTransportTests: XCTestCase {
         process.transport.handleEvents { handled.fulfill() }
         process.transport.events.didFinishEvents()
         await fulfillment(of: [handled], timeout: 5)
+    }
+
+    /// Waits (up to 5 s) until `condition` holds; returns whether it did.
+    private func eventually(_ condition: @escaping () async -> Bool) async -> Bool {
+        for _ in 0..<500 {
+            if await condition() { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return await condition()
     }
 
     /// The index file as it is on disk.
@@ -271,7 +297,18 @@ final class BackgroundSessionTransportTests: XCTestCase {
         // Relaunched: iOS reports no task for the job and delivers no result (e.g. the app died between
         // saving the job and starting the task, or the user force-quit and iOS dropped the task).
         let process = await launch(account)
-        await process.transport.reconcile()
+
+        // First phase: leftovers go; the job waits for a late result, with its body.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: leftover.path), "unreferenced files are removed")
+        XCTAssertTrue(bodyExists(job, in: account))
+        let waiting = await process.transport.inFlight()
+        XCTAssertEqual(waiting, [job], "a job waiting for a late result counts as in flight")
+        let untouched = await process.index.entry(for: "A")
+        XCTAssertEqual(untouched?.state, .pending(reason: .needsUpload))
+
+        // Second phase, once the grace period has passed with no result.
+        process.grace.open()
+        await process.transport.events.waitForRequeue()
 
         let reloaded = BackupIndex(directory: account.directory)
         let jobs = await reloaded.jobs
@@ -279,10 +316,66 @@ final class BackgroundSessionTransportTests: XCTestCase {
         let requeued = await reloaded.entry(for: "A")
         XCTAssertEqual(requeued?.state, .pending(reason: .needsUpload))
         XCTAssertFalse(bodyExists(job, in: account), "the body is deleted; the uploader stages it again")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: leftover.path), "unreferenced files are removed")
         XCTAssertTrue(process.session.created.isEmpty, "reconcile doesn't send anything itself")
         let inFlight = await process.transport.inFlight()
         XCTAssertTrue(inFlight.isEmpty)
+    }
+
+    func testACompletedTaskDeliveredWithinTheGraceIsRecordedNotRequeued() async throws {
+        let account = makeAccount()
+        let job = try stagedJob(account)
+        let previous = BackupIndex(directory: account.directory)
+        await previous.set(entry(), for: "A")
+        await previous.addJob(job)
+        try await previous.save()
+
+        // The task finished while Bloom wasn't running; iOS doesn't list it, but delivers it a little later.
+        let process = await launch(account)
+        XCTAssertTrue(bodyExists(job, in: account))
+        let finished = FakeUploadTask(id: 9, description: Self.description(of: job), request: request())
+        finish(finished, in: process, status: 201, body: created)
+        await finishEvents(of: process)
+
+        let recorded = await process.index.entry(for: "A")
+        XCTAssertEqual(recorded?.state, .backedUp(serverAssetID: "srv-1"), "recorded as the success it was")
+        // The grace period passing afterwards changes nothing.
+        process.grace.open()
+        await process.transport.events.waitForRequeue()
+        let reloaded = BackupIndex(directory: account.directory)
+        let final = await reloaded.entry(for: "A")
+        XCTAssertEqual(final?.state, .backedUp(serverAssetID: "srv-1"))
+        XCTAssertEqual(final?.serverIDs, [.photo: "srv-1"])
+        let jobs = await reloaded.jobs
+        XCTAssertTrue(jobs.isEmpty)
+        XCTAssertFalse(bodyExists(job, in: account))
+    }
+
+    func testJobsWithoutAResultAreRequeuedOnceTheEventsAreDelivered() async throws {
+        let account = makeAccount()
+        let delivered = try stagedJob(account, asset: "A")
+        let lost = try stagedJob(account, asset: "B")
+        let previous = BackupIndex(directory: account.directory)
+        await previous.set(entry(), for: "A")
+        await previous.set(entry(), for: "B")
+        await previous.addJob(delivered)
+        await previous.addJob(lost)
+        try await previous.save()
+
+        // iOS delivers one result and says it is done: the other isn't coming. No need to wait out the grace.
+        let process = await launch(account)
+        let finished = FakeUploadTask(id: 9, description: Self.description(of: delivered), request: request())
+        finish(finished, in: process, status: 201, body: created)
+        await finishEvents(of: process)
+
+        // Both are on disk before the completion handler ran (`finishEvents` waits for it).
+        let reloaded = BackupIndex(directory: account.directory)
+        let a = await reloaded.entry(for: "A")
+        let b = await reloaded.entry(for: "B")
+        XCTAssertEqual(a?.state, .backedUp(serverAssetID: "srv-1"))
+        XCTAssertEqual(b?.state, .pending(reason: .needsUpload))
+        let jobs = await reloaded.jobs
+        XCTAssertTrue(jobs.isEmpty)
+        XCTAssertFalse(bodyExists(lost, in: account))
     }
 
     func testReconcileKeepsTheBodyOfALiveTask() async throws {
@@ -303,7 +396,8 @@ final class BackgroundSessionTransportTests: XCTestCase {
             FakeUploadTask(id: 2, description: Self.description(of: unknown), request: request()),
         ])
         let process = await launch(account, session: session)
-        await process.transport.reconcile()
+        process.grace.open()
+        await process.transport.events.waitForRequeue()
 
         XCTAssertTrue(bodyExists(running, in: account))
         XCTAssertTrue(bodyExists(unknown, in: account))
@@ -317,9 +411,25 @@ final class BackgroundSessionTransportTests: XCTestCase {
         XCTAssertEqual(inFlight, [running])
     }
 
+    func testCleanupWaitsForAReadableIndex() async throws {
+        let account = makeAccount()
+        let body = account.stagingDirectory.appendingPathComponent("waiting.multipart")
+        try Data("x".utf8).write(to: body)
+        // An index file that exists but can't be read (as while the phone is locked): its jobs are unknown.
+        try FileManager.default.createDirectory(
+            at: account.directory.appendingPathComponent("index.json"), withIntermediateDirectories: true)
+
+        let process = await launch(account)
+        let available = await process.index.isAvailable
+        XCTAssertFalse(available)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: body.path), "nothing is removed on an unknown index")
+    }
+
     func testReconcileRunsWhenTheTransportStartsBeforeAnyEnqueue() async throws {
         let account = makeAccount()
         let stale = try stagedJob(account, asset: "A")
+        let leftover = account.stagingDirectory.appendingPathComponent("leftover.multipart")
+        try Data("x".utf8).write(to: leftover)
         let previous = BackupIndex(directory: account.directory)
         await previous.set(entry(), for: "A")
         await previous.set(entry(), for: "B")
@@ -334,18 +444,18 @@ final class BackgroundSessionTransportTests: XCTestCase {
         await session.waitUntilHeld()
         let fresh = UploadJob(assetID: "B", resource: .photo, attempt: UUID(), bodyFileName: "fresh.multipart", checksum: "aa")
         let enqueue = Task { try await process.transport.enqueue(fresh, request: self.request()) }
-        try await Task.sleep(for: .milliseconds(100))
+        let waits = await eventually { process.transport.waitingForStartup == 1 }
+        XCTAssertTrue(waits, "the enqueue waits for reconcile")
         XCTAssertTrue(session.created.isEmpty, "nothing is sent before reconcile has finished")
         let jobsDuring = await process.index.jobs
         XCTAssertEqual(jobsDuring, [stale], "nor added to the index")
 
         session.releaseAllTasks()
         try await enqueue.value
+        XCTAssertFalse(FileManager.default.fileExists(atPath: leftover.path), "reconcile ran first")
         let jobs = await process.index.jobs
-        XCTAssertEqual(jobs, [fresh], "the stale job was reconciled before the new one was added")
-        let requeued = await process.index.entry(for: "A")
-        XCTAssertEqual(requeued?.state, .pending(reason: .needsUpload))
-        XCTAssertFalse(bodyExists(stale, in: account))
+        XCTAssertEqual(jobs, [stale, fresh], "the stale job waits for a late result; the new one is added")
+        XCTAssertTrue(bodyExists(stale, in: account))
         XCTAssertEqual(session.created.count, 1)
     }
 
@@ -384,9 +494,159 @@ final class BackgroundSessionTransportTests: XCTestCase {
         XCTAssertFalse(bodyExists(job, in: account))
     }
 
+    func testCancelAllDuringAnEnqueueCancelsTheNewTask() async throws {
+        let account = makeAccount()
+        let previous = BackupIndex(directory: account.directory)
+        await previous.set(entry(), for: "A")
+        try await previous.save()
+        let session = FakeUploadSession()
+        session.holdAllTasks()
+        let process = open(account, session: session)
+        await session.waitUntilHeld()
+
+        // An enqueue is under way (waiting for reconcile) when the switch is turned off.
+        let job = UploadJob(assetID: "A", resource: .photo, attempt: UUID(), bodyFileName: "a.multipart", checksum: "aa")
+        let enqueue = Task { try await process.transport.enqueue(job, request: self.request()) }
+        let waits = await eventually { process.transport.waitingForStartup == 1 }
+        XCTAssertTrue(waits)
+        let cancel = Task { await process.transport.cancelAll() }
+        await session.waitUntilHeld(count: 2)
+        session.releaseAllTasks()
+        try await enqueue.value
+        await cancel.value
+
+        let task = try XCTUnwrap(session.created.first)
+        XCTAssertTrue(task.isCancelled, "the task started after cancelAll is cancelled at once")
+        XCTAssertFalse(task.isResumed, "and never sent")
+        finish(task, in: process, status: nil, error: URLError(.cancelled))
+        await finishEvents(of: process)
+        let requeued = await process.index.entry(for: "A")
+        XCTAssertEqual(requeued?.state, .pending(reason: .needsUpload))
+        let jobs = await process.index.jobs
+        XCTAssertTrue(jobs.isEmpty)
+    }
+
+    func testEnqueueAfterInvalidateThrowsInsteadOfStartingATask() async throws {
+        let account = makeAccount()
+        let process = await launch(account)
+        await process.index.set(entry(), for: "A")
+        let job = try stagedJob(account)
+        process.transport.invalidate()
+        XCTAssertTrue(process.session.isInvalidated)
+
+        do {
+            try await process.transport.enqueue(job, request: request())
+            XCTFail("an invalidated session can't start tasks (URLSession raises an exception)")
+        } catch is CancellationError {}
+        XCTAssertTrue(process.session.created.isEmpty)
+        let jobs = await process.index.jobs
+        XCTAssertTrue(jobs.isEmpty)
+    }
+
+    func testAStaleFinishedEventsDoesNotReleaseANewHandlerEarly() async throws {
+        let account = makeAccount()
+        let process = await launch(account)
+        await process.index.set(entry(), for: "A")
+        let job = try stagedJob(account)
+        try await process.transport.enqueue(job, request: request())
+        let task = try XCTUnwrap(process.session.created.first)
+
+        // One wake ended without a handler being stored ...
+        process.transport.events.didFinishEvents()
+        // ... then a new batch begins: a result arrives and is recorded, and the next handler is stored.
+        finish(task, in: process, status: 201, body: created)
+        let recorded = await eventually { !process.transport.events.hasPendingWork }
+        XCTAssertTrue(recorded)
+        let entry = await process.index.entry(for: "A")
+        XCTAssertEqual(entry?.state, .backedUp(serverAssetID: "srv-1"))
+        let calls = Locked(0)
+        let handled = expectation(description: "completion handler")
+        process.transport.handleEvents {
+            calls.withLock { $0 += 1 }
+            handled.fulfill()
+        }
+        // Anything already dispatched to the main queue has run once this hop has.
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in DispatchQueue.main.async { done.resume() } }
+        XCTAssertEqual(calls.withLock { $0 }, 0, "the old 'finished' doesn't belong to this batch")
+
+        process.transport.events.didFinishEvents()
+        await fulfillment(of: [handled], timeout: 5)
+        XCTAssertEqual(calls.withLock { $0 }, 1)
+    }
+
+    func testErrorsOutsideTheURLDomainAreRetried() {
+        let posix = BackgroundSessionEvents.outcome(
+            status: nil, data: Data(), error: NSError(domain: NSPOSIXErrorDomain, code: 28))
+        XCTAssertEqual(posix, .failed(.service(.invalidResponse)))
+        XCTAssertEqual(BackgroundSessionEvents.outcome(status: nil, data: Data(), error: URLError(.cancelled)), .failed(.cancelled))
+        let timeout = BackgroundSessionEvents.outcome(
+            status: nil, data: Data(), error: NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut))
+        guard case let .failed(.service(.network(_, code))) = timeout else { return XCTFail("\(timeout)") }
+        XCTAssertEqual(code, .timedOut)
+        XCTAssertEqual(BackgroundSessionEvents.outcome(status: nil, data: Data(), error: nil), .failed(.service(.invalidResponse)))
+    }
+
     // MARK: - Requests
 
     func testCrossOriginRedirectIsRefused() async throws {
+        // Background sessions follow redirects without asking and copy the headers, so the check is made on
+        // the completed task: the response came from another server.
+        let account = makeAccount()
+        let process = await launch(account)
+        await process.index.set(entry(), for: "A")
+        await process.index.set(entry(), for: "B")
+        let job = try stagedJob(account, asset: "A")
+        try await process.transport.enqueue(job, request: request("https://photos.example.com/api/assets"))
+        let task = try XCTUnwrap(process.session.created.first)
+        finish(task, in: process, status: 201, body: Data(#"{"id":"srv-evil","status":"created"}"#.utf8),
+               responseURL: URL(string: "https://login.example.net/api/assets"))
+        await finishEvents(of: process)
+
+        let refused = await process.index.entry(for: "A")
+        XCTAssertEqual(refused?.state, .pending(reason: .needsUpload), "the other server's answer isn't trusted")
+        XCTAssertEqual(refused?.serverIDs, [:])
+        XCTAssertFalse(bodyExists(job, in: account))
+        XCTAssertTrue(process.transport.isRedirectBlocked)
+
+        // The block survives relaunch, and nothing is sent while it is set.
+        let relaunched = await launch(account)
+        XCTAssertTrue(relaunched.transport.isRedirectBlocked)
+        let next = try stagedJob(account, asset: "B")
+        do {
+            try await relaunched.transport.enqueue(next, request: request())
+            XCTFail("enqueue must refuse while a redirect block is set")
+        } catch BackupTransportError.redirectBlocked {}
+        XCTAssertTrue(relaunched.session.created.isEmpty)
+        let jobs = await relaunched.index.jobs
+        XCTAssertTrue(jobs.isEmpty)
+
+        // Only an explicit clear lifts it.
+        relaunched.transport.clearRedirectBlock()
+        XCTAssertFalse(relaunched.transport.isRedirectBlocked)
+        try await relaunched.transport.enqueue(next, request: request())
+        XCTAssertEqual(relaunched.session.created.count, 1)
+        let third = await launch(account)
+        XCTAssertFalse(third.transport.isRedirectBlocked)
+    }
+
+    func testSameOriginRedirectIsAccepted() async throws {
+        let account = makeAccount()
+        let process = await launch(account)
+        await process.index.set(entry(), for: "A")
+        let job = try stagedJob(account)
+        try await process.transport.enqueue(job, request: request("https://photos.example.com/api/assets"))
+        let task = try XCTUnwrap(process.session.created.first)
+        finish(task, in: process, status: 201, body: created,
+               responseURL: URL(string: "https://PHOTOS.example.com:443/api/v2/assets"))
+        await finishEvents(of: process)
+
+        let recorded = await process.index.entry(for: "A")
+        XCTAssertEqual(recorded?.state, .backedUp(serverAssetID: "srv-1"))
+        XCTAssertFalse(process.transport.isRedirectBlocked)
+    }
+
+    func testTheDelegateRefusesCrossOriginRedirectsWhenAsked() async throws {
+        // A background session doesn't ask; a session that does gets the same rule as `SameOriginRedirects`.
         let account = makeAccount()
         let process = await launch(account)
         let events = process.transport.events
@@ -399,11 +659,10 @@ final class BackgroundSessionTransportTests: XCTestCase {
         XCTAssertNil(events.redirect(for: task, response: response, to: request("https://photos.example.com:8443/api/assets")))
         XCTAssertNotNil(events.redirect(for: task, response: response, to: request("https://photos.example.com/api/v2/assets")))
 
-        // The URLSession delegate the live session uses applies the same rule.
         let delegate = BackgroundSessionDelegate(events: events)
         let session = URLSession(configuration: .ephemeral)
         defer { session.invalidateAndCancel() }
-        let body = account.stagingDirectory.appendingPathComponent("redirect-test")
+        let body = account.directory.appendingPathComponent("redirect-test")
         try Data().write(to: body)
         let live = session.uploadTask(with: request("https://photos.example.com/api/assets"), fromFile: body)
         let answers = Locked<[URLRequest?]>([])
@@ -464,6 +723,14 @@ final class BackgroundSessionTransportTests: XCTestCase {
         XCTAssertEqual(id, BackgroundSessionTransport.sessionIdentifier(serverURL: server, userID: user), "stable")
         XCTAssertEqual(id, BackgroundSessionTransport.sessionIdentifier(
             serverURL: URL(string: "https://PHOTOS.example.com/")!, userID: user), "the same server written differently")
+        for same in ["https://photos.example.com:443", "https://photos.example.com:443/", "https://photos.example.com//"] {
+            XCTAssertEqual(id, BackgroundSessionTransport.sessionIdentifier(serverURL: URL(string: same)!, userID: user), same)
+        }
+        XCTAssertEqual(
+            BackgroundSessionTransport.sessionIdentifier(serverURL: URL(string: "http://photos.example.com:80/immich/")!, userID: user),
+            BackgroundSessionTransport.sessionIdentifier(serverURL: URL(string: "http://photos.example.com/immich")!, userID: user))
+        XCTAssertNotEqual(id, BackgroundSessionTransport.sessionIdentifier(
+            serverURL: URL(string: "https://photos.example.com:8443")!, userID: user), "another port is another server")
         XCTAssertNotEqual(id, BackgroundSessionTransport.sessionIdentifier(serverURL: server, userID: "another-user"))
         XCTAssertNotEqual(id, BackgroundSessionTransport.sessionIdentifier(serverURL: other, userID: user))
 
@@ -480,6 +747,33 @@ final class BackgroundSessionTransportTests: XCTestCase {
 
 // MARK: - Fakes
 
+/// Opens once; `wait()` returns once it is open.
+private final class Gate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func open() {
+        let waiting = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            isOpen = true
+            defer { waiters = [] }
+            return waiters
+        }
+        for waiter in waiting { waiter.resume() }
+    }
+
+    func wait() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let open = lock.withLock { () -> Bool in
+                if isOpen { return true }
+                waiters.append(continuation)
+                return false
+            }
+            if open { continuation.resume() }
+        }
+    }
+}
+
 /// A lock-protected value for state shared with callbacks.
 private final class Locked<Value>: @unchecked Sendable {
     private let lock = NSLock()
@@ -494,6 +788,8 @@ private final class FakeUploadTask: UploadTaskHandle, @unchecked Sendable {
     let file: URL?
     private let lock = NSLock()
     private var storedDescription: String?
+    private var storedResponse: URLResponse?
+    private var storedCurrentRequest: URLRequest?
     private var resumed = false
     private var cancelled = false
 
@@ -507,6 +803,16 @@ private final class FakeUploadTask: UploadTaskHandle, @unchecked Sendable {
     var taskDescription: String? {
         get { lock.withLock { storedDescription } }
         set { lock.withLock { storedDescription = newValue } }
+    }
+
+    var response: URLResponse? {
+        get { lock.withLock { storedResponse } }
+        set { lock.withLock { storedResponse = newValue } }
+    }
+
+    var currentRequest: URLRequest? {
+        get { lock.withLock { storedCurrentRequest ?? originalRequest } }
+        set { lock.withLock { storedCurrentRequest = newValue } }
     }
 
     var isResumed: Bool { lock.withLock { resumed } }
@@ -567,9 +873,9 @@ private final class FakeUploadSession: UploadSessionDriving, @unchecked Sendable
         for continuation in waiting { continuation.resume() }
     }
 
-    /// Returns once someone is waiting in `allTasks()`.
-    func waitUntilHeld() async {
-        while lock.withLock({ held.isEmpty }) { await Task.yield() }
+    /// Returns once `count` callers are waiting in `allTasks()`.
+    func waitUntilHeld(count: Int = 1) async {
+        while lock.withLock({ held.count < count }) { await Task.yield() }
     }
 
     func invalidateAndCancel() {
