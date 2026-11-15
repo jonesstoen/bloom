@@ -154,11 +154,13 @@ final class BackupRunner {
     }
 
     /// Cancels scanning, staging and any Try Again or Re-upload; carried on the next time the app is active.
-    /// Uploads already handed to the transport go on in the background.
+    /// Uploads already handed to the transport go on in the background, and with the switch on the nightly
+    /// and refresh tasks are submitted again.
     func appLeftForeground() {
         isActive = false
         cancelOperations()
         update()
+        if isEnabled, !isStopped { model?.engine?.setBackgroundTasks(enabled: true) }
     }
 
     func backupScreenOpened() {
@@ -187,8 +189,10 @@ final class BackupRunner {
         model?.settings.isEnabled = on
     }
 
-    /// Called by the model when the switch changed. Off cancels everything, uploads in flight included.
+    /// Called by the model when the switch changed. On schedules the background tasks; off cancels them and
+    /// everything else, uploads in flight included.
     func enabledDidChange() {
+        if !isStopped { model?.engine?.setBackgroundTasks(enabled: isEnabled) }
         if !isEnabled {
             cancelOperations()
             cancelUploads()

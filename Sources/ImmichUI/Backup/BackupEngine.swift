@@ -30,6 +30,10 @@ public final class BackupEngine: Sendable {
     let uploader: BackupUploader
     /// Whose turn it is to scan or upload: this engine's runs or the Backup screen's (see `BackupGate`).
     let gate = BackupGate()
+    /// The nightly processing task and the app-refresh task (`BGTaskScheduler` in the app).
+    let backgroundTasks: BackupTaskScheduler
+    /// Held while the tasks are submitted or cancelled, so a submit can't land after sign-out's cancel.
+    private let scheduling = NSLock()
     private let lifecycle = OSAllocatedUnfairLock(initialState: Lifecycle())
     /// Called once `close()` has finished (the registry forgets the engine).
     private let onClose: @Sendable (BackupEngine) -> Void
@@ -52,6 +56,7 @@ public final class BackupEngine: Sendable {
         source: any PhotoLibrarySource, service: any ImmichService, network: any NetworkConditions,
         settings: @escaping @Sendable () -> BackupSettings,
         freeSpace: (@Sendable () -> Int64)? = nil,
+        backgroundTasks: BackupTaskScheduler = .none,
         onClose: @escaping @Sendable (BackupEngine) -> Void = { _ in },
         makeTransport: (URL, BackupIndex, BackupStaging, BackupResultRecorder) -> BackgroundSessionTransport
     ) {
@@ -62,6 +67,7 @@ public final class BackupEngine: Sendable {
         self.network = network
         self.settings = settings
         self.onClose = onClose
+        self.backgroundTasks = backgroundTasks
         index = BackupIndex(directory: directory)
         let stagingDirectory = directory.appendingPathComponent("Staging", isDirectory: true)
         staging = BackupStaging(
@@ -83,6 +89,22 @@ public final class BackupEngine: Sendable {
     /// ignored. Also nil while the Keychain can't be read.
     public static func forSessionIdentifier(_ identifier: String) -> BackupEngine? {
         BackupEngineRegistry.shared.engine(forSessionIdentifier: identifier)
+    }
+
+    // MARK: - Scheduled tasks
+
+    /// On: submits the processing and refresh tasks (replacing earlier requests), unless the account has
+    /// signed out (`cancelRuns()`). Off: cancels both. The Backup switch and backgrounding call it; every
+    /// background run submits both at its start while the switch is on.
+    func setBackgroundTasks(enabled: Bool) {
+        scheduling.withLock {
+            if enabled {
+                guard !isClosed else { return }
+                backgroundTasks.submitAll()
+            } else {
+                backgroundTasks.cancelAll()
+            }
+        }
     }
 
     // MARK: - Background runs
@@ -114,6 +136,8 @@ public final class BackupEngine: Sendable {
     private func perform(
         until deadline: ContinuousClock.Instant?, _ work: @escaping @Sendable (BackupEngine) async throws -> Void
     ) async -> Bool {
+        // Each run asks for the next ones first, so iOS keeps calling while the switch is on.
+        if settings().isEnabled { setBackgroundTasks(enabled: true) }
         let id = UUID()
         let task = lifecycle.withLock { state -> Task<Bool, Never>? in
             guard !state.closed else { return nil }
@@ -249,18 +273,19 @@ public final class BackupEngine: Sendable {
     /// run doesn't stage into the folder the model's runner then empties): no new background run starts, and
     /// the running ones are cancelled and waited for. Calling it again does nothing more.
     func cancelRuns() async {
-        let runs = lifecycle.withLock { state -> [Task<Bool, Never>] in
-            state.closed = true
-            return Array(state.runs.values)
+        let (wasClosed, runs) = lifecycle.withLock { state -> (Bool, [Task<Bool, Never>]) in
+            defer { state.closed = true }
+            return (state.closed, Array(state.runs.values))
         }
+        if !wasClosed { setBackgroundTasks(enabled: false) }
         for run in runs { run.cancel() }
         for run in runs { _ = await run.value }
     }
 
     /// Sign-out, after `cancelRuns()` and the Backup screen's model has stopped (`BackupModel.stop()`, which
     /// ends the app's own scans and runs). In this order:
-    /// 1. no new background run starts, and the running ones are cancelled and waited for (scheduled
-    ///    background tasks are cancelled here as well once they exist);
+    /// 1. no new background run starts, the running ones are cancelled and waited for, and the scheduled
+    ///    background tasks are cancelled (none is submitted again);
     /// 2. the transport is invalidated: iOS cancels the account's uploads, nothing more is enqueued, and a
     ///    redirect seen afterwards isn't written;
     /// 3. the index is closed: results that still arrive (cancellations among them) find no job to record
@@ -277,6 +302,15 @@ public final class BackupEngine: Sendable {
         try? FileManager.default.removeItem(at: directory)
         onClose(self)
     }
+}
+
+/// Which engine a background launch gets (see `BackupEngineRegistry.lookup(sessionIdentifier:)`).
+enum BackupEngineLookup: Sendable {
+    case found(BackupEngine)
+    /// Nobody is signed in, or another account is.
+    case noAccount
+    /// The Keychain couldn't be read (before the first unlock after a restart).
+    case credentialsUnavailable
 }
 
 /// The process's backup engines, one per signed-in account (in practice one: Bloom has one account at a time).
@@ -344,8 +378,32 @@ final class BackupEngineRegistry: @unchecked Sendable {
     /// The signed-in account's engine if its session is called `identifier`; nil otherwise (signed out, another
     /// account, or the Keychain can't be read).
     func engine(forSessionIdentifier identifier: String) -> BackupEngine? {
-        guard let credentials = try? store.load(), Self.sessionIdentifier(for: credentials) == identifier else { return nil }
-        return engine(for: credentials)
+        if case .found(let engine) = lookup(sessionIdentifier: identifier) { return engine }
+        return nil
+    }
+
+    /// As `engine(forSessionIdentifier:)`, but tells apart no such account from a Keychain that can't be read
+    /// (before the first unlock after a restart), when the session may well be the account's.
+    func lookup(sessionIdentifier identifier: String) -> BackupEngineLookup {
+        switch signedInCredentials() {
+        case .failure: return .credentialsUnavailable
+        case .success(let credentials?) where Self.sessionIdentifier(for: credentials) == identifier:
+            return .found(engine(for: credentials))
+        case .success: return .noAccount
+        }
+    }
+
+    /// The signed-in account's engine, for a scheduled task.
+    func signedInEngine() -> BackupEngineLookup {
+        switch signedInCredentials() {
+        case .failure: return .credentialsUnavailable
+        case .success(let credentials?): return .found(engine(for: credentials))
+        case .success(nil): return .noAccount
+        }
+    }
+
+    private func signedInCredentials() -> Result<ServerCredentials?, Error> {
+        Result { try store.load() }
     }
 
     private func forget(_ engine: BackupEngine) {
@@ -360,7 +418,8 @@ final class BackupEngineRegistry: @unchecked Sendable {
                 credentials: credentials, directory: directory, sessionIdentifier: identifier,
                 source: photoLibrary,
                 service: service ?? EditGuardedService(base: LiveImmichService(credentials: credentials), permission: editing),
-                network: PathMonitorNetwork(), settings: { BackupSettings.load() }, onClose: onClose
+                network: PathMonitorNetwork(), settings: { BackupSettings.load() }, backgroundTasks: .live,
+                onClose: onClose
             ) { directory, index, staging, recorder in
                 BackgroundSessionTransport(
                     identifier: identifier, directory: directory, index: index, staging: staging, recorder: recorder)
