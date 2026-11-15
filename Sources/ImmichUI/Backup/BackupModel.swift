@@ -33,6 +33,14 @@ final class BackupModel {
 
     enum AlbumState { case included, excluded, neither }
 
+    /// How this account's uploads are sent: the request builder and the transport, made once from the
+    /// model's index, staging folder and result recorder. Without it (previews, tests that only scan) scans
+    /// run but nothing is uploaded.
+    struct Uploads {
+        let requests: BackupUploadRequests
+        let makeTransport: @Sendable (BackupIndex, BackupStaging, BackupResultRecorder) -> any BackupTransport
+    }
+
     /// The most failed items listed on screen.
     static let failedItemLimit = 50
     /// The most deleted-on-server items listed on screen.
@@ -123,26 +131,31 @@ final class BackupModel {
     /// `settings` for the uploader, which reads them off the main actor before each item.
     @ObservationIgnored private let sharedSettings: OSAllocatedUnfairLock<BackupSettings>
     @ObservationIgnored private var madeRunner: BackupRunner?
-    /// The account's `Staging` folder, where the uploader copies each resource before sending it.
+    /// The account's `Staging` folder, where the uploader stages each resource's upload body.
     @ObservationIgnored let staging: BackupStaging
+    @ObservationIgnored private let uploads: Uploads?
+    @ObservationIgnored private var connection: BackupUploadConnection?
     /// `load()` has run: the selection and photo access on the model are known.
     @ObservationIgnored private(set) var hasLoaded = false
 
     /// - Parameters:
     ///   - directory: where the account's `index.json` lives; the index is opened on first use.
     ///   - network: defaults to a path monitor, started when the first scan needs it.
+    ///   - uploads: how uploads are sent; without it nothing is uploaded.
     init(
         source: some PhotoLibrarySource,
         service: any ImmichService,
         directory: URL,
         network: (any NetworkConditions)? = nil,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        uploads: Uploads? = nil
     ) {
         self.source = source
         self.service = service
         self.directory = directory
         self.network = network
         self.defaults = defaults
+        self.uploads = uploads
         let settings = BackupSettings.load(from: defaults)
         self.settings = settings
         sharedSettings = OSAllocatedUnfairLock(initialState: settings)
@@ -172,11 +185,25 @@ final class BackupModel {
     /// The uploader for this account: same index, photo library, server and settings as the scans.
     func makeUploader(clock: BackupRetryClock = .live) async -> BackupUploader {
         let index = await ensureIndex()
+        let connection = await uploadConnection(clock: clock)
         let network = networkConditions
         let settings = sharedSettings
         return BackupUploader(
             source: source, service: service, index: index, staging: staging,
-            settings: { settings.withLock { $0 } }, network: network, clock: clock)
+            settings: { settings.withLock { $0 } }, network: network, clock: clock, connection: connection)
+    }
+
+    /// The account's transport, its result recorder and request builder, made on first use; nil without
+    /// `uploads`. `clock` dates the retry times the recorder keeps (the first caller's is used).
+    func uploadConnection(clock: BackupRetryClock = .live) async -> BackupUploadConnection? {
+        guard let uploads else { return nil }
+        let index = await ensureIndex()
+        if let connection { return connection }
+        let recorder = BackupResultRecorder(index: index, staging: staging, now: clock.date)
+        let made = BackupUploadConnection(
+            transport: uploads.makeTransport(index, staging, recorder), recorder: recorder, requests: uploads.requests)
+        connection = made
+        return made
     }
 
     // MARK: - Reading
@@ -336,7 +363,7 @@ final class BackupModel {
         let pending = rescan?.task
         pending?.cancel()
         scanTask?.cancel()
-        // Uploads too; the runner then empties the staging folder.
+        // Uploads too (also those the system was sending); the runner then empties the staging folder.
         await madeRunner?.stop()
         await pending?.value
         _ = await scanTask?.value

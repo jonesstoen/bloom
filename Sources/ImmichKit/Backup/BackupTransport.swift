@@ -90,8 +90,25 @@ public protocol BackupTransport: Sendable {
     /// the index **and the index saved** before this returns: `BackupResultRecorder` drops results for jobs
     /// the index doesn't know, so a job that only existed in memory would lose its result after a crash.
     func enqueue(_ job: UploadJob, request: URLRequest) async throws
-    /// The jobs started and not yet recorded.
+    /// The jobs started and not yet recorded. Waits for whatever the transport does first when it starts
+    /// (`BackgroundSessionTransport` reconciles with iOS and cleans up the staging folder), so call it
+    /// before staging anything for the account.
     func inFlight() async -> [UploadJob]
     /// Cancels everything in flight.
     func cancelAll() async
+    /// An upload was seen redirected to another server: `enqueue` refuses with
+    /// `BackupTransportError.redirectBlocked` until `clearRedirectBlock()`.
+    var isRedirectBlocked: Bool { get }
+    /// Lifts the redirect block. Only after a check that can't follow redirects found the server answering
+    /// at its own address (`BackupUploader` does it before it enqueues).
+    func clearRedirectBlock()
+}
+
+extension BackupTransportError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .redirectBlocked:
+            tr("An upload was redirected to another address. Uploads are paused until the server answers at its own address again.")
+        }
+    }
 }

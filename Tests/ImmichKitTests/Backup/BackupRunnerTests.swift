@@ -266,6 +266,9 @@ final class BackupRunnerTests: XCTestCase {
         let defaults: UserDefaults
         let debounce: SleepLog
         let network: FakeNetwork
+        /// The model's transport (made with the uploader).
+        let transportBox: LockedBox<FakeTransport?>
+        var transport: FakeTransport { transportBox.value! }
 
         var stagingDirectory: URL { directory.appendingPathComponent("Staging", isDirectory: true) }
 
@@ -318,7 +321,8 @@ final class BackupRunnerTests: XCTestCase {
     /// sleeps return at once.
     private func makeSetup(
         _ ids: [String], selected: Bool = true, cellular: Bool = false, holds keys: Set<String> = [],
-        debounceClock: BackupRetryClock? = nil, retryClock customRetryClock: BackupRetryClock? = nil
+        debounceClock: BackupRetryClock? = nil, retryClock customRetryClock: BackupRetryClock? = nil,
+        transport mode: FakeTransport.Mode = .immediate
     ) async throws -> Setup {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("BackupRunnerTests-\(UUID().uuidString)", isDirectory: true)
@@ -341,9 +345,17 @@ final class BackupRunnerTests: XCTestCase {
         let log = EventLog()
         let source = GatedLibrary(base: library, holds: holds, log: log)
         let network = FakeNetwork(cellular: cellular)
+        let service = GatedUploadService(mock: mock, holds: holds, log: log)
+        let transportBox = LockedBox<FakeTransport?>(nil)
+        // Uploads go through a fake of the system's transport that sends them to the gated mock server.
+        let uploads = BackupModel.Uploads(requests: .test) { index, staging, recorder in
+            let made = FakeTransport(index: index, staging: staging, recorder: recorder, service: service, mode: mode)
+            transportBox.value = made
+            return made
+        }
         let model = BackupModel(
-            source: source, service: GatedUploadService(mock: mock, holds: holds, log: log), directory: directory,
-            network: network, defaults: defaults)
+            source: source, service: service, directory: directory,
+            network: network, defaults: defaults, uploads: uploads)
         let retryClock = BackupRetryClock(now: { ContinuousClock.now }, sleep: { _ in try Task.checkCancellation() })
         let uploader = await model.makeUploader(clock: customRetryClock ?? retryClock)
         let debounce = SleepLog()
@@ -351,7 +363,8 @@ final class BackupRunnerTests: XCTestCase {
             model: model, uploader: uploader, source: source, staging: model.staging,
             debounce: .seconds(2), debounceLimit: .seconds(10), clock: debounceClock ?? debounce.clock)
         return Setup(library: library, mock: mock, holds: holds, log: log, model: model, runner: runner,
-                     directory: directory, defaults: defaults, debounce: debounce, network: network)
+                     directory: directory, defaults: defaults, debounce: debounce, network: network,
+                     transportBox: transportBox)
     }
 
     private func position(of request: MockImmichService.Request, in requests: [MockImmichService.Request]) -> Int? {
@@ -878,33 +891,64 @@ final class BackupRunnerTests: XCTestCase {
 
     // MARK: Leaving, switching off, stopping
 
-    func testLeavingForegroundCancelsAndRetriesNextTime() async throws {
-        let setup = try await makeSetup(["a1"], holds: ["upload a1"])
+    /// Phase 3 (replaces "leaving the foreground cancels the upload"): an upload handed to the transport
+    /// belongs to the system. Leaving the foreground stops scanning and staging, not it; its result is
+    /// recorded when it arrives, and nothing is sent twice.
+    func testLeavingTheForegroundKeepsUploadsGoing() async throws {
+        let setup = try await makeSetup(["a1"], transport: .manual)
         setup.runner.setEnabled(true)
         setup.runner.appBecameActive()
-        await setup.holds.waitUntilHeld("upload a1")
+        await setup.transport.waitForEnqueued(1)
         XCTAssertTrue(setup.runner.isUploading)
 
         setup.runner.appLeftForeground()
         await setup.runner.settle()
-        let interrupted = await setup.holds.interrupted
-        XCTAssertEqual(interrupted, ["upload a1"], "The upload in flight was cancelled")
-        let afterLeaving = await setup.mock.uploads.count
-        XCTAssertEqual(afterLeaving, 0)
-        let pending = await setup.savedState("a1")
-        XCTAssertEqual(pending, .pending(reason: .needsUpload), "Retried next time")
-        XCTAssertEqual(setup.stagedFiles, [], "No staging file is left")
+        XCTAssertEqual(setup.transport.cancelAllCount, 0, "The upload in flight was not cancelled")
+        let inFlight = await setup.transport.inFlight().count
+        XCTAssertEqual(inFlight, 1)
+        XCTAssertEqual(setup.stagedFiles.count, 1, "Its body stays until its result is recorded")
         XCTAssertFalse(setup.runner.isUploading)
         XCTAssertNil(setup.runner.uploadProgress)
         XCTAssertEqual(setup.library.changeListenerCount, 0, "The library isn't watched in the background")
 
-        setup.runner.appBecameActive()
-        await setup.runner.settle()
-        let uploads = await setup.uploadRequests()
-        XCTAssertEqual(uploads, 2, "No request beyond the interrupted one and its retry")
+        // The system finishes it while Bloom is in the background.
+        await setup.transport.complete()
         let state = await setup.savedState("a1")
         guard case .backedUp = state else { return XCTFail("Expected backedUp, got \(String(describing: state))") }
         XCTAssertEqual(setup.stagedFiles, [])
+
+        setup.runner.appBecameActive()
+        await setup.runner.settle()
+        let uploads = await setup.uploadRequests()
+        XCTAssertEqual(uploads, 1, "Not sent again")
+        XCTAssertEqual(setup.transport.sent.count, 1)
+    }
+
+    /// Turning the switch off cancels what the transport has in flight; the items go back to the queue and
+    /// nothing new is enqueued.
+    func testSwitchOffCancelsInFlightUploads() async throws {
+        let setup = try await makeSetup(["a2", "a1"], transport: .manual)
+        setup.runner.setEnabled(true)
+        setup.runner.appBecameActive()
+        await setup.transport.waitForEnqueued(2)
+
+        setup.runner.setEnabled(false)
+        await setup.runner.settle()
+        XCTAssertEqual(setup.transport.cancelAllCount, 1)
+        let inFlight = await setup.transport.inFlight()
+        XCTAssertEqual(inFlight, [])
+        for id in ["a1", "a2"] {
+            let state = await setup.savedState(id)
+            XCTAssertEqual(state, .pending(reason: .needsUpload), id)
+        }
+        XCTAssertEqual(setup.stagedFiles, [])
+        let uploads = await setup.mock.uploads.count
+        XCTAssertEqual(uploads, 0)
+
+        setup.runner.appLeftForeground()
+        setup.runner.appBecameActive()
+        await setup.runner.settle()
+        XCTAssertEqual(setup.transport.sent.count, 2, "Nothing new enqueued while off")
     }
 
     func testSwitchOffDuringUploadStops() async throws {
@@ -997,7 +1041,9 @@ final class BackupRunnerTests: XCTestCase {
 
         await setup.holds.release("upload a2")
         await setup.runner.settle()
-        XCTAssertEqual(setup.stagedFiles, [], "Emptied once the run was done")
+        // Phase 3: files nothing refers to are removed by the transport's startup reconcile, which also knows
+        // the bodies of the system's own upload tasks; this only waits for it. Never a body in use.
+        XCTAssertEqual(setup.stagedFiles, ["leftover.staged"], "Only the leftover; no body of an upload is left")
         let uploaded = await setup.uploadedIDs
         XCTAssertEqual(uploaded, ["a2", "a1"], "The cleanup didn't interrupt the run")
     }
@@ -1032,12 +1078,13 @@ final class BackupRunnerTests: XCTestCase {
     }
 
     func testTryAgainIsCancelledWhenLeavingTheForeground() async throws {
-        let setup = try await makeSetup(["a2", "bad"], holds: ["upload a2"])
+        // Phase 3: the upload is the transport's (leaving doesn't interrupt it); the run waits for its result.
+        let setup = try await makeSetup(["a2", "bad"], transport: .manual)
         let bad = DeviceResource(type: .photo, filename: "bad.jpg")
         setup.library.failReads(of: bad, with: NSError(domain: "Test", code: 1))
         setup.runner.setEnabled(true)
         setup.runner.appBecameActive()
-        await setup.holds.waitUntilHeld("upload a2")
+        await setup.transport.waitForEnqueued(1)
         let failed = await setup.savedState("bad")
 
         let retry = Task { await setup.runner.retryFailed(["bad"]) }

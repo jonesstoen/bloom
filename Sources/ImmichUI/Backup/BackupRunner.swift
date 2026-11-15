@@ -11,9 +11,13 @@ import Observation
 /// A library change during an upload never interrupts the item in flight: the run uploads at least one
 /// item, then scans again before the next. A change during a scan is followed by one more scan, after
 /// which the queue gets its turn. A changed album choice pauses the run before the next item, so items
-/// no longer selected aren't uploaded. Leaving the foreground or turning the switch off cancels the
-/// upload in flight (the uploader puts the item back and removes its staged file; the server's checksum
-/// check makes the retry safe), and so does the user's Cancel of the scan a run is waiting for.
+/// no longer selected aren't uploaded.
+///
+/// Uploads the uploader has handed to the transport belong to the system: leaving the foreground (or the
+/// user's Cancel of the scan a run is waiting for) cancels scanning and staging, not them, and their
+/// results are recorded whenever they arrive. Turning the switch off, and `stop()`, cancel them too
+/// (`BackupTransport.cancelAll`); the items go back to the queue, and the server's checksum check makes the
+/// retry safe.
 ///
 /// Uploads (`run`), Try Again and Re-upload never overlap: they take turns on one lane, and a waiting
 /// Try Again or Re-upload pauses a run between items. The scans themselves are the model's.
@@ -80,6 +84,8 @@ final class BackupRunner {
     /// When the current burst of library changes started.
     @ObservationIgnored private var burstStart: ContinuousClock.Instant?
     @ObservationIgnored private var cleanup: Task<Void, Never>?
+    /// Cancelling the transport's uploads after the switch was turned off.
+    @ObservationIgnored private var uploadCancel: Task<Void, Never>?
     @ObservationIgnored private var countsRefreshed: ContinuousClock.Instant?
     @ObservationIgnored private var operations: [UUID: Task<Void, Error>] = [:]
     /// Try Again / Re-upload calls waiting for the lane: a run pauses for them between items.
@@ -147,7 +153,8 @@ final class BackupRunner {
         if !wasActive { requestRun() }
     }
 
-    /// Cancels the upload in flight and any Try Again or Re-upload; retried the next time the app is active.
+    /// Cancels scanning, staging and any Try Again or Re-upload; carried on the next time the app is active.
+    /// Uploads already handed to the transport go on in the background.
     func appLeftForeground() {
         isActive = false
         cancelOperations()
@@ -169,21 +176,34 @@ final class BackupRunner {
             return
         }
         wantsRun = true
+        nudgeUploader()
         start()
     }
 
-    /// The Backup switch. Saved with the other settings; off cancels the upload in flight.
+    /// The Backup switch. Saved with the other settings; off cancels the uploads in flight.
     func setEnabled(_ on: Bool) {
         guard !isStopped else { return }
         // The model's settings tell the runner (`enabledDidChange`), also when they are set directly.
         model?.settings.isEnabled = on
     }
 
-    /// Called by the model when the switch changed.
+    /// Called by the model when the switch changed. Off cancels everything, uploads in flight included.
     func enabledDidChange() {
-        if !isEnabled { cancelOperations() }
+        if !isEnabled {
+            cancelOperations()
+            cancelUploads()
+        }
         update()
         requestRun()
+    }
+
+    /// Cancels the uploads the transport has in flight (their items go back to the queue).
+    private func cancelUploads() {
+        let previous = uploadCancel
+        uploadCancel = Task { [weak model] in
+            await previous?.value
+            await model?.uploadConnection()?.transport.cancelAll()
+        }
     }
 
     /// Called by the model when the album choice or a cellular switch changed (the model saves it and
@@ -192,6 +212,7 @@ final class BackupRunner {
         guard mayRun else { return }
         wantsRun = true
         choiceChanged = true
+        nudgeUploader()
         start()
     }
 
@@ -200,26 +221,30 @@ final class BackupRunner {
         if isScanningForRun { cancelRun() }
     }
 
-    /// Cancels and waits until nothing uploads, then empties the staging folder. Nothing runs afterwards.
-    /// Call before the backup directory is removed.
+    /// Cancels and waits until nothing uploads (the transport's uploads are cancelled too), then empties the
+    /// staging folder. Nothing runs afterwards. Call before the backup directory is removed.
     func stop() async {
         isStopped = true
         isActive = false
         let pendingOperations = Array(operations.values)
         cancelOperations()
+        cancelUploads()
         update()
         for watcher in retiredWatchers.values { await watcher.value }
         retiredWatchers = [:]
         await tail?.value
         for operation in pendingOperations { _ = try? await operation.value }
+        await uploadCancel?.value
         await cleanup?.value
         await acquireLane()
         await staging.removeAll()
         releaseLane()
     }
 
-    /// Empties the staging folder of files a run the system ended left behind. Call at launch; it waits
-    /// for its turn on the lane, so it never removes a file being uploaded.
+    /// Removes the files a run the system ended left in the staging folder. Call at launch; it waits for its
+    /// turn on the lane, and runs go after it. With a transport that is its startup reconcile (which keeps
+    /// every body an upload still needs, see `BackgroundSessionTransport.reconcile()`); without one nothing
+    /// can be uploading, and the folder is emptied.
     func removeLeftoverStaging() {
         guard !isStopped else { return }
         let previous = cleanup
@@ -227,7 +252,11 @@ final class BackupRunner {
             await previous?.value
             guard let self else { return }
             await self.acquireLane()
-            await staging.removeAll()
+            if let transport = await self.model?.uploadConnection()?.transport {
+                _ = await transport.inFlight()
+            } else {
+                await staging.removeAll()
+            }
             self.releaseLane()
         }
     }
@@ -264,6 +293,7 @@ final class BackupRunner {
 
     private func perform(_ body: @MainActor (BackupUploader) async throws -> Void) async throws {
         waitingOperations += 1
+        nudgeUploader()
         await acquireLane()
         waitingOperations -= 1
         defer { releaseLane() }
@@ -449,6 +479,11 @@ final class BackupRunner {
         current?.id != id || choiceChanged || networkReturned || waitingOperations > 0 || (wantsRun && itemsFinished > 0)
     }
 
+    /// A run waiting for upload results asks `shouldPause` again (see `BackupUploader.wake()`).
+    private func nudgeUploader() {
+        uploader?.wake()
+    }
+
     /// nil only once the model is gone (the session ended).
     private func uploaderForRun() async -> BackupUploader? {
         if let uploader { return uploader }
@@ -516,6 +551,7 @@ final class BackupRunner {
             guard self.mayRun else { return }
             // A running upload pauses after an item (`shouldPause`); a scan is followed by another.
             self.wantsRun = true
+            self.nudgeUploader()
             self.start()
         }
     }
@@ -553,6 +589,7 @@ final class BackupRunner {
         if cameBack {
             networkReturned = true
             if isUploading { wantsRun = true }
+            nudgeUploader()
         }
         let retry = model.cannotReachServer || (cameBack && (current != nil || model.isScanning))
         let wifiTookOver = !path.isOnCellular && (previous.isOnCellular || cameBack) && model.counts.waitingForWiFi > 0
@@ -631,6 +668,7 @@ final class BackupRunner {
             if let task = debounceTask { await task.value; if debounceTask == task { debounceTask = nil }; continue }
             if let task = tail { await task.value; if tail == task { tail = nil }; continue }
             if let task = cleanup { await task.value; if cleanup == task { cleanup = nil }; continue }
+            if let task = uploadCancel { await task.value; if uploadCancel == task { uploadCancel = nil }; continue }
             if let task = manualCheck { await task.value; if manualCheck == task { manualCheck = nil }; continue }
             return
         }

@@ -28,23 +28,29 @@ public struct BackupEntry: Codable, Sendable, Equatable {
     /// that finds both halves on the server keeps the item queued so the uploader links them.
     /// `false` in indexes written before it existed.
     public var needsLink: Bool
+    /// Where the uploader stands with retrying a queued item whose last upload or link failed in a way that
+    /// trying again can fix. Kept in the index, so a relaunch (in the background too) doesn't start over
+    /// and send it again at once. `nil` in indexes written before it existed.
+    public var retry: BackupRetryState?
 
     public init(
         modificationDate: Date,
         checksums: [DeviceResourceType: String],
         state: BackupState,
         serverIDs: [DeviceResourceType: String] = [:],
-        needsLink: Bool = false
+        needsLink: Bool = false,
+        retry: BackupRetryState? = nil
     ) {
         self.modificationDate = modificationDate
         self.checksums = checksums
         self.state = state
         self.serverIDs = serverIDs
         self.needsLink = needsLink
+        self.retry = retry
     }
 
     private enum CodingKeys: String, CodingKey {
-        case modificationDate, checksums, state, serverIDs, needsLink
+        case modificationDate, checksums, state, serverIDs, needsLink, retry
     }
 
     public init(from decoder: Decoder) throws {
@@ -54,6 +60,27 @@ public struct BackupEntry: Codable, Sendable, Equatable {
         state = try container.decode(BackupState.self, forKey: .state)
         serverIDs = try container.decodeIfPresent([DeviceResourceType: String].self, forKey: .serverIDs) ?? [:]
         needsLink = try container.decodeIfPresent(Bool.self, forKey: .needsLink) ?? false
+        // Leniently: unreadable retry bookkeeping only means the item is tried again sooner.
+        retry = (try? container.decodeIfPresent(BackupRetryState.self, forKey: .retry)) ?? nil
+    }
+}
+
+/// The retry bookkeeping of one queued item (see `BackupUploader.retryDelays`).
+public struct BackupRetryState: Codable, Sendable, Equatable {
+    /// Failures in a row that retrying could fix.
+    public var failures: Int
+    /// The item isn't tried again before this.
+    public var notBefore: Date
+    /// The last failure was no connection to the server: tried again once the network returns.
+    public var wasOffline: Bool
+    /// The last failure (no connection, 429, 502, 503, 504) holds back every item, not just this one.
+    public var holdsRun: Bool
+
+    public init(failures: Int, notBefore: Date, wasOffline: Bool, holdsRun: Bool) {
+        self.failures = failures
+        self.notBefore = notBefore
+        self.wasOffline = wasOffline
+        self.holdsRun = holdsRun
     }
 }
 
@@ -168,6 +195,20 @@ public actor BackupIndex {
         change(&entry)
         set(entry, for: assetID)
         return entry
+    }
+
+    /// Every entry that satisfies `isIncluded`, filtered inside the actor. Order is unspecified.
+    public func entries(where isIncluded: (BackupEntry) -> Bool) -> [(String, BackupEntry)] {
+        stored.entries.filter { isIncluded($0.value) }.map { ($0.key, $0.value) }
+    }
+
+    /// Applies `change` to every entry that satisfies `condition`, in one step inside the index.
+    public func updateAll(where condition: (BackupEntry) -> Bool, _ change: (inout BackupEntry) -> Void) {
+        for (id, entry) in stored.entries where condition(entry) {
+            var changed = entry
+            change(&changed)
+            set(changed, for: id)
+        }
     }
 
     // MARK: - Upload jobs
