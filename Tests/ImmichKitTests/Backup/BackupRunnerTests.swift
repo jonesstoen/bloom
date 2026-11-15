@@ -1041,11 +1041,29 @@ final class BackupRunnerTests: XCTestCase {
 
         await setup.holds.release("upload a2")
         await setup.runner.settle()
-        // Phase 3: files nothing refers to are removed by the transport's startup reconcile, which also knows
-        // the bodies of the system's own upload tasks; this only waits for it. Never a body in use.
-        XCTAssertEqual(setup.stagedFiles, ["leftover.staged"], "Only the leftover; no body of an upload is left")
+        // Phase 3: files nothing refers to are removed by the transport's startup reconcile (`inFlight()`, which
+        // the fake does as the real one does), which also knows the bodies of the system's own upload tasks;
+        // the runner only waits for it for its turn. Never a body in use. (That the cleanup itself reaches the
+        // reconcile is `testLeftoverCleanupReachesTheTransportsReconcile`; the run's own reconcile would do here.)
+        XCTAssertEqual(setup.stagedFiles, [], "The reconcile removed the leftover, and no body of an upload is left")
         let uploaded = await setup.uploadedIDs
         XCTAssertEqual(uploaded, ["a2", "a1"], "The cleanup didn't interrupt the run")
+    }
+
+    /// Without a run going, the cleanup alone reaches the transport's reconcile: the leftover goes, and what
+    /// an upload in flight still needs would stay (`testLeftoverCleanupWaitsForTheUploadInFlight`).
+    func testLeftoverCleanupReachesTheTransportsReconcile() async throws {
+        let setup = try await makeSetup(["a1"])
+        try FileManager.default.createDirectory(at: setup.stagingDirectory, withIntermediateDirectories: true)
+        try Data("left over".utf8).write(to: setup.stagingDirectory.appendingPathComponent("leftover.staged"))
+
+        setup.runner.removeLeftoverStaging()
+        await setup.runner.settle()
+
+        XCTAssertEqual(setup.stagedFiles, [])
+        XCTAssertFalse(setup.runner.isUploading)
+        let uploads = await setup.mock.uploads.count
+        XCTAssertEqual(uploads, 0, "Only a cleanup: the switch is off")
     }
 
     // MARK: Try Again
@@ -1094,5 +1112,78 @@ final class BackupRunnerTests: XCTestCase {
         await setup.runner.settle()
         let after = await setup.savedState("bad")
         XCTAssertEqual(after, failed, "Cancelled with the run, so it didn't run late")
+    }
+
+    // MARK: Phase 3 fix round 1
+
+    /// An upload handed to the transport isn't a finished item: leaving the foreground right after
+    /// enqueueing doesn't tell the Library that new assets are on the server.
+    func testEnqueuedItemDoesNotReloadTheLibrary() async throws {
+        let setup = try await makeSetup(["a1"], transport: .manual)
+        var changes = 0
+        setup.model.onServerLibraryChanged = { changes += 1 }
+        setup.runner.setEnabled(true)
+        setup.runner.appBecameActive()
+        await setup.transport.waitForEnqueued(1)
+
+        setup.runner.appLeftForeground()
+        await setup.runner.settle()
+
+        XCTAssertEqual(changes, 0, "Nothing is on the server yet")
+    }
+
+    /// A recorded result does: one of two uploads has its result when the run ends, and the Library reloads.
+    func testRecordedResultReloadsTheLibrary() async throws {
+        let setup = try await makeSetup(["a2", "a1"], transport: .manual)
+        var changes = 0
+        setup.model.onServerLibraryChanged = { changes += 1 }
+        setup.runner.setEnabled(true)
+        setup.runner.appBecameActive()
+        await setup.transport.waitForEnqueued(2)
+        await setup.transport.complete { $0.assetID == "a2" }
+        for _ in 0..<1000 where setup.runner.uploadProgress?.done != 1 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(setup.runner.uploadProgress?.done, 1, "The run noticed the result")
+
+        setup.runner.appLeftForeground()
+        await setup.runner.settle()
+
+        XCTAssertEqual(changes, 1)
+    }
+
+    /// Switching off and on again while the cancel of the uploads in flight is still going: the new run
+    /// enqueues nothing until it is done, or the cancel would take the new uploads with it.
+    func testNewRunWaitsForThePendingCancelOfTheUploads() async throws {
+        let setup = try await makeSetup(["a1"], transport: .manual)
+        setup.runner.setEnabled(true)
+        setup.runner.appBecameActive()
+        await setup.transport.waitForEnqueued(1)
+        await setup.transport.holdCancelAll()
+
+        setup.runner.setEnabled(false)
+        await setup.transport.waitForCancelAllStarted()
+        Self.addAsset("a0", age: -5, to: setup.library)
+        setup.setAlbum(["a1", "a0"])
+        setup.runner.setEnabled(true)
+        // The run scans (and finds a0), then would enqueue.
+        for _ in 0..<100 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(setup.transport.sent.count, 1, "Nothing enqueued while the cancel is pending")
+
+        // A wedged run fails the test instead of hanging it: the watchdog ends the run.
+        let watchdog = Task {
+            try await Task.sleep(for: .seconds(20))
+            XCTFail("The runs didn't finish within 20 s")
+            setup.runner.appLeftForeground()
+        }
+        defer { watchdog.cancel() }
+        await setup.transport.releaseCancelAll()
+        for _ in 0..<2000 where setup.transport.sent.count < 3 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertGreaterThanOrEqual(setup.transport.sent.count, 3, "Both items are enqueued once the cancel is done")
+        await setup.transport.complete()
+        await setup.runner.settle()
+        for id in ["a0", "a1"] {
+            let state = await setup.savedState(id)
+            guard case .backedUp = state else { return XCTFail("\(id): expected backedUp, got \(String(describing: state))") }
+        }
+        XCTAssertEqual(setup.stagedFiles, [])
     }
 }

@@ -109,6 +109,9 @@ public actor BackupUploader {
     static let maxInFlight = 3
     /// A passed check that the server answers at its own address covers the enqueues of this long.
     static let preflightInterval: TimeInterval = 60
+    /// The longest an item is held back from its last failure. A retry time further ahead than this was
+    /// written by a clock that has since been moved back, and is cut to it (`clampRetryTimes`).
+    static var longestPause: TimeInterval { max(seconds(retryDelays.max() ?? .zero), givenUpPause) }
 
     private let source: any PhotoLibrarySource
     private let service: any ImmichService
@@ -122,6 +125,7 @@ public actor BackupUploader {
     private let signal = UploaderSignal()
 
     private var isRunning = false
+    private var isReuploading = false
     /// When the server last answered at its own address (`preflight`).
     private var lastPreflight: Date?
 
@@ -182,7 +186,10 @@ public actor BackupUploader {
     /// are recorded, and the item that didn't fit goes next (a large video isn't passed over for smaller ones).
     ///
     /// Returns once every item in the queue has its result, has been given up on for now or needs the
-    /// scanner, so failures are retried within the run as before. `progress` reports items handed over and
+    /// scanner, so failures are retried within the run as before. On cellular, uploads the system holds for
+    /// Wi-Fi (a media type whose cellular switch is off) take no in-flight slot and aren't waited for; their
+    /// bodies still count against the staging budget, and an item that doesn't fit because of them is left
+    /// for the next run. `progress` reports items handed over and
     /// finished; `shouldPause` is asked before each item and while the run waits. When it answers `true` the
     /// run returns; uploads already enqueued go on (they belong to the system). A wait for results only
     /// notices a pause at `wake()`.
@@ -193,12 +200,12 @@ public actor BackupUploader {
     /// Throws `ImmichServiceError.unauthorized` (and other errors no item can get past, also when an upload's
     /// result says so), `BackupStagingError.notEnoughSpace` after failing the item, and
     /// `BackupTransportError.redirectBlocked`; cancellation removes the body being staged and rethrows. The
-    /// index is saved after each item. A second call while a run is going returns at once.
+    /// index is saved after each item. A second call while a run (or a `reupload`) is going returns at once.
     public func run(
         progress: @escaping @Sendable (UploadProgress) -> Void,
         shouldPause: @escaping @Sendable () async -> Bool
     ) async throws {
-        guard !isRunning else { return }
+        guard !isRunning, !isReuploading else { return }
         isRunning = true
         defer { isRunning = false }
         // Fails fast on an unavailable index, before anything is uploaded that couldn't be recorded.
@@ -211,6 +218,7 @@ public actor BackupUploader {
         signal.reset()
         // Starting the transport cleans up the staging folder: nothing may be staged before that.
         _ = await transport.inFlight()
+        await clampRetryTimes()
 
         let (candidates, waits) = try await queuedItems()
         var queue = candidates
@@ -236,6 +244,10 @@ public actor BackupUploader {
             if let error = signal.takeStop() { throw await stopping(error, transport) }
             let jobs = await transport.inFlight()
             let busy = Set(jobs.map(\.assetID))
+            // On cellular the system holds the uploads of a media type that may only go on Wi-Fi: they take no
+            // slot here, and nothing waits for them (their bodies still count against the staging budget).
+            let parked = await parkedAssets(jobs)
+            let active = jobs.filter { !parked.contains($0.assetID) }
             let settled = watching.subtracting(busy)
             if !settled.isEmpty {
                 let before = done
@@ -260,7 +272,7 @@ public actor BackupUploader {
             watching.formUnion(busy.intersection(queued))
             if queue.isEmpty { break }
             if await shouldPause() { return }
-            if draining, jobs.isEmpty { draining = false }
+            if draining, active.isEmpty { draining = false }
 
             let now = clock.date()
             let held = holdUntil.map { $0 > now } ?? false
@@ -268,7 +280,7 @@ public actor BackupUploader {
                let position = queue.firstIndex(where: { !busy.contains($0.id) && (notBefore[$0.id] ?? .distantPast) <= now }) {
                 let item = queue[position]
                 // In order: a Live Photo that doesn't fit waits for room rather than letting the next one go.
-                if jobs.isEmpty || jobs.count + item.resourceCount <= Self.maxInFlight {
+                if active.isEmpty || active.count + item.resourceCount <= Self.maxInFlight {
                     if let error = signal.takeStop() { throw await stopping(error, transport) }
                     report(item.filename)
                     switch try await attempt(item.id, connection: connection) {
@@ -279,9 +291,9 @@ public actor BackupUploader {
                     case .started:
                         watching.insert(item.id)
                     case .overBudget:
-                        if jobs.isEmpty, await transport.inFlight().isEmpty {
-                            // Nothing in flight to wait for (bodies left behind that nothing records): left
-                            // for the next run instead of waiting for nothing.
+                        if active.isEmpty, await transport.inFlight().allSatisfy({ parked.contains($0.assetID) }) {
+                            // Nothing in flight to wait for (bodies left behind that nothing records, or held
+                            // for Wi-Fi): left for the next run instead of waiting for room that doesn't come.
                             queue.remove(at: position)
                             queued.remove(item.id)
                             done += 1
@@ -301,7 +313,7 @@ public actor BackupUploader {
                 return max(notBefore[item.id] ?? now, held ? holdUntil ?? now : now)
             }.filter { $0 > now }
             let deadline = draining ? nil : ends.min()
-            if jobs.isEmpty {
+            if active.isEmpty {
                 guard let deadline else { break }
                 if try await wait(until: deadline, shouldPause: shouldPause) { return }
             } else {
@@ -359,6 +371,26 @@ public actor BackupUploader {
             try await index.saveIfChanged()
         }
         return (candidates.sorted { ($0.creationDate, $0.id) > ($1.creationDate, $1.id) }, waits)
+    }
+
+    /// The assets whose uploads in `jobs` the system holds for now: on cellular, those of a media type whose
+    /// cellular switch is off (the request was made without cellular access).
+    private func parkedAssets(_ jobs: [UploadJob]) async -> Set<String> {
+        guard !jobs.isEmpty, await network.isOnCellular else { return [] }
+        let settings = settings()
+        var parked: Set<String> = []
+        for id in Set(jobs.map(\.assetID)) {
+            if let asset = await source.asset(id), !settings.allowsNetwork(for: asset, onCellular: true) { parked.insert(id) }
+        }
+        return parked
+    }
+
+    /// Cuts retry times further ahead than `longestPause` (a clock moved back since they were written) to it,
+    /// so such an item isn't held for longer than any back-off, and its pause runs out.
+    private func clampRetryTimes() async {
+        let latest = clock.date().addingTimeInterval(Self.longestPause)
+        await index.updateAll(where: { $0.retry.map { $0.notBefore > latest } ?? false }) { $0.retry?.notBefore = latest }
+        try? await index.saveIfChanged()
     }
 
     /// Where an item stands now that nothing of it is in flight.
@@ -560,7 +592,8 @@ public actor BackupUploader {
     /// (`needsLink`), outside a run: at a background wake, say. Items waiting out a back-off and items with
     /// an upload in flight are left for later; a run links its own items, so this does nothing during one.
     public func linkPending() async {
-        guard !isRunning else { return }
+        guard !isRunning, !isReuploading else { return }
+        await clampRetryTimes()
         let now = clock.date()
         let busy = Set(await index.jobs.map(\.assetID))
         let waiting = await index.entries(where: { entry in
@@ -634,7 +667,13 @@ public actor BackupUploader {
     /// item already waits one out (the other half of a Live Photo, sent at the same time) isn't counted again.
     static func noteFailure(of entry: inout BackupEntry, holdsRun: Bool, offline: Bool, at now: Date) {
         var retry = entry.retry ?? BackupRetryState(failures: 0, notBefore: now, wasOffline: false, holdsRun: false)
-        if retry.failures > 0, retry.notBefore > now { return }
+        if retry.failures > 0, retry.notBefore > now {
+            // Not counted again, but what it says holds: the server being down, or no connection.
+            retry.holdsRun = retry.holdsRun || holdsRun
+            retry.wasOffline = retry.wasOffline || offline
+            entry.retry = retry
+            return
+        }
         retry.failures += 1
         retry.wasOffline = offline
         retry.holdsRun = holdsRun
@@ -691,8 +730,12 @@ public actor BackupUploader {
     /// and an item gone entirely goes back to `pending(.needsUpload)` for the next run. A half the server
     /// still has is never uploaded. Other states are left alone. Rethrows what `restoreAssets` throws
     /// (`editingOff` while Allow Changes is off), `unauthorized` and cancellation; the index is saved after
-    /// each item.
+    /// each item. Shares the index and the transport with `run`, so it does nothing (changes nothing, throws
+    /// nothing) while a run or another `reupload` is going; the runner takes turns, and a direct caller must too.
     public func reupload(_ ids: [String]) async throws {
+        guard !isRunning, !isReuploading else { return }
+        isReuploading = true
+        defer { isReuploading = false }
         for id in ids {
             do {
                 try Task.checkCancellation()

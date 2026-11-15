@@ -425,6 +425,10 @@ final class BackupRunner {
         await acquireLane()
         defer { releaseLane() }
         guard isCurrent(id), let uploader = await uploaderForRun(), isCurrent(id) else { return false }
+        // Switched off and on again quickly: the cancel of the uploads from before is still going, and would
+        // take the uploads of this run with it.
+        await uploadCancel?.value
+        guard isCurrent(id) else { return false }
         if networkReturned {
             networkReturned = false
             await uploader.networkReturned()
@@ -675,23 +679,15 @@ final class BackupRunner {
     }
 }
 
-/// Counts the items an upload run has finished, from its progress events (an event with a filename
-/// starts an item, the next one without ends it). Read by `shouldPause` off the main actor.
+/// Counts the items an upload run has finished, from its progress events: `done` is the items with a result
+/// (an item handed to the transport isn't one yet), so this follows it. Read by `shouldPause` off the main actor.
 private final class ItemCounter: @unchecked Sendable {
     private let lock = NSLock()
-    private var inItem = false
     private var _finished = 0
 
     var finished: Int { lock.withLock { _finished } }
 
     func note(_ progress: UploadProgress) {
-        lock.withLock {
-            if progress.currentFilename != nil {
-                inItem = true
-            } else if inItem {
-                inItem = false
-                _finished += 1
-            }
-        }
+        lock.withLock { _finished = max(_finished, progress.done) }
     }
 }

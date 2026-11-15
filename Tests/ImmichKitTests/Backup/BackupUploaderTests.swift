@@ -181,6 +181,13 @@ private final class PauseProbe: @unchecked Sendable {
     }
 }
 
+private final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _isSet = false
+    func set() { lock.withLock { _isSet = true } }
+    var isSet: Bool { lock.withLock { _isSet } }
+}
+
 final class BackupUploaderTests: XCTestCase {
     private var directories: [URL] = []
 
@@ -311,6 +318,33 @@ final class BackupUploaderTests: XCTestCase {
         shouldPause: @escaping @Sendable () async -> Bool = { false }
     ) async throws {
         try await uploader.run(progress: { log.append($0) }, shouldPause: shouldPause)
+    }
+
+    /// Awaits `task`; one that doesn't finish within `seconds` is cancelled and fails the test, so a
+    /// wedged run is a failure instead of a hang.
+    private func finish<T: Sendable>(
+        _ task: Task<T, Error>, within seconds: Double = 30, file: StaticString = #filePath, line: UInt = #line
+    ) async -> Result<T, Error> {
+        let timedOut = LockedFlag()
+        let watchdog = Task {
+            try await Task.sleep(for: .seconds(seconds))
+            timedOut.set()
+            task.cancel()
+        }
+        let result = await task.result
+        watchdog.cancel()
+        if timedOut.isSet { XCTFail("The run didn't finish within \(seconds) s", file: file, line: line) }
+        return result
+    }
+
+    /// Polls until `condition` holds; `false` after `seconds` (a failing wait instead of a hanging one).
+    private func eventually(_ seconds: Double = 30, _ condition: () -> Bool) async -> Bool {
+        let deadline = ContinuousClock.now + .seconds(seconds)
+        while !condition() {
+            if ContinuousClock.now > deadline { return false }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return true
     }
 
     private func state(_ id: String, _ index: BackupIndex) async -> BackupState? { await index.entry(for: id)?.state }
@@ -481,8 +515,9 @@ final class BackupUploaderTests: XCTestCase {
         XCTAssertEqual(uploads.map(\.checksum), [sums[.pairedVideo]!, sums[.photo]!, sums[.pairedVideo]!, sums[.photo]!])
         let entry = await setup.index.entry(for: "l")
         XCTAssertEqual(entry?.serverIDs[.pairedVideo], "motion-1", "No second motion asset")
-        let links = await setup.service.links.map(\.motionID)
-        XCTAssertEqual(links, ["motion-1"], "Phase 3: the photo is linked to the duplicate's ID after the upload")
+        let links = await setup.service.links.map { "\($0.photoID)->\($0.motionID)" }
+        let photoID = try XCTUnwrap(entry?.serverIDs[.photo])
+        XCTAssertEqual(links, ["\(photoID)->motion-1"], "Phase 3: the photo is linked to the duplicate's ID after the upload")
     }
 
     func testHalfAlreadyOnTheServerIsNeverSent() async throws {
@@ -1404,7 +1439,7 @@ final class BackupUploaderTests: XCTestCase {
         await setup.service.setUploadResults([AssetUploadResult(id: "M", status: .created)])
         await first.transport.complete { $0.resource == .pairedVideo }
         await first.transport.finish(where: { $0.resource == .photo }, with: .failed(.service(.unexpectedStatus(500))))
-        try await firstRun.value
+        try await finish(firstRun).get()
 
         // Relaunch: everything made again from the saved index.
         let relaunched = BackupIndex(directory: setup.directory)
@@ -1590,7 +1625,7 @@ final class BackupUploaderTests: XCTestCase {
 
         await stack.transport.waitForEnqueued(2)
         await stack.transport.finish(where: { $0.assetID == "a" }, with: .failed(.service(.insecureConnection)))
-        let result = await task.result
+        let result = await finish(task)
 
         XCTAssertThrowsError(try result.get()) { XCTAssertEqual($0 as? ImmichServiceError, .insecureConnection) }
         XCTAssertGreaterThanOrEqual(stack.transport.cancelAllCount, 1)
@@ -1626,6 +1661,166 @@ final class BackupUploaderTests: XCTestCase {
         XCTAssertEqual(saved?.needsLink, false)
         let wState = await state("w", setup.index)
         XCTAssertEqual(wState, .pending(reason: .needsUpload))
+    }
+
+    // MARK: Phase 3 fix round 1
+
+    /// Uploads handed over on Wi-Fi that iOS holds once the phone is on cellular (videos, with their cellular
+    /// switch off) take no in-flight slot and aren't waited for: a photo that may go on cellular still goes.
+    func testHeldWiFiOnlyJobsDoNotBlockTheInFlightSlots() async throws {
+        let videoIDs = ["v1", "v2", "v3"]
+        let setup = await makeSetup(
+            album: Set(videoIDs + ["p"]), cellular: true, settings: BackupSettings(photosOnCellular: true))
+        try FileManager.default.createDirectory(at: setup.stagingDirectory, withIntermediateDirectories: true)
+        for (offset, id) in videoIDs.enumerated() {
+            let sums = addAsset(id, to: setup.library, types: [.video], isVideo: true,
+                                created: Self.date.addingTimeInterval(Double(60 + offset)))
+            await queue(id, sums, in: setup.index, state: .pending(reason: .waitingForWiFi))
+            let body = "\(id).multipart"
+            try Data("body".utf8).write(to: setup.stagingDirectory.appendingPathComponent(body))
+            await setup.index.addJob(UploadJob(
+                assetID: id, resource: .video, attempt: UUID(), bodyFileName: body, checksum: sums[.video]!))
+        }
+        let p = addAsset("p", to: setup.library, created: Self.date)
+        await queue("p", p, in: setup.index)
+        try await setup.index.save()
+        let stack = makeStack(setup, mode: .manual)
+        let uploader = stack.uploader
+        let task = Task { try await uploader.run(progress: { _ in }, shouldPause: { false }) }
+
+        let enqueued = await eventually { stack.transport.sent.count >= 1 }
+        XCTAssertTrue(enqueued, "The photo goes although three held videos fill the in-flight limit")
+        XCTAssertEqual(stack.transport.sent.map(\.job.assetID), ["p"])
+        await stack.transport.complete { $0.assetID == "p" }
+        try await finish(task).get()
+
+        let pState = await state("p", setup.index)
+        guard case .backedUp = pState else { return XCTFail("Expected backedUp, got \(String(describing: pState))") }
+        let jobs = await setup.index.jobs.map(\.assetID)
+        XCTAssertEqual(Set(jobs), Set(videoIDs), "The held uploads are left to the system")
+    }
+
+    /// Held uploads' bodies still take staging budget. When that is what stops an item, the run leaves the
+    /// item for the next run instead of waiting for room that only Wi-Fi brings.
+    func testHeldJobsFillingTheBudgetEndTheRunInsteadOfWaiting() async throws {
+        let setup = await makeSetup(album: ["v", "p"], settings: BackupSettings(photosOnCellular: true))
+        let v = addAsset("v", to: setup.library, types: [.video], isVideo: true, created: Self.date.addingTimeInterval(60))
+        let p = addAsset("p", to: setup.library, created: Self.date)
+        await queue("v", v, in: setup.index)
+        await queue("p", p, in: setup.index)
+        let staging = BackupStaging(
+            directory: setup.stagingDirectory, freeSpace: { 100 * 1024 * 1024 * 1024 }, recheckInterval: 1024 * 1024,
+            budget: 50_000, estimate: { _, asset in asset.id == "p" ? 100_000 : 10 })
+        let stack = makeStack(setup, mode: .manual, staging: staging)
+        let uploader = stack.uploader
+        let probe = PauseProbe()
+        let task = Task { try await uploader.run(progress: { _ in }, shouldPause: { probe.ask() }) }
+
+        // On Wi-Fi the video goes; the photo doesn't fit next to it, and the run waits for room.
+        let enqueued = await eventually { stack.transport.sent.count >= 1 }
+        XCTAssertTrue(enqueued)
+        await probe.waitForCalls(3)
+        XCTAssertEqual(stack.transport.sent.map(\.job.assetID), ["v"])
+
+        // The phone leaves Wi-Fi: the video is held, so nothing will free the room.
+        setup.network.setCellular(true)
+        uploader.wake()
+        try await finish(task).get()
+
+        XCTAssertEqual(stack.transport.sent.map(\.job.assetID), ["v"], "The photo wasn't squeezed in")
+        let pState = await state("p", setup.index)
+        XCTAssertEqual(pState, .pending(reason: .needsUpload), "Left for the next run")
+        let jobs = await setup.index.jobs.map(\.assetID)
+        XCTAssertEqual(jobs, ["v"])
+    }
+
+    /// A retry time from a clock that was moved back can't hold an item for longer than the longest back-off.
+    func testRetryTimeFromAClockMovedBackIsClamped() async throws {
+        let setup = await makeSetup(album: ["a"])
+        let sums = addAsset("a", to: setup.library)
+        await setup.index.set(BackupEntry(
+            modificationDate: Self.date, checksums: sums, state: .pending(reason: .needsUpload),
+            retry: BackupRetryState(
+                failures: 1, notBefore: setup.clock.date.addingTimeInterval(7200), wasOffline: false, holdsRun: false)),
+            for: "a")
+        try await setup.index.save()
+
+        try await run(makeUploader(setup))
+
+        let s = await state("a", setup.index)
+        guard case .backedUp = s else { return XCTFail("Expected backedUp, got \(String(describing: s))") }
+        XCTAssertLessThanOrEqual(setup.clock.totalSlept, .seconds(3602), "Waited for the clamped time, not the stored one")
+    }
+
+    /// An item given up on with a retry time far ahead is held until the clamped time (kept in the index, so
+    /// it runs out), not for ever.
+    func testGivenUpPauseFromAClockMovedBackRunsOut() async throws {
+        let setup = await makeSetup(album: ["a"])
+        let sums = addAsset("a", to: setup.library)
+        await setup.index.set(BackupEntry(
+            modificationDate: Self.date, checksums: sums, state: .pending(reason: .needsUpload),
+            retry: BackupRetryState(
+                failures: 6, notBefore: setup.clock.date.addingTimeInterval(10 * 86_400), wasOffline: false, holdsRun: false)),
+            for: "a")
+        try await setup.index.save()
+
+        try await run(makeUploader(setup))
+        var uploads = await setup.service.uploads.count
+        XCTAssertEqual(uploads, 0, "Still given up on")
+
+        setup.clock.advance(.seconds(3601))
+        try await run(makeUploader(setup))
+        uploads = await setup.service.uploads.count
+        XCTAssertEqual(uploads, 1, "The pause ended an hour after it was first read")
+    }
+
+    /// A second failure while the item already waits out a back-off (the other half of a Live Photo) isn't
+    /// counted again, but what it says is kept.
+    func testSecondFailureDuringABackOffKeepsItsFlags() {
+        var entry = BackupEntry(modificationDate: Self.date, checksums: [:], state: .pending(reason: .needsUpload))
+        let now = Self.date
+        BackupUploader.noteFailure(of: &entry, holdsRun: false, offline: false, at: now)
+        BackupUploader.noteFailure(of: &entry, holdsRun: true, offline: true, at: now)
+
+        XCTAssertEqual(entry.retry?.failures, 1, "Counted once")
+        XCTAssertEqual(entry.retry?.holdsRun, true, "The server being down holds the run")
+        XCTAssertEqual(entry.retry?.wasOffline, true, "Tried again once the network returns")
+        XCTAssertEqual(entry.retry?.notBefore, now.addingTimeInterval(5))
+
+        // And the other way round: a later, milder failure doesn't undo it.
+        BackupUploader.noteFailure(of: &entry, holdsRun: false, offline: false, at: now)
+        XCTAssertEqual(entry.retry?.holdsRun, true)
+        XCTAssertEqual(entry.retry?.wasOffline, true)
+    }
+
+    /// Re-upload shares the uploader's index and transport with the run: while one is going it does nothing
+    /// (the runner takes turns; a direct caller must too) instead of racing it.
+    func testReuploadDuringARunDoesNothing() async throws {
+        let setup = await makeSetup(album: ["a", "t"])
+        let a = addAsset("a", to: setup.library, created: Self.date.addingTimeInterval(60))
+        let t = addAsset("t", to: setup.library)
+        await setup.service.setAssets([Asset(id: "srv-t", kind: .image, takenAt: Self.date, isTrashed: true)])
+        await queue("a", a, in: setup.index)
+        let trashed = BackupState.deletedOnServer(trashed: [.photo], gone: [])
+        await queue("t", t, in: setup.index, state: trashed, serverIDs: [.photo: "srv-t"])
+        let stack = makeStack(setup, mode: .manual)
+        let uploader = stack.uploader
+        let task = Task { try await uploader.run(progress: { _ in }, shouldPause: { false }) }
+        let enqueued = await eventually { stack.transport.sent.count >= 1 }
+        XCTAssertTrue(enqueued)
+
+        try await uploader.reupload(["t"])
+
+        let restored = await setup.service.requests.filter { if case .restoreAssets = $0 { true } else { false } }
+        XCTAssertEqual(restored, [], "Nothing restored while a run is going")
+        let tState = await state("t", setup.index)
+        XCTAssertEqual(tState, trashed)
+
+        await stack.transport.complete()
+        try await finish(task).get()
+        try await uploader.reupload(["t"])
+        let after = await state("t", setup.index)
+        XCTAssertEqual(after, .backedUp(serverAssetID: "srv-t"), "Works again once the run is over")
     }
 }
 

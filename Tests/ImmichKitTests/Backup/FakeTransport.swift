@@ -35,6 +35,7 @@ final class FakeTransport: BackupTransport, @unchecked Sendable {
     private var _blocked = false
     private var _clearCount = 0
     private var running: [UUID: Task<Void, Never>] = [:]
+    private let cancelGate = CancelGate()
     private var waiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
     /// `directory` is the index's, to read what was saved at enqueue time.
@@ -92,10 +93,23 @@ final class FakeTransport: BackupTransport, @unchecked Sendable {
         if mode == .immediate { await start(sent).value }
     }
 
-    func inFlight() async -> [UploadJob] { await index.jobs }
+    /// What the real transport does when it starts up (and `inFlight()` waits for): the staging files no job
+    /// refers to are removed. Here on every call, which the tests make only while nothing is being staged.
+    func inFlight() async -> [UploadJob] {
+        let jobs = await index.jobs
+        await staging.removeUnreferenced(keeping: Set(jobs.compactMap { staging.url(forBodyNamed: $0.bodyFileName) }))
+        return jobs
+    }
+
+    /// Makes `cancelAll()` wait, once it has begun, until `releaseCancelAll()`: a cancel that takes a while.
+    func holdCancelAll() async { await cancelGate.hold() }
+    func releaseCancelAll() async { await cancelGate.release() }
+    /// Returns once a `cancelAll()` has begun (and is waiting, if held).
+    func waitForCancelAllStarted() async { await cancelGate.waitUntilEntered() }
 
     /// Cancels the uploads under way; jobs not started are recorded as cancelled.
     func cancelAll() async {
+        await cancelGate.pass()
         let tasks = lock.withLock { () -> [Task<Void, Never>] in
             _cancelAllCount += 1
             return Array(running.values)
@@ -196,5 +210,33 @@ extension BackupUploadRequests {
     /// An https server, so the key may be sent.
     static var test: BackupUploadRequests {
         BackupUploadRequests(credentials: try! ServerCredentials(server: "https://immich.example.com", apiKey: "test-key"))
+    }
+}
+
+/// Holds `cancelAll()` of the fake transport at the start until released.
+private actor CancelGate {
+    private var held = false
+    private var entered = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func hold() { held = true }
+
+    func release() {
+        held = false
+        for waiter in waiting { waiter.resume() }
+        waiting = []
+    }
+
+    func pass() async {
+        entered = true
+        for waiter in enteredWaiters { waiter.resume() }
+        enteredWaiters = []
+        if held { await withCheckedContinuation { waiting.append($0) } }
+    }
+
+    func waitUntilEntered() async {
+        if entered { return }
+        await withCheckedContinuation { enteredWaiters.append($0) }
     }
 }
