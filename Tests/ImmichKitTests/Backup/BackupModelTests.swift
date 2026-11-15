@@ -974,9 +974,48 @@ final class BackupModelTests: XCTestCase {
 
         XCTAssertEqual(model.counts.pending, count)
         XCTAssertEqual(model.remainingItems.count, BackupModel.remainingItemLimit)
+        XCTAssertEqual(model.remainingTotal, count, "The total is of everything, so the footer shows")
         XCTAssertEqual(model.remainingItems.first?.id, "a\(count)", "Newest first")
         XCTAssertEqual(model.remainingItems.map(\.date), model.remainingItems.map(\.date).sorted { ($0 ?? .distantPast) > ($1 ?? .distantPast) })
         XCTAssertFalse(model.remainingItems.contains { ["a1", "a2", "a3"].contains($0.id) }, "The oldest are cut")
+        await model.stop()
+    }
+
+    /// `counts()` treats an asset with no entry, or a stale one, as not checked yet: so must the list.
+    func testRemainingListIncludesUncheckedAndStaleItemsAsNotChecked() async throws {
+        let library = makeLibrary(count: 4)
+        let directory = makeDirectory()
+        let index = BackupIndex(directory: directory)
+        // a1 has no entry at all; a2's entry is older than the photo; a3 is queued; a4 is on the server.
+        await index.set(
+            BackupEntry(modificationDate: Self.date.addingTimeInterval(-100), checksums: [.photo: "old"], state: .backedUp(serverAssetID: "s2")),
+            for: "a2")
+        await index.set(
+            BackupEntry(modificationDate: Self.date, checksums: [.photo: "sum-a3"], state: .pending(reason: .needsUpload)), for: "a3")
+        await index.set(
+            BackupEntry(modificationDate: Self.date, checksums: [.photo: "sum-a4"], state: .backedUp(serverAssetID: "s4")), for: "a4")
+        await index.setSelection(BackupSelection(included: ["recents"]))
+        try await index.save()
+        let model = makeModel(library, directory: directory)
+        await model.load()
+
+        XCTAssertEqual(model.remaining, 3)
+        let byID = Dictionary(uniqueKeysWithValues: model.remainingItems.map { ($0.id, $0.status) })
+        XCTAssertEqual(Set(byID.keys), ["a1", "a2", "a3"])
+        XCTAssertEqual(byID["a1"], .notChecked)
+        XCTAssertEqual(byID["a2"], .notChecked)
+        XCTAssertEqual(byID["a3"], .waiting)
+        XCTAssertEqual(model.remainingTotal, model.remainingItems.count, "Everything is listed, so no footer")
+        XCTAssertEqual(model.remainingTotal, model.counts.pending)
+        await model.stop()
+    }
+
+    func testRemainingTotalCountsItemsWithoutAnEntry() async throws {
+        let library = makeLibrary(count: 5)
+        let model = makeModel(library, directory: try await seededDirectory([:]))
+        await model.load()
+        XCTAssertEqual(model.remainingTotal, 5, "All unchecked")
+        XCTAssertEqual(model.remainingItems.count, 5)
         await model.stop()
     }
 

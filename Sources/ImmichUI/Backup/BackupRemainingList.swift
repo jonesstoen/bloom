@@ -20,7 +20,7 @@ struct BackupRemainingList: View {
                         RemainingItemRow(item: item, model: model)
                     }
                 } footer: {
-                    if model.counts.pending > model.remainingItems.count {
+                    if model.remainingTotal > model.remainingItems.count {
                         Text(tr("Showing the first %lld.", Int64(model.remainingItems.count)))
                     }
                 }

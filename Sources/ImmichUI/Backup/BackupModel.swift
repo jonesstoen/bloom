@@ -78,7 +78,7 @@ final class BackupModel {
     static let deletedItemLimit = 200
     /// The most remaining items listed on screen.
     static let remainingItemLimit = 200
-    /// Pixel side of the thumbnails in the Deleted on Server list.
+    /// Pixel side of the thumbnails in the Remaining and Deleted on Server lists.
     static let thumbnailPixelSide = 160
 
     private(set) var access: PhotoAccess?
@@ -91,9 +91,12 @@ final class BackupModel {
     private(set) var failedItems: [FailedItem] = []
     /// The first `deletedItemLimit` items deleted on the server, newest first. `counts.deletedOnServer` has the total.
     private(set) var deletedItems: [DeletedItem] = []
-    /// The first `remainingItemLimit` items still to back up, newest first, each with its state.
-    /// `counts.pending` has the total.
+    /// The `remainingItemLimit` items still to back up that were edited last, shown newest first (by the date
+    /// taken), each with its state. The cut is by latest edit, which is cheap and needs no asset fetch for
+    /// the items cut. `remainingTotal` has the total.
     private(set) var remainingItems: [RemainingItem] = []
+    /// How many items are still to back up as the last pass found them (all of them, not just the listed ones).
+    private(set) var remainingTotal = 0
     private(set) var error: String?
     /// The last scan or upload stopped because the server couldn't be reached (offline, VPN off, server
     /// down). Shown as `connectionStatus` instead of `error`; cleared when a scan or upload run gets through.
@@ -175,7 +178,7 @@ final class BackupModel {
     @ObservationIgnored private var generation = 0
     /// Counts `refreshLists()` calls: only the newest one may publish its result.
     @ObservationIgnored private var listsRevision = 0
-    /// Decoded thumbnails of the Deleted on Server rows, by asset ID, and the IDs that had none.
+    /// Decoded thumbnails of the Remaining and Deleted on Server rows, by asset ID, and the IDs that had none.
     @ObservationIgnored private var thumbnailCache: [String: CGImage] = [:]
     @ObservationIgnored private var thumbnailMisses: Set<String> = []
     /// The remaining items as the last index pass read them, and the assets the transport has in flight
@@ -333,6 +336,7 @@ final class BackupModel {
             deletedItems = []
             remainingBase = []
             remainingItems = []
+            remainingTotal = 0
             return
         }
         albums = await source.albums()
@@ -726,11 +730,11 @@ final class BackupModel {
         let wantsRemaining = counts.pending > 0
         var failed: [FailedItem] = []
         var deleted: [(id: String, entry: BackupEntry)] = []
-        var remaining: [(id: String, entry: BackupEntry)] = []
-        if wantsFailed || wantsDeleted || wantsRemaining {
+        var remaining: (total: Int, items: [PendingItem]) = (0, [])
+        if wantsRemaining { remaining = await currentRemaining() }
+        if wantsFailed || wantsDeleted {
             let entries = await currentEntries {
                 (wantsFailed && Self.isFailed($0)) || (wantsDeleted && Self.isDeletedOnServer($0))
-                    || (wantsRemaining && Self.isPending($0))
             }
             failed = entries.compactMap { id, entry in
                 guard case let .failed(reason) = entry.state else { return nil }
@@ -738,17 +742,8 @@ final class BackupModel {
             }
             // The newest edits first, so the limit keeps those.
             deleted = entries.filter { Self.isDeletedOnServer($0.entry) }
-                .sorted {
-                    $0.entry.modificationDate != $1.entry.modificationDate
-                        ? $0.entry.modificationDate > $1.entry.modificationDate : $0.id < $1.id
-                }
+                .sorted { Self.isNewerEdit(($0.id, $0.entry.modificationDate), ($1.id, $1.entry.modificationDate)) }
             deleted = Array(deleted.prefix(Self.deletedItemLimit))
-            remaining = entries.filter { Self.isPending($0.entry) }
-                .sorted {
-                    $0.entry.modificationDate != $1.entry.modificationDate
-                        ? $0.entry.modificationDate > $1.entry.modificationDate : $0.id < $1.id
-                }
-            remaining = Array(remaining.prefix(Self.remainingItemLimit))
         }
         guard revision == listsRevision else { return }
         let shownFailed = Array(failed.prefix(Self.failedItemLimit))
@@ -760,35 +755,22 @@ final class BackupModel {
             await source.assets(deleted.map(\.id).filter { known[$0] == nil }).map { ($0.id, $0.creationDate) },
             uniquingKeysWith: { first, _ in first })
         let createdRemaining = Dictionary(
-            await source.assets(remaining.map(\.id).filter { knownRemaining[$0] == nil }).map { ($0.id, $0.creationDate) },
+            await source.assets(remaining.items.map(\.id).filter { knownRemaining[$0] == nil }).map { ($0.id, $0.creationDate) },
             uniquingKeysWith: { first, _ in first })
         guard revision == listsRevision else { return }
         let items: [DeletedItem] = deleted.compactMap { id, entry in
             guard case let .deletedOnServer(trashed, gone) = entry.state else { return nil }
             // Every missing copy is in the trash: it can be restored without uploading anything.
             return DeletedItem(id: id, date: known[id]?.date ?? created[id], isTrashed: !trashed.isEmpty && gone.isEmpty)
-        }.sorted {
-            switch ($0.date, $1.date) {
-            case let (a?, b?) where a != b: a > b
-            case (_?, nil): true
-            case (nil, _?): false
-            default: $0.id < $1.id
-            }
-        }
+        }.sorted { Self.isNewer(($0.id, $0.date), ($1.id, $1.date)) }
         if deletedItems != items { deletedItems = items }
-        let bases: [RemainingBase] = remaining.compactMap { id, entry in
-            guard case let .pending(reason) = entry.state else { return nil }
-            return RemainingBase(
-                id: id, date: knownRemaining[id] ?? createdRemaining[id], reason: reason, retryNotBefore: entry.retry?.notBefore)
-        }.sorted {
-            switch ($0.date, $1.date) {
-            case let (a?, b?) where a != b: a > b
-            case (_?, nil): true
-            case (nil, _?): false
-            default: $0.id < $1.id
-            }
-        }
+        let bases: [RemainingBase] = remaining.items.map { item in
+            RemainingBase(
+                id: item.id, date: knownRemaining[item.id] ?? createdRemaining[item.id], reason: item.reason,
+                retryNotBefore: item.retryNotBefore)
+        }.sorted { Self.isNewer(($0.id, $0.date), ($1.id, $1.date)) }
         if remainingBase != bases { remainingBase = bases }
+        if remainingTotal != remaining.total { remainingTotal = remaining.total }
         publishRemaining()
         // Thumbnails of rows that are gone aren't needed any more.
         let shown = Set(items.map(\.id)).union(bases.map(\.id))
@@ -809,6 +791,54 @@ final class BackupModel {
             for (id, entry) in chunk where dates[id] == entry.modificationDate { result.append((id, entry)) }
         }
         return result
+    }
+
+    /// An item still to back up, as the index pass found it.
+    private struct PendingItem {
+        let id: String
+        let reason: PendingReason
+        let retryNotBefore: Date?
+    }
+
+    /// The selected photos still to back up, the newest edits first and cut at `remainingItemLimit`, with
+    /// the total before the cut. Counts what `BackupScanner.counts()` counts as pending: queued entries, and
+    /// photos with no entry or a stale one (changed since it was recorded), which are not checked yet.
+    private func currentRemaining() async -> (total: Int, items: [PendingItem]) {
+        let index = await ensureIndex()
+        let ids = await index.selection().assetIDs(in: source).sorted()
+        var found: [(id: String, modified: Date, item: PendingItem)] = []
+        for start in stride(from: 0, to: ids.count, by: 500) {
+            let chunk = Array(ids[start..<min(start + 500, ids.count)])
+            let dates = await source.modificationDates(chunk)
+            let entries = Dictionary(
+                await index.entries(where: { _ in true }, in: Set(chunk), limit: .max), uniquingKeysWith: { first, _ in first })
+            for id in chunk {
+                guard let modified = dates[id] else { continue }
+                if let entry = entries[id], entry.modificationDate == modified {
+                    guard case let .pending(reason) = entry.state else { continue }
+                    found.append((id, modified, PendingItem(id: id, reason: reason, retryNotBefore: entry.retry?.notBefore)))
+                } else {
+                    found.append((id, modified, PendingItem(id: id, reason: .notChecked, retryNotBefore: nil)))
+                }
+            }
+        }
+        let newest = found.sorted { Self.isNewerEdit(($0.id, $0.modified), ($1.id, $1.modified)) }
+        return (found.count, newest.prefix(Self.remainingItemLimit).map(\.item))
+    }
+
+    /// The order of lists cut to a limit: the later edit first, ties by ID.
+    private static func isNewerEdit(_ a: (id: String, date: Date), _ b: (id: String, date: Date)) -> Bool {
+        a.date != b.date ? a.date > b.date : a.id < b.id
+    }
+
+    /// The order of rows: the later date first, rows without a date last, ties by ID.
+    private static func isNewer(_ a: (id: String, date: Date?), _ b: (id: String, date: Date?)) -> Bool {
+        switch (a.date, b.date) {
+        case let (x?, y?) where x != y: x > y
+        case (_?, nil): true
+        case (nil, _?): false
+        default: a.id < b.id
+        }
     }
 
     /// Makes `remainingItems` from the last index pass and the uploads in flight, assigning only when it
@@ -832,10 +862,6 @@ final class BackupModel {
         if remainingItems != items { remainingItems = items }
     }
 
-    private static func isPending(_ entry: BackupEntry) -> Bool {
-        if case .pending = entry.state { true } else { false }
-    }
-
     private static func isFailed(_ entry: BackupEntry) -> Bool {
         if case .failed = entry.state { true } else { false }
     }
@@ -846,7 +872,7 @@ final class BackupModel {
 
     // MARK: - Thumbnails
 
-    /// The thumbnail of a Deleted on Server row, decoded off the main actor and kept for later rows and
+    /// The thumbnail of a Remaining or Deleted on Server row, decoded off the main actor and kept for later rows and
     /// refreshes. Photos without one (gone from the iPhone, say) are remembered, not asked for again.
     func thumbnail(for id: String) async -> CGImage? {
         if let image = thumbnailCache[id] { return image }
