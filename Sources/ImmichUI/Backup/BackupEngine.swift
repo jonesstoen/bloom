@@ -196,6 +196,8 @@ public final class BackupEngine: Sendable {
     /// Whether a background run may go ahead; waits for the network report and the transport's startup.
     private func prepare() async throws -> Bool {
         guard settings().isEnabled else { return false }
+        // An index file that was unreadable at launch (a locked phone) is read again before a run uses it.
+        if await !index.isAvailable { try? await index.reload() }
         let access = await source.authorization()
         guard access == .full || access == .limited else { return false }
         await waitForNetworkPath()
@@ -391,6 +393,14 @@ final class BackupEngineRegistry: @unchecked Sendable {
             return .found(engine(for: credentials))
         case .success: return .noAccount
         }
+    }
+
+    /// Closes the transport of the engine this registry still holds under `identifier` (sign-out is closing it),
+    /// without making an engine or a session. False when it holds none.
+    func closeTransport(forSessionIdentifier identifier: String) -> Bool {
+        guard let engine = lock.withLock({ engines[identifier] }) else { return false }
+        engine.transport.invalidate()
+        return true
     }
 
     /// The signed-in account's engine, for a scheduled task.

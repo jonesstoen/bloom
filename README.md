@@ -40,7 +40,7 @@ Immich app and is not on the App Store: you build it yourself in Xcode (see belo
   the server's trash keeps items), restore from Recently Deleted, create albums and add photos.
 - Norwegian Bokmål and English, Liquid Glass with fallbacks, a Home Screen icon picker (About Bloom).
 
-Uploading from the iPhone (backup) is not implemented yet: Bloom shows what is on your server.
+Backup is optional and off until you turn it on: photos and videos from the albums you choose are uploaded to your server, in the foreground and in the background (iOS can also run it when Bloom is closed). It never deletes anything, neither on the iPhone nor on the server.
 
 ## Security and privacy
 
@@ -52,11 +52,11 @@ own Immich server. See the [privacy policy](PRIVACY.md).
   Organize), so a leaked key can't do more; see [API key permissions](#api-key-permissions).
 - **Transport**: https, or http only on your own network (after asking) or over Tailscale. Plain
   http to the internet is refused, including disguised numeric hosts. No request carrying the key
-  follows a redirect to another server, video and Live Photo playback included.
+  follows a redirect to another server, video and Live Photo playback included. The one exception is background uploads: iOS performs them and follows redirects at the system level, so Bloom detects a redirect afterwards, stops backup and asks you to tap Try Again before it continues. The API key may have been sent once to the redirect target in that case.
 - **Untrusted responses**: malformed or oversized server data is rejected instead of crashing the
   app or filling memory; file names from other people's uploads are cleaned before sharing.
 - **On the device**: cached photos and library data are protected while the iPhone is locked and
-  removed at sign-out; leftovers from earlier accounts and interrupted shares are cleaned up.
+  removed at sign-out; leftovers from earlier accounts and interrupted shares are cleaned up. Backup keeps an index (checksums, server IDs and per-photo state) and temporary upload copies: full copies of the originals, kept until each upload is recorded, then deleted, and also deleted at sign-out. They are readable after the first unlock.
 
 Found a vulnerability? Please report it privately through
 [GitHub security advisories](https://github.com/jonesstoen/bloom/security/advisories/new) rather
@@ -108,7 +108,7 @@ each part lives: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). The logo kit (S
 
    The generated `ContentView` is no longer needed. No API key, server URL or extra service wiring belongs in the app source.
 5. Select an iPhone simulator or your signed-in physical device and run. On first launch, enter the server URL and API key in the login screen. The connection test checks an authenticated endpoint before saving to the Keychain. Subsequent launches restore that connection; **Library → Account → Sign Out** clears it and the session's image cache.
-6. For a server on your local network, add **Privacy - Local Network Usage Description** (`NSLocalNetworkUsageDescription`) to the app target's Info settings, for example "Bloom connects to your Immich server when it is on your local network." ([`docs/APP_STORE.md`](docs/APP_STORE.md) has the Norwegian text, the app's privacy manifest and the other App Store settings). Prefer a server with trusted HTTPS. Bloom refuses plain HTTP except for servers on your own network (private addresses, `.local` names) or on Tailscale, which encrypts the traffic itself; for those, configure a narrowly scoped App Transport Security exception in the app target. The package does not disable ATS globally, and it never follows a redirect to another server.
+6. For a server on your local network, add **Privacy - Local Network Usage Description** (`NSLocalNetworkUsageDescription`) to the app target's Info settings, for example "Bloom connects to your Immich server when it is on your local network." ([`docs/APP_STORE.md`](docs/APP_STORE.md) has the Norwegian text, the app's privacy manifest and the other App Store settings). Prefer a server with trusted HTTPS. Bloom refuses plain HTTP except for servers on your own network (private addresses, `.local` names) or on Tailscale, which encrypts the traffic itself; for those, configure a narrowly scoped App Transport Security exception in the app target. The package does not disable ATS globally, and it never follows a redirect to another server (background uploads are the exception: iOS follows redirects there, Bloom detects it afterwards and stops until you tap Try Again; see the privacy policy).
 
 ### API key permissions
 
@@ -124,7 +124,7 @@ The lists live in `APIKeyPermissions` (ImmichKit) and are shown on the sign-in s
 `APIKeyPermissionTests` checks them against the OpenAPI spec. Without a permission the matching
 feature shows an error, and the rest of the app keeps working.
 
-Browsing does not require permission to the iPhone's Photos library: images come from Immich. Uploading and saving to the device's photo library are not implemented.
+Browsing does not require permission to the iPhone's Photos library: images come from Immich. Backup reads the Photos library only when you turn it on, and only uploads: it never changes or deletes anything there. Saving to the device's photo library is not implemented.
 
 ## Language
 
@@ -191,7 +191,7 @@ Commit the generated changes and rerun all three checks.
 
 ## Known gaps
 
-- No upload or backup from the iPhone, and nothing is saved to the device's photo library.
+- Backup only uploads and never deletes; it is tested on one iPhone and one server. Background uploads rely on iOS scheduling, so timing varies. Nothing is saved to the device's photo library.
 - Tested on one iPhone with one library (about 13 000 items). Other server versions, very large
   libraries, offline use and VoiceOver have had little testing.
 - Run the integration tests against your own server (`IMMICH_URL`, `IMMICH_API_KEY`) after

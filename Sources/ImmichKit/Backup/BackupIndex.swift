@@ -127,7 +127,7 @@ public actor BackupIndex {
     private let fileURL: URL
     private var stored = Stored()
     /// `false` while the file exists but couldn't be read: the index in memory is then not the one on disk.
-    private(set) var isAvailable = true
+    public private(set) var isAvailable = true
     private var hasChanges = false
     /// Writes of the file so far, for tests that check how often the index is saved.
     private(set) var saveCount = 0

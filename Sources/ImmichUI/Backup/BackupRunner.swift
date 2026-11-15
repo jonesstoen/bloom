@@ -303,12 +303,19 @@ final class BackupRunner {
         defer { releaseLane() }
         try Task.checkCancellation()
         guard !isStopped, let uploader = await uploaderForRun() else { throw CancellationError() }
+        // On an engine, also the engine's turn: a background run may hold the uploader (see `BackupGate`), and
+        // `body` would silently do nothing then. Cancelled while waiting: the operation is cancelled.
+        let gate = model?.engine?.gate
+        let entered = await gate?.acquire() ?? true
         do {
+            guard entered else { throw CancellationError() }
             try await body(uploader)
         } catch {
+            if entered { await gate?.release() }
             await finishOperation()
             throw error
         }
+        if entered { await gate?.release() }
         // Restored or re-uploaded items are on the server again: the Library should show them.
         model?.serverLibraryChanged()
         await finishOperation()

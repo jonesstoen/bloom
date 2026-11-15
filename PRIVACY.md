@@ -27,7 +27,10 @@ third-party SDKs.
   your Immich server. iOS sends them in the background, also when Bloom is closed. While an upload
   runs, iOS keeps the request headers, which include your API key, in its own system storage until
   the upload has finished. They are not readable by other apps and never leave your iPhone except to
-  your server.
+  your server. One caveat: iOS follows redirects for background uploads at the system level, so a
+  misconfigured or hostile proxy could send an upload, and the API key with it, to another address
+  once. Bloom detects the redirect afterwards, stops backup and needs your OK (Try Again on the
+  Backup screen) before it continues.
 
 Bloom never sends your API key anywhere except to your server. It refuses unencrypted http to
 servers on the internet, asks before using unencrypted http on a local network, and never follows a
@@ -40,6 +43,11 @@ redirect to another server.
   protected while the iPhone is locked and deleted when you sign out.
 - **Settings** such as the grid size and sort order.
 - **Temporary copies of originals while you share them**, deleted afterwards.
+- **Backup index** (only if you use Backup): checksums, server IDs and the state of each photo, so
+  Bloom knows what is already uploaded.
+- **Temporary upload copies** (only if you use Backup): full copies of the originals, kept until
+  each upload is recorded, then deleted, and also at sign-out. They are readable after the first
+  unlock.
 
 Signing out removes the API key and the cached photos. Deleting the app removes everything.
 Bloom reads the iPhone's own photo library only when you turn on Backup, and never changes or deletes
@@ -86,7 +94,10 @@ tredjeparts-SDK-er.
   til Immich-serveren din. iOS sender dem i bakgrunnen, også når Bloom er lukket. Mens en opplasting
   pågår, lagrer iOS forespørselens overskrifter, som inneholder API-nøkkelen din, i sin egen
   systemlagring til opplastingen er ferdig. Andre apper kan ikke lese dem, og de forlater aldri
-  iPhonen unntatt til serveren din.
+  iPhonen unntatt til serveren din. Ett forbehold: iOS følger videresendinger for bakgrunnsopplastinger
+  på systemnivå, så en feilkonfigurert eller fiendtlig proxy kan sende en opplasting, og API-nøkkelen
+  med den, til en annen adresse én gang. Bloom oppdager videresendingen etterpå, stopper
+  sikkerhetskopien og trenger OK fra deg (Prøv igjen på Sikkerhetskopi-skjermen) før den fortsetter.
 
 Bloom sender aldri API-nøkkelen andre steder enn til serveren din. Appen nekter ukryptert http til
 servere på internett, spør før den bruker ukryptert http på et lokalt nettverk, og følger aldri en
@@ -99,6 +110,11 @@ videresending til en annen server.
   er beskyttet når iPhonen er låst, og slettes når du logger ut.
 - **Innstillinger** som rutenettstørrelse og sortering.
 - **Midlertidige kopier av originaler mens du deler dem**, som slettes etterpå.
+- **Sikkerhetskopi-indeks** (bare hvis du bruker Sikkerhetskopi): sjekksummer, server-ID-er og
+  tilstanden til hvert bilde, slik at Bloom vet hva som allerede er lastet opp.
+- **Midlertidige opplastingskopier** (bare hvis du bruker Sikkerhetskopi): fulle kopier av
+  originalene, som beholdes til hver opplasting er registrert og så slettes, også ved utlogging. De
+  kan leses etter første opplåsing.
 
 Når du logger ut, fjernes API-nøkkelen og de lagrede bildene. Sletter du appen, forsvinner alt.
 Bloom leser iPhonens eget bildebibliotek bare når du slår på Sikkerhetskopi, og endrer eller sletter

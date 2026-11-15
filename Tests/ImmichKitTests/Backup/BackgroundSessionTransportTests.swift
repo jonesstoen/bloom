@@ -574,6 +574,24 @@ final class BackgroundSessionTransportTests: XCTestCase {
         XCTAssertEqual(calls.withLock { $0 }, 1)
     }
 
+    func testInvalidatingCallsTheStoredCompletionHandlers() async {
+        let process = await launch(makeAccount())
+        let calls = Locked(0)
+        let handled = expectation(description: "completion handler")
+        process.transport.handleEvents {
+            XCTAssertTrue(Thread.isMainThread, "iOS wants it on the main thread")
+            calls.withLock { $0 += 1 }
+            handled.fulfill()
+        }
+        XCTAssertEqual(calls.withLock { $0 }, 0, "Not before the session ends")
+
+        process.transport.invalidate()
+        await fulfillment(of: [handled], timeout: 5)
+        process.transport.invalidate()
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in DispatchQueue.main.async { done.resume() } }
+        XCTAssertEqual(calls.withLock { $0 }, 1, "Called once, not dropped")
+    }
+
     func testErrorsOutsideTheURLDomainAreRetried() {
         let posix = BackgroundSessionEvents.outcome(
             status: nil, data: Data(), error: NSError(domain: NSPOSIXErrorDomain, code: 28))

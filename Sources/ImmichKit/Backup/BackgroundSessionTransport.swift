@@ -160,6 +160,7 @@ public final class BackgroundSessionTransport: BackupTransport, Sendable {
     public func invalidate() {
         redirectBlock.close()
         access.invalidate()
+        events.releaseHandlers()
     }
 
     // MARK: - Redirects
@@ -168,8 +169,7 @@ public final class BackgroundSessionTransport: BackupTransport, Sendable {
     /// Kept on disk; while set, `enqueue` throws `BackupTransportError.redirectBlocked`.
     public var isRedirectBlocked: Bool { redirectBlock.isSet }
 
-    /// Lifts the redirect block, after a check (in the foreground, without following redirects) found the
-    /// server answering at its own address again.
+    /// Lifts the redirect block. Only the user's Try Again on the Backup screen calls it.
     public func clearRedirectBlock() {
         redirectBlock.clear()
     }
@@ -510,6 +510,19 @@ final class BackgroundSessionEvents: @unchecked Sendable {
 
     func store(_ completion: @escaping () -> Void) {
         settle { $0.handlers.append(Handler(call: completion)) }
+    }
+
+    /// The session is ending (sign-out): calls the stored handlers on the main thread instead of dropping them,
+    /// so iOS isn't left waiting for the app to finish handling the events. Each is called once.
+    func releaseHandlers() {
+        let handlers = lock.withLock { () -> [Handler] in
+            defer { state.handlers = [] }
+            return state.handlers
+        }
+        guard !handlers.isEmpty else { return }
+        DispatchQueue.main.async {
+            for handler in handlers { handler.call() }
+        }
     }
 
     /// The first phase of reconcile has finished; `suspects` wait for the second.

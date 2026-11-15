@@ -141,16 +141,19 @@ enum BackupBackgroundTasks {
     /// signed-in account (signed out, or another account): invalidated, so its results are ignored, then
     /// `completion`. The Keychain not readable yet: the session may well be the account's, with uploads under
     /// way, so it is left alone; just `completion`. `lookup` may read the Keychain and the index: call this off
-    /// the main thread.
+    /// the main thread. A session of no signed-in account that the registry still holds (sign-out is closing
+    /// that engine) is not invalidated through a second session made under its identifier: `closeHeld` closes
+    /// the engine's own transport and returns true.
     static func handleEvents(
         forSession identifier: String, lookup: (String) -> BackupEngineLookup,
+        closeHeld: (String) -> Bool = { _ in false },
         invalidate: (String) -> Void, completion: @escaping @Sendable () -> Void
     ) {
         switch lookup(identifier) {
         case .found(let engine):
             engine.transport.handleEvents(completion: completion)
         case .noAccount:
-            invalidate(identifier)
+            if !closeHeld(identifier) { invalidate(identifier) }
             completion()
         case .credentialsUnavailable:
             completion()
@@ -290,6 +293,7 @@ public final class BloomAppDelegate: NSObject, UIApplicationDelegate {
         Task.detached(priority: .userInitiated) {
             BackupBackgroundTasks.handleEvents(
                 forSession: identifier, lookup: { BackupEngineRegistry.shared.lookup(sessionIdentifier: $0) },
+                closeHeld: { BackupEngineRegistry.shared.closeTransport(forSessionIdentifier: $0) },
                 invalidate: { BackupBackgroundTasks.invalidateSession($0) }, completion: { completion.call() })
         }
     }

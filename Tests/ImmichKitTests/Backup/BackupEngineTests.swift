@@ -275,6 +275,54 @@ final class BackupEngineTests: XCTestCase {
         XCTAssertEqual(engine.storedChangeToken(), Data("now".utf8))
     }
 
+    /// An index file that can't be read when the engine is made (a locked phone) is loaded again once it can.
+    func testRunReloadsAnIndexThatWasUnreadableAtStart() async throws {
+        let directory = temporaryDirectory()
+        let library = FakePhotoLibrary()
+        _ = photo("a", in: library)
+        library.addAlbum(id: "A", title: "Recents", assetIDs: ["a"])
+        try await seedIndex(in: directory)
+        let file = directory.appendingPathComponent("index.json").path
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: file)
+        let session = EngineFakeSession()
+        let engine = makeEngine(directory: directory, library: library, service: MockImmichService(), session: session)
+        let unavailable = await engine.index.isAvailable
+        XCTAssertFalse(unavailable, "Precondition: the index could not be read")
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file)
+
+        let finished = await engine.runProcessing()
+
+        let available = await engine.index.isAvailable
+        XCTAssertTrue(available)
+        XCTAssertTrue(finished)
+        XCTAssertEqual(enqueuedAssets(session), ["a"])
+    }
+
+    /// Try Again takes the engine's turn like a scan or a run: it waits while a background run holds it.
+    func testTryAgainWaitsForTheEnginesTurn() async throws {
+        let directory = temporaryDirectory()
+        let library = FakePhotoLibrary()
+        _ = photo("a", in: library)
+        library.addAlbum(id: "A", title: "Recents", assetIDs: ["a"])
+        try await seedIndex(in: directory, entries: ["a": BackupEntry(
+            modificationDate: date, checksums: [.photo: checksum(of: "a")], state: .failed(reason: "boom"))])
+        let engine = makeEngine(
+            directory: directory, library: library, service: MockImmichService(), session: EngineFakeSession())
+        let model = await makeModel(engine: engine)
+        let held = await engine.gate.acquire()
+        XCTAssertTrue(held)
+
+        let retry = Task { await model.runner.retryFailed(["a"]) }
+        try await Task.sleep(for: .milliseconds(300))
+        let whileHeld = await engine.index.entry(for: "a")?.state
+        XCTAssertEqual(whileHeld, .failed(reason: "boom"), "Waits for the engine's turn")
+
+        await engine.gate.release()
+        await retry.value
+        let after = await engine.index.entry(for: "a")?.state
+        XCTAssertEqual(after, .pending(reason: .notChecked))
+    }
+
     // MARK: - Registry
 
     func testUnknownSessionIdentifierGivesNoEngine() throws {
@@ -294,6 +342,22 @@ final class BackupEngineTests: XCTestCase {
         XCTAssertNotEqual(identifierA, identifierB)
         XCTAssertFalse(identifierA.contains(accountA.apiKey))
         XCTAssertTrue(identifierA.hasPrefix("no.johannesstoen.bloom.backup."))
+    }
+
+    /// While sign-out is closing an engine, its identifier belongs to the registry: its own transport is closed
+    /// (a second session under the identifier would be made, then ended, for nothing).
+    func testClosingHeldTransportInvalidatesTheEnginesOwnSession() throws {
+        let store = CredentialStore(storage: InMemorySecureStorage())
+        let sessions = SessionBox()
+        let registry = makeRegistry(store: store, sessions: sessions)
+        let identifierA = BackupEngineRegistry.sessionIdentifier(for: accountA)
+        XCTAssertFalse(registry.closeTransport(forSessionIdentifier: identifierA), "Holds no engine yet")
+
+        _ = registry.engine(for: accountA)
+        let session = sessions.session(for: identifierA)
+        XCTAssertFalse(session.isInvalidated)
+        XCTAssertTrue(registry.closeTransport(forSessionIdentifier: identifierA))
+        XCTAssertTrue(session.isInvalidated, "The engine's own session was closed")
     }
 
     func testSignedOutAccountResultsAreIgnored() async throws {

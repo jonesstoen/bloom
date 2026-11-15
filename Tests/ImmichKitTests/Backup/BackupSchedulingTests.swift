@@ -205,6 +205,21 @@ final class BackupSchedulingTests: XCTestCase {
         XCTAssertEqual(task.completions, [true])
     }
 
+    func testSessionOfAnEngineStillHeldIsClosedNotInvalidatedAgain() {
+        let invalidated = Recorder<String>()
+        let closed = Recorder<String>()
+        let completed = Recorder<String>()
+
+        BackupBackgroundTasks.handleEvents(
+            forSession: "no.johannesstoen.bloom.backup.closing", lookup: { _ in .noAccount },
+            closeHeld: { closed.append($0); return true },
+            invalidate: { invalidated.append($0) }, completion: { completed.append("closing") })
+
+        XCTAssertEqual(closed.values, ["no.johannesstoen.bloom.backup.closing"])
+        XCTAssertEqual(invalidated.values, [], "No second session is made for it")
+        XCTAssertEqual(completed.values, ["closing"])
+    }
+
     func testSessionEventsInvalidateOnlySessionsOfNoAccount() async throws {
         let invalidated = Recorder<String>()
         let completed = Recorder<String>()
