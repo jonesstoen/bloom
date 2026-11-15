@@ -74,7 +74,8 @@ public actor BackupResultRecorder {
             case let .retry(holdsRun):
                 entry.state = .pending(reason: .needsUpload)
                 BackupUploader.noteFailure(
-                    of: &entry, holdsRun: holdsRun, offline: ImmichServiceError.isConnectivityFailure(failure.error), at: now)
+                    of: &entry, holdsRun: holdsRun, offline: ImmichServiceError.isConnectivityFailure(failure.error), at: now,
+                    error: failure.error.localizedDescription)
             case .cancelled, .stop:
                 entry.state = .pending(reason: .needsUpload)
             case .outOfSpace:

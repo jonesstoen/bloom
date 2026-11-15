@@ -122,9 +122,17 @@ private struct BackupCheckingNowSection: View {
     }
 }
 
-private struct RemainingItemRow: View {
+struct RemainingItemRow: View {
     let item: BackupModel.RemainingItem
     let model: BackupModel
+
+    /// "Failed 5 times · trying again at 14:05" (with the weekday when it isn't today).
+    static func retryLine(at: Date, failures: Int, now: Date = .now) -> String {
+        let format: Date.FormatStyle = Calendar.current.isDate(at, inSameDayAs: now)
+            ? .dateTime.hour().minute() : .dateTime.weekday(.wide).hour().minute()
+        let time = at.formatted(format.locale(Localization.locale))
+        return failures > 1 ? tr("Failed %lld times · trying again at %@", Int64(failures), time) : tr("Trying again at %@", time)
+    }
 
     /// What the progress is of: the date taken, or the section's name without one.
     private var accessibilityLabel: String {
@@ -144,10 +152,18 @@ private struct RemainingItemRow: View {
                 switch item.status {
                 case .uploading:
                     RemainingItemProgress(id: item.id, label: accessibilityLabel, progress: model.uploadProgress)
-                case let .retrying(at):
-                    Text(tr("Trying again at %@", at.formatted(.dateTime.hour().minute().locale(Localization.locale))))
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                case let .retrying(at, failures, reason):
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(Self.retryLine(at: at, failures: failures))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        if let reason {
+                            Text(reason)
+                                .font(.footnote)
+                                .foregroundStyle(.orange)
+                                .lineLimit(2)
+                        }
+                    }
                 case .waiting, .waitingForWiFi, .notChecked:
                     EmptyView()
                 }

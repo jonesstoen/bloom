@@ -604,7 +604,8 @@ public actor BackupUploader {
                 await write(id, from: entry) {
                     $0.state = .pending(reason: .needsUpload)
                     Self.noteFailure(
-                        of: &$0, holdsRun: holdsRun, offline: ImmichServiceError.isConnectivityFailure(error), at: now)
+                        of: &$0, holdsRun: holdsRun, offline: ImmichServiceError.isConnectivityFailure(error), at: now,
+                        error: error.localizedDescription)
                 }
                 try await index.saveIfChanged()
                 return .started
@@ -706,8 +707,11 @@ public actor BackupUploader {
 
     /// Counts a failure that retrying can fix towards the item's back-off. A failure that arrives while the
     /// item already waits one out (the other half of a Live Photo, sent at the same time) isn't counted again.
-    static func noteFailure(of entry: inout BackupEntry, holdsRun: Bool, offline: Bool, at now: Date) {
+    static func noteFailure(
+        of entry: inout BackupEntry, holdsRun: Bool, offline: Bool, at now: Date, error: String? = nil
+    ) {
         var retry = entry.retry ?? BackupRetryState(failures: 0, notBefore: now, wasOffline: false, holdsRun: false)
+        retry.lastError = error ?? retry.lastError
         if retry.failures > 0, retry.notBefore > now {
             // Not counted again, but what it says holds: the server being down, or no connection.
             retry.holdsRun = retry.holdsRun || holdsRun

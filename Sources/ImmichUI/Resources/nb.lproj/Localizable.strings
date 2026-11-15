@@ -357,3 +357,5 @@
 "Bloom reads each photo once to see whether your server already has it. Photos only in iCloud are downloaded first." = "Bloom leser hvert bilde én gang for å se om serveren allerede har det. Bilder som bare ligger i iCloud, lastes ned først.";
 "Backing Up in the Background" = "Sikkerhetskopierer i bakgrunnen";
 "Bloom continues here when that is done." = "Bloom fortsetter her når den er ferdig.";
+"Failed %lld times · trying again at %@" = "Mislyktes %1$lld ganger · prøver igjen %2$@";
+"No connection to the server." = "Ingen forbindelse med serveren.";

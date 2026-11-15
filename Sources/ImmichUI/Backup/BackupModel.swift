@@ -45,8 +45,9 @@ final class BackupModel {
             case waiting
             case waitingForWiFi
             case notChecked
-            /// A try failed in a way trying again can fix; the next try is not before this.
-            case retrying(at: Date)
+            /// A try failed in a way trying again can fix; the next try is not before `at`. `failures` in a row so
+            /// far, and why the last one failed when known (see `retryReason`).
+            case retrying(at: Date, failures: Int, reason: String?)
         }
 
         let id: String
@@ -81,7 +82,7 @@ final class BackupModel {
         let id: String
         let date: Date?
         let reason: PendingReason
-        let retryNotBefore: Date?
+        let retry: BackupRetryState?
     }
 
     enum AlbumState { case included, excluded, neither }
@@ -873,7 +874,7 @@ final class BackupModel {
         let bases: [RemainingBase] = remaining.items.map { item in
             RemainingBase(
                 id: item.id, date: knownRemaining[item.id] ?? createdRemaining[item.id], reason: item.reason,
-                retryNotBefore: item.retryNotBefore)
+                retry: item.retry)
         }.sorted { Self.isNewer(($0.id, $0.date), ($1.id, $1.date)) }
         if remainingBase != bases { remainingBase = bases }
         if remainingTotal != remaining.total { remainingTotal = remaining.total }
@@ -904,7 +905,7 @@ final class BackupModel {
     private struct PendingItem {
         let id: String
         let reason: PendingReason
-        let retryNotBefore: Date?
+        let retry: BackupRetryState?
     }
 
     /// What one pass over the selection found (see `survey(keeping:)`).
@@ -937,13 +938,13 @@ final class BackupModel {
                 guard let modified = dates[id] else { continue }
                 guard let entry = entries[id], entry.modificationDate == modified else {
                     survey.counts.add(.pending(reason: .notChecked))
-                    found.append((id, modified, PendingItem(id: id, reason: .notChecked, retryNotBefore: nil)))
+                    found.append((id, modified, PendingItem(id: id, reason: .notChecked, retry: nil)))
                     continue
                 }
                 survey.counts.add(entry.state)
                 switch entry.state {
                 case let .pending(reason):
-                    found.append((id, modified, PendingItem(id: id, reason: reason, retryNotBefore: entry.retry?.notBefore)))
+                    found.append((id, modified, PendingItem(id: id, reason: reason, retry: entry.retry)))
                 case .failed: survey.failed.append((id, entry))
                 case .deletedOnServer: survey.deleted.append((id, entry))
                 case .backedUp: break
@@ -979,8 +980,8 @@ final class BackupModel {
             let status: RemainingItem.Status
             if uploadingIDs.contains(base.id) {
                 status = .uploading
-            } else if let at = base.retryNotBefore, at > now {
-                status = .retrying(at: at)
+            } else if let retry = base.retry, retry.notBefore > now {
+                status = .retrying(at: retry.notBefore, failures: retry.failures, reason: Self.retryReason(retry))
             } else {
                 switch base.reason {
                 case .needsUpload: status = .waiting
@@ -991,6 +992,11 @@ final class BackupModel {
             return RemainingItem(id: base.id, date: base.date, status: status)
         }
         if remainingItems != items { remainingItems = items }
+    }
+
+    /// Why an item waits to be tried again: no connection, else what the last failure said (nil when unknown).
+    static func retryReason(_ retry: BackupRetryState) -> String? {
+        retry.wasOffline ? tr("No connection to the server.") : retry.lastError
     }
 
     /// `remainingItems` grouped by state, in the list's order, without empty sections.

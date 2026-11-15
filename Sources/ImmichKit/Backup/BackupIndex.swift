@@ -75,12 +75,15 @@ public struct BackupRetryState: Codable, Sendable, Equatable {
     public var wasOffline: Bool
     /// The last failure (no connection, 429, 502, 503, 504) holds back every item, not just this one.
     public var holdsRun: Bool
+    /// What the last failure said, to show why the item waits. Nil in indexes written before it was kept.
+    public var lastError: String?
 
-    public init(failures: Int, notBefore: Date, wasOffline: Bool, holdsRun: Bool) {
+    public init(failures: Int, notBefore: Date, wasOffline: Bool, holdsRun: Bool, lastError: String? = nil) {
         self.failures = failures
         self.notBefore = notBefore
         self.wasOffline = wasOffline
         self.holdsRun = holdsRun
+        self.lastError = lastError
     }
 }
 

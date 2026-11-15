@@ -1849,6 +1849,26 @@ final class BackupUploaderTests: XCTestCase {
         XCTAssertEqual(entry.retry?.wasOffline, true)
     }
 
+    /// The last failure's message is kept so the Remaining list can say why the item waits.
+    func testFailureKeepsTheLastErrorMessage() {
+        var entry = BackupEntry(modificationDate: Self.date, checksums: [:], state: .pending(reason: .needsUpload))
+        BackupUploader.noteFailure(of: &entry, holdsRun: false, offline: false, at: Self.date, error: "Bad gateway")
+        XCTAssertEqual(entry.retry?.lastError, "Bad gateway")
+        BackupUploader.noteFailure(of: &entry, holdsRun: false, offline: false, at: Self.date)
+        XCTAssertEqual(entry.retry?.lastError, "Bad gateway", "A failure without a message keeps the last one")
+        BackupUploader.noteFailure(
+            of: &entry, holdsRun: false, offline: false, at: Self.date.addingTimeInterval(10), error: "Timed out")
+        XCTAssertEqual(entry.retry?.lastError, "Timed out")
+    }
+
+    /// Retry states written before `lastError` existed still load.
+    func testRetryStateWithoutLastErrorDecodes() throws {
+        let json = #"{"failures":2,"notBefore":0,"wasOffline":false,"holdsRun":false}"#
+        let retry = try JSONDecoder().decode(BackupRetryState.self, from: Data(json.utf8))
+        XCTAssertEqual(retry.failures, 2)
+        XCTAssertNil(retry.lastError)
+    }
+
     /// Re-upload shares the uploader's index and transport with the run: while one is going it does nothing
     /// (the runner takes turns; a direct caller must too) instead of racing it.
     func testReuploadDuringARunDoesNothing() async throws {

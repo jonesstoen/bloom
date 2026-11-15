@@ -956,7 +956,8 @@ final class BackupModelTests: XCTestCase {
             ("a1", .pending(reason: .needsUpload), nil),
             ("a2", .pending(reason: .waitingForWiFi), nil),
             ("a3", .pending(reason: .notChecked), nil),
-            ("a4", .pending(reason: .needsUpload), BackupRetryState(failures: 1, notBefore: retryAt, wasOffline: false, holdsRun: false)),
+            ("a4", .pending(reason: .needsUpload), BackupRetryState(
+                failures: 5, notBefore: retryAt, wasOffline: false, holdsRun: false, lastError: "The server is busy")),
             ("a5", .pending(reason: .needsUpload), nil),
             ("a6", .backedUp(serverAssetID: "s6"), nil),
             ("a7", .pending(reason: .needsUpload), BackupRetryState(failures: 1, notBefore: Date().addingTimeInterval(-60), wasOffline: false, holdsRun: false)),
@@ -989,7 +990,7 @@ final class BackupModelTests: XCTestCase {
         XCTAssertEqual(byID["a1"], .waiting)
         XCTAssertEqual(byID["a2"], .waitingForWiFi)
         XCTAssertEqual(byID["a3"], .notChecked)
-        XCTAssertEqual(byID["a4"], .retrying(at: retryAt))
+        XCTAssertEqual(byID["a4"], .retrying(at: retryAt, failures: 5, reason: "The server is busy"))
         XCTAssertEqual(byID["a5"], .uploading)
         XCTAssertEqual(byID["a7"], .waiting, "A retry time that has passed no longer counts")
         await model.stop()
@@ -1088,13 +1089,33 @@ final class BackupModelTests: XCTestCase {
         XCTAssertNil(fractions["quiet"])
     }
 
+    func testRetryReasonSaysNoConnectionElseTheLastError() {
+        let at = Date()
+        XCTAssertEqual(BackupModel.retryReason(BackupRetryState(
+            failures: 2, notBefore: at, wasOffline: true, holdsRun: true, lastError: "timed out")), "No connection to the server.")
+        XCTAssertEqual(BackupModel.retryReason(BackupRetryState(
+            failures: 2, notBefore: at, wasOffline: false, holdsRun: false, lastError: "Bad gateway")), "Bad gateway")
+        XCTAssertNil(BackupModel.retryReason(BackupRetryState(failures: 1, notBefore: at, wasOffline: false, holdsRun: false)))
+    }
+
+    func testRetryLineCountsFailuresAndNamesTheDayWhenNotToday() {
+        Localization.languageOverride = "en"
+        defer { Localization.languageOverride = nil }
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        XCTAssertTrue(RemainingItemRow.retryLine(at: now.addingTimeInterval(60), failures: 1, now: now).hasPrefix("Trying again at "))
+        XCTAssertTrue(RemainingItemRow.retryLine(at: now.addingTimeInterval(60), failures: 5, now: now).hasPrefix("Failed 5 times · trying again at "))
+        let tomorrow = RemainingItemRow.retryLine(at: now.addingTimeInterval(86_400), failures: 5, now: now)
+        let weekday = now.addingTimeInterval(86_400).formatted(.dateTime.weekday(.wide).locale(Locale(identifier: "en")))
+        XCTAssertTrue(tomorrow.contains(weekday), tomorrow)
+    }
+
     func testRemainingSectionsGroupByStateInOrderNewestFirst() {
         let retryAt = Date().addingTimeInterval(600)
         func item(_ id: String, _ offset: TimeInterval?, _ status: BackupModel.RemainingItem.Status) -> BackupModel.RemainingItem {
             BackupModel.RemainingItem(id: id, date: offset.map { Self.date.addingTimeInterval($0) }, status: status)
         }
         let items = [
-            item("n1", 1, .notChecked), item("w1", 2, .waiting), item("u1", 3, .uploading), item("r1", 4, .retrying(at: retryAt)),
+            item("n1", 1, .notChecked), item("w1", 2, .waiting), item("u1", 3, .uploading), item("r1", 4, .retrying(at: retryAt, failures: 1, reason: nil)),
             item("f1", 5, .waitingForWiFi), item("w2", 9, .waiting), item("w3", nil, .waiting),
         ]
         let sections = BackupModel.remainingSections(items)
