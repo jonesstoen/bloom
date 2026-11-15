@@ -251,6 +251,9 @@ public struct PhotoKitLibrarySource: PhotoLibrarySource {
         if ns.domain == PHPhotosErrorDomain, ns.code == PHPhotosError.networkAccessRequired.rawValue {
             return PhotoLibraryReadError.needsNetwork
         }
+        if ns.domain == PHPhotosErrorDomain, ns.code == PHPhotosError.internalError.rawValue {
+            return PhotoLibraryReadError.notDelivered
+        }
         return error
     }
 }

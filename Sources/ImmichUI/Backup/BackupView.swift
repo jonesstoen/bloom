@@ -412,11 +412,28 @@ private struct BackupFailedItemsSection: View {
             Section {
                 ForEach(model.failedItems) { item in
                     HStack(spacing: 12) {
-                        Label {
+                        // Which photo it is, so it can be found in Photos.
+                        BackupThumbnail(id: item.id, model: model)
+                            .frame(width: 56, height: 56)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(alignment: .bottomTrailing) {
+                                Image(systemName: "exclamationmark.circle.fill")
+                                    .symbolRenderingMode(.palette)
+                                    .foregroundStyle(.white, .orange)
+                                    .font(.body)
+                                    .offset(x: 4, y: 4)
+                            }
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 2) {
+                            if let date = item.date {
+                                Text(date, format: .dateTime.day().month(.abbreviated).year().hour().minute()
+                                    .locale(Localization.locale))
+                            }
                             Text(item.reason)
-                        } icon: {
-                            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
                         }
+                        .accessibilityElement(children: .combine)
                         Spacer(minLength: 8)
                         Button(tr("Try Again")) { Task { await model.retry([item.id]) } }
                             .buttonStyle(.bordered)

@@ -669,6 +669,8 @@ final class BackupStagingTests: XCTestCase {
         let resource = DeviceResource(type: .photo, filename: "IMG_7.HEIC")
         XCTAssertEqual(try BackupReadFailure.state(for: PhotoLibraryReadError.needsNetwork, reading: resource),
                        .pending(reason: .waitingForWiFi))
+        XCTAssertEqual(try BackupReadFailure.state(for: PhotoLibraryReadError.notDelivered, reading: resource),
+                       .failed(reason: "The Photos app couldn't hand over the original file of IMG_7.HEIC."))
         XCTAssertEqual(try BackupReadFailure.state(for: StagingReadFailure(), reading: resource),
                        .failed(reason: "Couldn't read IMG_7.HEIC: disk on fire"))
         XCTAssertThrowsError(try BackupReadFailure.state(for: CancellationError(), reading: resource)) {

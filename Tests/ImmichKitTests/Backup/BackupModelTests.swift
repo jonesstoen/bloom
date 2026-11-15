@@ -535,6 +535,7 @@ final class BackupModelTests: XCTestCase {
         XCTAssertGreaterThan(model.counts.failed, 0)
         XCTAssertFalse(model.failedItems.isEmpty)
         XCTAssertEqual(model.failedItems.count, model.counts.failed)
+        XCTAssertTrue(model.failedItems.allSatisfy { $0.date != nil }, "Each problem shows when the photo was taken")
         XCTAssertEqual(model.counts.total,
                        model.counts.backedUp + model.remaining + model.counts.deletedOnServer + model.counts.failed)
         XCTAssertEqual(model.selectionSummary, "Recents · 1 excluded")

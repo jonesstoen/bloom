@@ -23,6 +23,8 @@ final class BackupModel {
     struct FailedItem: Identifiable, Equatable {
         let id: String
         let reason: String
+        /// When the photo was taken, if the photo library still has it: helps to find it in Photos.
+        var date: Date?
     }
 
     /// An item the server had once and no longer has (see `BackupState.deletedOnServer`).
@@ -596,7 +598,8 @@ final class BackupModel {
     }
 
     private func forgetThumbnailIfUnlisted(_ id: String) {
-        guard !remainingBase.contains(where: { $0.id == id }), !deletedItems.contains(where: { $0.id == id }) else { return }
+        guard !remainingBase.contains(where: { $0.id == id }), !deletedItems.contains(where: { $0.id == id }),
+              !failedItems.contains(where: { $0.id == id }) else { return }
         thumbnailCache[id] = nil
         thumbnailMisses.remove(id)
     }
@@ -848,7 +851,15 @@ final class BackupModel {
             deleted = Array(deleted.prefix(Self.deletedItemLimit))
         }
         guard revision == listsRevision else { return }
-        let shownFailed = Array(failed.prefix(Self.failedItemLimit))
+        var shownFailed = Array(failed.prefix(Self.failedItemLimit))
+        let knownFailed = Dictionary(failedItems.map { ($0.id, $0.date) }, uniquingKeysWith: { first, _ in first })
+        let createdFailed = Dictionary(
+            await source.assets(shownFailed.map(\.id).filter { knownFailed[$0] == nil }).map { ($0.id, $0.creationDate) },
+            uniquingKeysWith: { first, _ in first })
+        guard revision == listsRevision else { return }
+        for i in shownFailed.indices {
+            shownFailed[i].date = knownFailed[shownFailed[i].id] ?? createdFailed[shownFailed[i].id]
+        }
         if failedItems != shownFailed { failedItems = shownFailed }
 
         let known = Dictionary(deletedItems.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -876,7 +887,7 @@ final class BackupModel {
         listedInFlightIDs = inFlight
         publishRemaining()
         // Thumbnails of rows that are gone aren't needed any more.
-        let shown = Set(items.map(\.id)).union(bases.map(\.id))
+        let shown = Set(items.map(\.id)).union(bases.map(\.id)).union(shownFailed.map(\.id))
         thumbnailCache = thumbnailCache.filter { shown.contains($0.key) }
         thumbnailMisses.formIntersection(shown)
     }

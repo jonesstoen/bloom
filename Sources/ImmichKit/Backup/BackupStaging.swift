@@ -19,6 +19,9 @@ enum BackupReadFailure {
     static func state(for error: Error, reading resource: DeviceResource) throws -> BackupState {
         if error is CancellationError || Task.isCancelled { throw CancellationError() }
         if let error = error as? PhotoLibraryReadError, error == .needsNetwork { return .pending(reason: .waitingForWiFi) }
+        if let error = error as? PhotoLibraryReadError, error == .notDelivered {
+            return .failed(reason: tr("The Photos app couldn't hand over the original file of %@.", resource.filename))
+        }
         return .failed(reason: tr("Couldn't read %@: %@", resource.filename, error.localizedDescription))
     }
 }

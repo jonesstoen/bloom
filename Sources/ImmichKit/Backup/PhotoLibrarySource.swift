@@ -68,6 +68,9 @@ public enum PhotoAccess: Sendable {
 public enum PhotoLibraryReadError: Error, Equatable {
     /// The resource lives only in iCloud and the read was made with `allowNetwork == false`.
     case needsNetwork
+    /// Photos itself failed to hand over the file (`PHPhotosError.internalError`, code -1), the same way on
+    /// every try: something is wrong with this photo's file in the library or in iCloud.
+    case notDelivered
 }
 
 /// Read-only view of the device photo library. Backup never changes the library.
