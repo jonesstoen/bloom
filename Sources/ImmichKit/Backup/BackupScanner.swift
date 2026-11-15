@@ -16,7 +16,7 @@ public struct BackupCounts: Sendable, Equatable {
         self.waitingForWiFi = waitingForWiFi
     }
 
-    mutating func add(_ state: BackupState) { change(state, by: 1) }
+    public mutating func add(_ state: BackupState) { change(state, by: 1) }
     mutating func remove(_ state: BackupState) { change(state, by: -1) }
 
     private mutating func change(_ state: BackupState, by delta: Int) {

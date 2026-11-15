@@ -571,6 +571,50 @@ final class BackupModelTests: XCTestCase {
         await model.stop()
     }
 
+    /// The model's one pass over the selection must count exactly as the scanner does, for every state.
+    func testOnePassCountsMatchTheScannersCounts() async throws {
+        let directory = makeDirectory()
+        let index = BackupIndex(directory: directory)
+        let library = FakePhotoLibrary()
+        let states: [String: BackupState] = [
+            "backed": .backedUp(serverAssetID: "s1"),
+            "queued": .pending(reason: .needsUpload),
+            "wifi": .pending(reason: .waitingForWiFi),
+            "unchecked": .pending(reason: .notChecked),
+            "failed": .failed(reason: "Broken"),
+            "deleted": .deletedOnServer(trashed: [.photo], gone: []),
+            "stale": .backedUp(serverAssetID: "s2"),
+            "gone": .backedUp(serverAssetID: "s3"),
+        ]
+        for (id, state) in states {
+            await index.set(BackupEntry(modificationDate: Self.date, checksums: [.photo: id], state: state), for: id)
+        }
+        var ids = Array(states.keys) + ["new"]
+        ids.removeAll { $0 == "gone" }
+        for id in ids {
+            let modified = id == "stale" ? Self.date.addingTimeInterval(60) : Self.date
+            library.addAsset(DeviceAsset(
+                id: id, isVideo: false, creationDate: Self.date, modificationDate: modified,
+                isFavorite: false, duration: 0, resources: [DeviceResource(type: .photo, filename: "\(id).jpg")]))
+        }
+        library.addAlbum(id: "recents", title: "Recents", assetIDs: Set(ids + ["gone"]))
+        await index.setSelection(BackupSelection(included: ["recents"]))
+        try await index.save()
+        let model = makeModel(library, directory: directory)
+        await model.load()
+
+        let scanner = BackupScanner(
+            source: library, service: MockImmichService(), index: BackupIndex(directory: directory),
+            network: FixedNetwork(isOnCellular: false), settings: BackupSettings())
+        let expected = await scanner.counts()
+        XCTAssertEqual(model.counts, expected)
+        XCTAssertEqual(expected, BackupCounts(total: 8, backedUp: 1, pending: 5, failed: 1, deletedOnServer: 1, waitingForWiFi: 1))
+        XCTAssertEqual(model.failedItems.map(\.id), ["failed"])
+        XCTAssertEqual(model.deletedItems.map(\.id), ["deleted"])
+        XCTAssertEqual(Set(model.remainingItems.map(\.id)), ["queued", "wifi", "unchecked", "stale", "new"])
+        await model.stop()
+    }
+
     // MARK: Uploads, Deleted on Server, Try Again
 
     /// An index holding `states` for assets of the fake library, with Recents saved as the selection.

@@ -814,43 +814,31 @@ final class BackupModel {
         runner.checkNow()
     }
 
+    /// New counts and lists from one pass over the selection.
     private func refreshCounts() async {
-        // A scan that started or finished meanwhile has newer counts than this one will bring.
-        let before = generation
-        let scanner = await makeScanner()
-        let fresh = await scanner.counts()
-        guard before == generation else { return }
-        counts = fresh
-        await refreshLists()
+        await refreshLists(updatingCounts: true)
     }
 
-    /// Reads the failed, deleted-on-server and remaining items in one pass over the index. Only the newest call
-    /// publishes: a slower, older one is discarded.
-    private func refreshLists() async {
+    /// Reads the counts and the failed, deleted-on-server and remaining items in one pass over the selection
+    /// (`survey`). Only the newest call publishes: a slower, older one is discarded. The counts are published
+    /// only with `updatingCounts`, and not when a scan started or finished meanwhile (it brings newer ones).
+    private func refreshLists(updatingCounts: Bool = false) async {
         listsRevision += 1
         let revision = listsRevision
-        let wantsFailed = counts.failed > 0
-        let wantsDeleted = counts.deletedOnServer > 0
-        let wantsRemaining = counts.pending > 0
-        var failed: [FailedItem] = []
-        var deleted: [(id: String, entry: BackupEntry)] = []
-        var remaining: (total: Int, items: [PendingItem]) = (0, [])
+        let before = generation
         let inFlight = uploadingIDs
-        if wantsRemaining { remaining = await currentRemaining(keeping: inFlight) }
-        if wantsFailed || wantsDeleted {
-            let entries = await currentEntries {
-                (wantsFailed && Self.isFailed($0)) || (wantsDeleted && Self.isDeletedOnServer($0))
-            }
-            failed = entries.compactMap { id, entry in
-                guard case let .failed(reason) = entry.state else { return nil }
-                return FailedItem(id: id, reason: reason)
-            }
-            // The newest edits first, so the limit keeps those.
-            deleted = entries.filter { Self.isDeletedOnServer($0.entry) }
-                .sorted { Self.isNewerEdit(($0.id, $0.entry.modificationDate), ($1.id, $1.entry.modificationDate)) }
-            deleted = Array(deleted.prefix(Self.deletedItemLimit))
-        }
+        let survey = await survey(keeping: inFlight)
         guard revision == listsRevision else { return }
+        if updatingCounts, before == generation, counts != survey.counts { counts = survey.counts }
+        let failed = survey.failed.compactMap { id, entry -> FailedItem? in
+            guard case let .failed(reason) = entry.state else { return nil }
+            return FailedItem(id: id, reason: reason)
+        }
+        // The newest edits first, so the limit keeps those.
+        let deleted = Array(survey.deleted
+            .sorted { Self.isNewerEdit(($0.id, $0.entry.modificationDate), ($1.id, $1.entry.modificationDate)) }
+            .prefix(Self.deletedItemLimit))
+        let remaining = survey.remaining
         var shownFailed = Array(failed.prefix(Self.failedItemLimit))
         let knownFailed = Dictionary(failedItems.map { ($0.id, $0.date) }, uniquingKeysWith: { first, _ in first })
         let createdFailed = Dictionary(
@@ -914,13 +902,26 @@ final class BackupModel {
         let retryNotBefore: Date?
     }
 
-    /// The selected photos still to back up, the newest edits first and cut at `remainingItemLimit` (the items
-    /// in `keeping`, those in flight, are never cut: the others make room for them), with
-    /// the total before the cut. Counts what `BackupScanner.counts()` counts as pending: queued entries, and
-    /// photos with no entry or a stale one (changed since it was recorded), which are not checked yet.
-    private func currentRemaining(keeping: Set<String>) async -> (total: Int, items: [PendingItem]) {
+    /// What one pass over the selection found (see `survey(keeping:)`).
+    private struct Survey {
+        var counts = BackupCounts()
+        /// The items still to back up, cut to `remainingItemLimit`, with the total before the cut.
+        var remaining: (total: Int, items: [PendingItem]) = (0, [])
+        /// Current failed entries, in ID order.
+        var failed: [(id: String, entry: BackupEntry)] = []
+        /// Current deleted-on-server entries, in ID order.
+        var deleted: [(id: String, entry: BackupEntry)] = []
+    }
+
+    /// One pass over the selected photos: their modification dates and index entries, read in chunks of 500.
+    /// Counts exactly as `BackupScanner.counts()` does: an entry recorded for the photo as it is now counts in
+    /// its state; no entry or a stale one (changed since it was recorded) counts as not checked yet; a photo
+    /// gone from the library isn't counted. The remaining items are the newest edits first, cut at
+    /// `remainingItemLimit` (the items in `keeping`, those in flight, are never cut: the others make room).
+    private func survey(keeping: Set<String>) async -> Survey {
         let index = await ensureIndex()
         let ids = await index.selection().assetIDs(in: source).sorted()
+        var survey = Survey()
         var found: [(id: String, modified: Date, item: PendingItem)] = []
         for start in stride(from: 0, to: ids.count, by: 500) {
             let chunk = Array(ids[start..<min(start + 500, ids.count)])
@@ -929,18 +930,26 @@ final class BackupModel {
                 await index.entries(where: { _ in true }, in: Set(chunk), limit: .max), uniquingKeysWith: { first, _ in first })
             for id in chunk {
                 guard let modified = dates[id] else { continue }
-                if let entry = entries[id], entry.modificationDate == modified {
-                    guard case let .pending(reason) = entry.state else { continue }
-                    found.append((id, modified, PendingItem(id: id, reason: reason, retryNotBefore: entry.retry?.notBefore)))
-                } else {
+                guard let entry = entries[id], entry.modificationDate == modified else {
+                    survey.counts.add(.pending(reason: .notChecked))
                     found.append((id, modified, PendingItem(id: id, reason: .notChecked, retryNotBefore: nil)))
+                    continue
+                }
+                survey.counts.add(entry.state)
+                switch entry.state {
+                case let .pending(reason):
+                    found.append((id, modified, PendingItem(id: id, reason: reason, retryNotBefore: entry.retry?.notBefore)))
+                case .failed: survey.failed.append((id, entry))
+                case .deletedOnServer: survey.deleted.append((id, entry))
+                case .backedUp: break
                 }
             }
         }
         let newest = found.sorted { Self.isNewerEdit(($0.id, $0.modified), ($1.id, $1.modified)) }
         let kept = newest.filter { keeping.contains($0.id) }.map(\.item)
         let others = newest.filter { !keeping.contains($0.id) }.prefix(max(0, Self.remainingItemLimit - kept.count))
-        return (found.count, kept + others.map(\.item))
+        survey.remaining = (found.count, kept + others.map(\.item))
+        return survey
     }
 
     /// The order of lists cut to a limit: the later edit first, ties by ID.
