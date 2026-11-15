@@ -1103,10 +1103,10 @@ final class BackupModelTests: XCTestCase {
         defer { Localization.languageOverride = nil }
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         XCTAssertTrue(RemainingItemRow.retryLine(at: now.addingTimeInterval(60), failures: 1, now: now).hasPrefix("Trying again at "))
-        XCTAssertTrue(RemainingItemRow.retryLine(at: now.addingTimeInterval(60), failures: 5, now: now).hasPrefix("Failed 5 times · trying again at "))
+        XCTAssertTrue(RemainingItemRow.retryLine(at: now.addingTimeInterval(60), failures: 5, now: now).hasPrefix("Failed 5 times · Trying again at "))
         let tomorrow = RemainingItemRow.retryLine(at: now.addingTimeInterval(86_400), failures: 5, now: now)
         let weekday = now.addingTimeInterval(86_400).formatted(.dateTime.weekday(.wide).locale(Locale(identifier: "en")))
-        XCTAssertTrue(tomorrow.contains(weekday), tomorrow)
+        XCTAssertTrue(tomorrow.hasPrefix("Failed 5 times · Trying again \(weekday) at "), tomorrow)
     }
 
     func testRemainingSectionsGroupByStateInOrderNewestFirst() {

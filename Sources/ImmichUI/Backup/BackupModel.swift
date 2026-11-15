@@ -212,6 +212,8 @@ final class BackupModel {
     /// Decoded thumbnails of the Remaining and Deleted on Server rows, by asset ID, and the IDs that had none.
     @ObservationIgnored private var thumbnailCache: [String: CGImage] = [:]
     @ObservationIgnored private var thumbnailMisses: Set<String> = []
+    /// `refreshCounts` asked for counts: the pass that publishes (its own, or one that replaced it) brings them.
+    @ObservationIgnored private var countsWanted = false
     /// Clears `checkingItem` a moment after the last read ended, unless another read starts first.
     @ObservationIgnored private var checkingClear: Task<Void, Never>?
     /// The remaining items as the last index pass read them, and the assets the transport has in flight
@@ -626,8 +628,9 @@ final class BackupModel {
             counts = result
             completedScans += 1
             cannotReachServer = false
+            // Nothing left to list: no pass needed.
+            if result.pending + result.failed + result.deletedOnServer == 0 { clearLists() } else { await refreshLists() }
         } else { await refreshCounts() }
-        await refreshLists()
         scanTask = nil
         isScanning = false
     }
@@ -822,20 +825,39 @@ final class BackupModel {
 
     /// New counts and lists from one pass over the selection.
     private func refreshCounts() async {
-        await refreshLists(updatingCounts: true)
+        countsWanted = true
+        await refreshLists()
+    }
+
+    /// Empties the lists (the counts say there is nothing to list), discarding a pass still under way.
+    private func clearLists() {
+        listsRevision += 1
+        countsWanted = false
+        if !failedItems.isEmpty { failedItems = [] }
+        if !deletedItems.isEmpty { deletedItems = [] }
+        if !remainingBase.isEmpty { remainingBase = [] }
+        if remainingTotal != 0 { remainingTotal = 0 }
+        listedInFlightIDs = uploadingIDs
+        publishRemaining()
+        thumbnailCache = [:]
+        thumbnailMisses = []
     }
 
     /// Reads the counts and the failed, deleted-on-server and remaining items in one pass over the selection
     /// (`survey`). Only the newest call publishes: a slower, older one is discarded. The counts are published
-    /// only with `updatingCounts`, and not when a scan started or finished meanwhile (it brings newer ones).
-    private func refreshLists(updatingCounts: Bool = false) async {
+    /// when `refreshCounts` asked for them (also by a call that replaced its pass), and not when a scan started
+    /// or finished meanwhile (it brings newer ones).
+    private func refreshLists() async {
         listsRevision += 1
         let revision = listsRevision
         let before = generation
         let inFlight = uploadingIDs
         let survey = await survey(keeping: inFlight)
         guard revision == listsRevision else { return }
-        if updatingCounts, before == generation, counts != survey.counts { counts = survey.counts }
+        if countsWanted {
+            countsWanted = false
+            if before == generation, counts != survey.counts { counts = survey.counts }
+        }
         let failed = survey.failed.compactMap { id, entry -> FailedItem? in
             guard case let .failed(reason) = entry.state else { return nil }
             return FailedItem(id: id, reason: reason)

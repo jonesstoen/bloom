@@ -308,7 +308,9 @@ final class BackupRunner {
         // On an engine, also the engine's turn: a background run may hold the uploader (see `BackupGate`), and
         // `body` would silently do nothing then. Cancelled while waiting: the operation is cancelled.
         let gate = model?.engine?.gate
+        if await gate?.isHeldByBackgroundRun == true { isWaitingForBackgroundRun = true }
         let entered = await gate?.acquire() ?? true
+        isWaitingForBackgroundRun = false
         do {
             guard entered else { throw CancellationError() }
             try await body(uploader)

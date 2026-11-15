@@ -126,12 +126,14 @@ struct RemainingItemRow: View {
     let item: BackupModel.RemainingItem
     let model: BackupModel
 
-    /// "Failed 5 times · trying again at 14:05" (with the weekday when it isn't today).
+    /// "Failed 5 times · trying again at 14:05", or "… trying again Tuesday at 09:00" when it isn't today.
     static func retryLine(at: Date, failures: Int, now: Date = .now) -> String {
-        let format: Date.FormatStyle = Calendar.current.isDate(at, inSameDayAs: now)
-            ? .dateTime.hour().minute() : .dateTime.weekday(.wide).hour().minute()
-        let time = at.formatted(format.locale(Localization.locale))
-        return failures > 1 ? tr("Failed %lld times · trying again at %@", Int64(failures), time) : tr("Trying again at %@", time)
+        let locale = Localization.locale
+        let time = at.formatted(.dateTime.hour().minute().locale(locale))
+        let retry = Calendar.current.isDate(at, inSameDayAs: now)
+            ? tr("Trying again at %@", time)
+            : tr("Trying again %@ at %@", at.formatted(.dateTime.weekday(.wide).locale(locale)), time)
+        return failures > 1 ? tr("Failed %lld times · %@", Int64(failures), retry) : retry
     }
 
     /// What the progress is of: the date taken, or the section's name without one.
