@@ -339,3 +339,16 @@
 "%lld of %lld backed up" = "%1$lld av %2$lld sikkerhetskopiert";
 "Turn on Allow Changes in the account menu to restore photos from the server's trash." = "Slå på Tillat endringer i kontomenyen for å hente bilder tilbake fra papirkurven på serveren.";
 "Couldn't back up your photos: %@" = "Kunne ikke sikkerhetskopiere bildene: %@";
+
+/* Backup: status at the top */
+"No Albums Chosen" = "Ingen album valgt";
+"Choose the albums Bloom backs up." = "Velg albumene Bloom skal sikkerhetskopiere.";
+"Backup Stopped" = "Sikkerhetskopiering stoppet";
+"Checking Photos…" = "Sjekker bilder …";
+"Backup Is Off" = "Sikkerhetskopi er av";
+"Everything Is Backed Up" = "Alt er sikkerhetskopiert";
+"%lld with problems" = "%lld med problemer";
+"Turn On Backup" = "Slå på sikkerhetskopi";
+"Choose Albums" = "Velg album";
+"Background App Refresh" = "Bakgrunnsoppdatering";
+"Overview" = "Oversikt";

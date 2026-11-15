@@ -4,13 +4,12 @@ import SwiftUI
 import UIKit
 #endif
 
-/// Backup: the switch that uploads while the app is open, how many photos are on the server already,
-/// which album choices steer that, the photos deleted on the server, and the button to check again.
-/// Present it inside a `NavigationStack`.
+/// Backup: a status at the top (how much is on the server, what happens now), notices that need the
+/// user, the overview of what remains, the check button, problems, then the settings (switch, albums,
+/// cellular). Present it inside a `NavigationStack`.
 struct BackupView: View {
     let model: BackupModel
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.openURL) private var openURL
 
     var body: some View {
         @Bindable var model = model
@@ -19,14 +18,15 @@ struct BackupView: View {
             case .denied:
                 deniedSection
             case .limited:
-                limitedSection
-                content
+                content(limited: true)
             case .full, .notDetermined, nil:
                 // Not yet known, or the system prompt is up: show the content, no scan is possible.
-                content
+                content(limited: false)
             }
             Section {} footer: {
                 Text(tr("Bloom never deletes photos from your iPhone."))
+                    .frame(maxWidth: .infinity)
+                    .multilineTextAlignment(.center)
             }
         }
         .navigationTitle(tr("Backup"))
@@ -62,14 +62,13 @@ struct BackupView: View {
     private var keepsScreenAwake: Bool { model.isScanning || model.runner.isUploading }
     #endif
 
-    @ViewBuilder private var content: some View {
-        switchSection
-        BackupBackgroundSection(model: model)
-        albumsSection
+    @ViewBuilder private func content(limited: Bool) -> some View {
+        BackupStatusSection(model: model)
+        BackupNoticesSection(model: model, limited: limited)
         BackupCountsSection(model: model)
-        BackupUploadSection(model: model)
         BackupCheckSection(model: model)
         BackupFailedItemsSection(model: model)
+        settingsSection
         cellularSection
     }
 
@@ -77,58 +76,27 @@ struct BackupView: View {
 
     private var deniedSection: some View {
         Section {
-            VStack(alignment: .leading, spacing: 8) {
-                Label(tr("Photo Access Is Off"), systemImage: "lock.fill")
-                    .font(.headline)
-                Text(tr("Allow Bloom to read your photos in Settings so it can check which ones are already on your server."))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                settingsButton
-            }
-            .padding(.vertical, 4)
+            BackupNotice(
+                symbol: "lock.fill", tint: .secondary, title: tr("Photo Access Is Off"),
+                message: tr("Allow Bloom to read your photos in Settings so it can check which ones are already on your server."),
+                button: BackupNotice.settingsButton)
         }
     }
 
-    private var limitedSection: some View {
-        Section {
-            VStack(alignment: .leading, spacing: 8) {
-                Label(tr("Limited Access"), systemImage: "photo.badge.exclamationmark")
-                    .font(.headline)
-                Text(tr("Bloom can only see the photos you selected. Allow access to all photos to check your whole library."))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                settingsButton
-            }
-            .padding(.vertical, 4)
-        }
-    }
+    // MARK: Settings
 
-    @ViewBuilder private var settingsButton: some View {
-        #if os(iOS)
-        Button(tr("Open Settings")) {
-            if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
-        }
-        .buttonStyle(.bordered)
-        #endif
-    }
-
-    // MARK: Sections
-
-    private var switchSection: some View {
+    private var settingsSection: some View {
         Section {
             Toggle(tr("Backup"), isOn: Binding(
                 get: { model.settings.isEnabled },
                 set: { model.setBackupEnabled($0) }))
-        }
-    }
-
-    private var albumsSection: some View {
-        Section {
             NavigationLink {
                 BackupAlbumPicker(model: model)
             } label: {
                 LabeledContent(tr("Albums"), value: model.selectionSummary)
             }
+        } footer: {
+            Text(tr("Bloom backs up when it is open and at night while charging. iOS decides the exact time."))
         }
     }
 
@@ -143,207 +111,297 @@ struct BackupView: View {
     }
 }
 
-/// What the background uploads are doing: how many are under way, when the last one succeeded, why nothing
-/// is sent (redirect, Background App Refresh off), and when Bloom backs up. Its own view so the polling
-/// status only rebuilds this section.
-private struct BackupBackgroundSection: View {
+// MARK: - Status
+
+/// The ring, the title and the one line about what happens now. Its own view: it reads the counts and both
+/// progress values, so their changes only rebuild this section.
+private struct BackupStatusSection: View {
     let model: BackupModel
 
     var body: some View {
+        let status = BackupHeaderStatus(
+            isEnabled: model.settings.isEnabled, hasSelection: !model.selection.included.isEmpty,
+            counts: model.counts, checking: model.progress, isScanning: model.isScanning,
+            upload: model.runner.uploadProgress, inFlight: model.inFlightCount, lastBackup: model.lastBackup,
+            isRedirectBlocked: model.isRedirectBlocked, connection: model.connectionStatus)
         Section {
-            BackupBackgroundRows(
-                inFlight: model.inFlightCount, lastBackup: model.lastBackup,
-                isRedirectBlocked: model.isRedirectBlocked,
-                isRefreshOff: model.isBackgroundRefreshOff && model.settings.isEnabled,
-                retryAfterRedirect: { Task { await model.retryAfterRedirect() } })
-        } footer: {
-            Text(tr("Bloom backs up when it is open and at night while charging. iOS decides the exact time."))
+            BackupStatusHeader(status: status) { action in
+                switch action {
+                case .chooseAlbums: model.needsAlbumChoice = true
+                case .turnOn: model.setBackupEnabled(true)
+                }
+            }
         }
     }
 }
 
-private struct BackupBackgroundRows: View {
-    let inFlight: Int
-    let lastBackup: Date?
-    let isRedirectBlocked: Bool
-    let isRefreshOff: Bool
-    var retryAfterRedirect: () -> Void = {}
-    @Environment(\.openURL) private var openURL
+private struct BackupStatusHeader: View {
+    let status: BackupHeaderStatus
+    var perform: (BackupHeaderStatus.Action) -> Void = { _ in }
 
     var body: some View {
-        if isRedirectBlocked {
-            VStack(alignment: .leading, spacing: 8) {
-                Label(
-                    tr("Backup stopped: the server redirected an upload to another address. Check your server setup, then tap Try Again."),
-                    systemImage: "exclamationmark.triangle.fill")
-                    .font(.subheadline)
-                    .foregroundStyle(.red)
-                Button(tr("Try Again"), action: retryAfterRedirect)
-                    .buttonStyle(.bordered)
-            }
-            .padding(.vertical, 4)
-        }
-        if inFlight > 0 {
-            Label(tr("Uploading in the background: %lld", Int64(inFlight)), systemImage: "arrow.up.circle")
-                .monospacedDigit()
-        }
-        if let lastBackup {
-            Text(tr("Last backup: %@", Self.relative(lastBackup)))
-        }
-        if isRefreshOff {
-            VStack(alignment: .leading, spacing: 8) {
-                Label(
-                    tr("Background App Refresh is off for Bloom. Turn it on in Settings to back up when Bloom is closed."),
-                    systemImage: "arrow.clockwise.circle")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                #if os(iOS)
-                Button(tr("Open Settings")) {
-                    if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+        VStack(spacing: 14) {
+            BackupRing(fraction: status.fraction, symbol: status.symbol, tint: tint,
+                       isActive: status.kind == .uploading || status.kind == .checking)
+            VStack(spacing: 4) {
+                Text(status.title)
+                    .font(.title3.weight(.semibold))
+                    .multilineTextAlignment(.center)
+                if let detail = status.detail {
+                    Text(detail)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
                 }
-                .buttonStyle(.bordered)
-                #endif
             }
-            .padding(.vertical, 4)
+            .monospacedDigit()
+            .accessibilityElement(children: .combine)
+            if let action = status.action {
+                Button {
+                    perform(action)
+                } label: {
+                    Text(action == .turnOn ? tr("Turn On Backup") : tr("Choose Albums"))
+                        .padding(.horizontal, 8)
+                }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
+            }
         }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 12)
+        .listRowBackground(Color.clear)
     }
 
-    /// "2 hours ago", in the app's language.
-    static func relative(_ date: Date, now: Date = .now) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.locale = Localization.locale
-        formatter.unitsStyle = .full
-        return formatter.localizedString(for: date, relativeTo: now)
+    private var tint: Color {
+        switch status.kind {
+        case .upToDate: .green
+        case .stopped, .problems: .orange
+        case .off, .noAlbums, .notChecked: .secondary
+        case .checking, .uploading, .remaining: .accentColor
+        }
     }
 }
+
+/// How much of the selection is on the server, as a ring around the status symbol.
+private struct BackupRing: View {
+    let fraction: Double
+    let symbol: String
+    let tint: Color
+    var isActive = false
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(.quaternary, lineWidth: 8)
+            Circle()
+                .trim(from: 0, to: max(0, min(fraction, 1)))
+                .stroke(tint, style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            Image(systemName: symbol)
+                .font(.system(size: 32, weight: .semibold))
+                .foregroundStyle(tint)
+                .contentTransition(.symbolEffect(.replace))
+                .symbolEffect(.pulse, options: .repeating, isActive: isActive)
+        }
+        .frame(width: 92, height: 92)
+        .animation(.smooth, value: fraction)
+        .animation(.smooth, value: symbol)
+        .accessibilityHidden(true)
+    }
+}
+
+// MARK: - Notices
+
+/// Things the user has to fix: a redirect block, Background App Refresh off, limited photo access.
+private struct BackupNoticesSection: View {
+    let model: BackupModel
+    let limited: Bool
+
+    var body: some View {
+        if model.isRedirectBlocked {
+            Section {
+                BackupNotice(
+                    symbol: "exclamationmark.triangle.fill", tint: .orange, title: tr("Backup Stopped"),
+                    message: tr("Backup stopped: the server redirected an upload to another address. Check your server setup, then tap Try Again."),
+                    button: (tr("Try Again"), { Task { await model.retryAfterRedirect() } }))
+            }
+        }
+        if model.isBackgroundRefreshOff && model.settings.isEnabled {
+            Section {
+                BackupNotice(
+                    symbol: "arrow.clockwise.circle.fill", tint: .blue, title: tr("Background App Refresh"),
+                    message: tr("Background App Refresh is off for Bloom. Turn it on in Settings to back up when Bloom is closed."),
+                    button: BackupNotice.settingsButton)
+            }
+        }
+        if limited {
+            Section {
+                BackupNotice(
+                    symbol: "photo.badge.exclamationmark.fill", tint: .orange, title: tr("Limited Access"),
+                    message: tr("Bloom can only see the photos you selected. Allow access to all photos to check your whole library."),
+                    button: BackupNotice.settingsButton)
+            }
+        }
+    }
+}
+
+/// A notice row: a coloured symbol, a bold title, the explanation and one button.
+private struct BackupNotice: View {
+    let symbol: String
+    let tint: Color
+    let title: String
+    let message: String
+    var button: (String, () -> Void)?
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: symbol)
+                .font(.title2)
+                .foregroundStyle(tint)
+                .frame(width: 32)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title).font(.headline)
+                Text(message)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                if let button {
+                    Button(button.0, action: button.1)
+                        .buttonStyle(.bordered)
+                        .buttonBorderShape(.capsule)
+                        .controlSize(.small)
+                        .padding(.top, 2)
+                }
+            }
+        }
+        .padding(.vertical, 6)
+    }
+
+    /// "Open Settings", only on iOS.
+    @MainActor static var settingsButton: (String, () -> Void)? {
+        #if os(iOS)
+        (tr("Open Settings"), {
+            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+        })
+        #else
+        nil
+        #endif
+    }
+}
+
+// MARK: - Overview
 
 /// Observe changing counts here instead of rebuilding the whole Backup list.
 private struct BackupCountsSection: View {
     let model: BackupModel
 
     var body: some View {
-        Section {
-            LabeledContent(tr("Total")) { count(model.counts.total) }
-            LabeledContent(tr("On Server")) { count(model.counts.backedUp) }
-            if model.remaining > 0 {
-                NavigationLink {
-                    BackupRemainingList(model: model)
-                } label: { remainingRow }
-            } else {
-                remainingRow
-            }
-            if model.counts.deletedOnServer > 0 {
-                NavigationLink {
-                    BackupDeletedOnServerList(model: model)
-                } label: {
-                    LabeledContent(tr("Deleted on Server")) { count(model.counts.deletedOnServer) }
+        // Nothing to count before the first check.
+        if model.counts.total > 0 {
+            Section {
+                BackupCountRow(title: tr("On Server"), symbol: "checkmark.circle.fill", tint: .green,
+                               value: model.counts.backedUp)
+                if model.remaining > 0 {
+                    NavigationLink {
+                        BackupRemainingList(model: model)
+                    } label: { remainingRow }
+                } else {
+                    remainingRow
                 }
-            }
-            // So that Total always equals On Server + Remaining + Deleted on Server + Problems.
-            if model.counts.failed > 0 {
-                LabeledContent(tr("Problems")) { count(model.counts.failed) }
+                if model.counts.deletedOnServer > 0 {
+                    NavigationLink {
+                        BackupDeletedOnServerList(model: model)
+                    } label: {
+                        BackupCountRow(title: tr("Deleted on Server"), symbol: "trash.circle.fill", tint: .gray,
+                                       value: model.counts.deletedOnServer)
+                    }
+                }
+                // So that Total always equals On Server + Remaining + Deleted on Server + Problems.
+                if model.counts.failed > 0 {
+                    BackupCountRow(title: tr("Problems"), symbol: "exclamationmark.circle.fill", tint: .orange,
+                                   value: model.counts.failed)
+                }
+            } header: {
+                HStack {
+                    Text(tr("Overview"))
+                    Spacer()
+                    Text(tr("%lld items", Int64(model.counts.total)))
+                        .monospacedDigit()
+                }
             }
         }
     }
 
     private var remainingRow: some View {
+        BackupCountRow(
+            title: tr("Remaining"), symbol: "arrow.up.circle.fill", tint: .blue, value: model.remaining,
+            subtitle: model.counts.waitingForWiFi > 0
+                ? tr("%lld waiting for Wi-Fi", Int64(model.counts.waitingForWiFi)) : nil)
+    }
+}
+
+private struct BackupCountRow: View {
+    let title: String
+    let symbol: String
+    let tint: Color
+    let value: Int
+    var subtitle: String?
+
+    var body: some View {
         LabeledContent {
-            count(model.remaining)
-        } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(tr("Remaining"))
-                if model.counts.waitingForWiFi > 0 {
-                    Text(tr("%lld waiting for Wi-Fi", Int64(model.counts.waitingForWiFi)))
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
-
-    private func count(_ value: Int) -> some View {
-        Text(value, format: .number)
-            .monospacedDigit()
-            .foregroundStyle(.secondary)
-    }
-}
-
-/// "Uploading 4 of 15 · IMG_1234.HEIC" while an upload run goes. Progress changes only rebuild this section.
-private struct BackupUploadSection: View {
-    let model: BackupModel
-
-    var body: some View {
-        if let progress = model.runner.uploadProgress {
-            Section {
-                BackupUploadRow(progress: progress)
-            }
-        }
-    }
-}
-
-private struct BackupUploadRow: View {
-    let progress: UploadProgress
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(text)
+            Text(value, format: .number)
                 .monospacedDigit()
-                .lineLimit(1)
-                .truncationMode(.middle)
-            ProgressView(value: Double(progress.done), total: Double(max(progress.total, 1)))
+                .foregroundStyle(.secondary)
+        } label: {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } icon: {
+                Image(systemName: symbol)
+                    .font(.title3)
+                    .foregroundStyle(tint)
+            }
         }
-        .accessibilityElement(children: .combine)
-    }
-
-    private var text: String {
-        // `done` counts finished items: with a file in flight, that is the next one.
-        let current = progress.currentFilename == nil ? progress.done : min(progress.done + 1, progress.total)
-        let done = current.formatted(.number.locale(Localization.locale))
-        let total = progress.total.formatted(.number.locale(Localization.locale))
-        guard let filename = progress.currentFilename else { return tr("Uploading %@ of %@", done, total) }
-        return tr("Uploading %@ of %@ · %@", done, total, filename)
     }
 }
 
-/// Progress changes only rebuild this section.
+// MARK: - Check
+
+/// The check button (Cancel while a check runs; its progress is in the status at the top) and its error.
 private struct BackupCheckSection: View {
     let model: BackupModel
 
     var body: some View {
         Section {
-            if let progress = model.progress {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(tr("Checking %@ of %@", number(progress.done), number(progress.total)))
-                        .monospacedDigit()
-                    ProgressView(value: Double(progress.done), total: Double(max(progress.total, 1)))
-                }
-                .accessibilityElement(children: .combine)
+            if model.isScanning || model.progress != nil {
                 Button(tr("Cancel"), role: .cancel) { model.cancel() }
-            } else if model.isScanning {
-                HStack {
-                    ProgressView()
-                    Button(tr("Cancel"), role: .cancel) { model.cancel() }
-                }
+                    .frame(maxWidth: .infinity)
             } else {
-                Button(tr("Check Now")) { model.runner.checkNow() }
-                    .disabled(!model.canCheck)
+                Button {
+                    model.runner.checkNow()
+                } label: {
+                    Label(tr("Check Now"), systemImage: "arrow.clockwise")
+                        .frame(maxWidth: .infinity)
+                }
+                .disabled(!model.canCheck)
             }
         } footer: {
             if let error = model.error {
                 Text(error).foregroundStyle(.red)
-            } else if let status = model.connectionStatus {
-                switch status {
-                case .waitingForNetwork: Text(tr("Waiting for a network connection.")).foregroundStyle(.secondary)
-                case .serverUnreachable: Text(tr("Can't reach the server.")).foregroundStyle(.secondary)
-                }
             }
         }
     }
-
-    private func number(_ value: Int) -> String {
-        value.formatted(.number.locale(Localization.locale))
-    }
 }
+
+// MARK: - Problems
 
 /// Keep both the failure list and its live count footer out of the parent observation.
 private struct BackupFailedItemsSection: View {
@@ -354,12 +412,16 @@ private struct BackupFailedItemsSection: View {
             Section {
                 ForEach(model.failedItems) { item in
                     HStack(spacing: 12) {
-                        Label(item.reason, systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.primary)
-                            .symbolRenderingMode(.multicolor)
+                        Label {
+                            Text(item.reason)
+                        } icon: {
+                            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        }
                         Spacer(minLength: 8)
                         Button(tr("Try Again")) { Task { await model.retry([item.id]) } }
-                            .buttonStyle(.borderless)
+                            .buttonStyle(.bordered)
+                            .buttonBorderShape(.capsule)
+                            .controlSize(.small)
                             .disabled(model.isWorking)
                     }
                 }
@@ -373,6 +435,31 @@ private struct BackupFailedItemsSection: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Previews
+
+private func previewStatus(
+    enabled: Bool = true, hasSelection: Bool = true, counts: BackupCounts, upload: UploadProgress? = nil,
+    inFlight: Int = 0, redirect: Bool = false
+) -> BackupHeaderStatus {
+    BackupHeaderStatus(
+        isEnabled: enabled, hasSelection: hasSelection, counts: counts, checking: nil, isScanning: false,
+        upload: upload, inFlight: inFlight, lastBackup: .now.addingTimeInterval(-7200),
+        isRedirectBlocked: redirect, connection: nil)
+}
+
+#Preview("Backup status states") {
+    let partial = BackupCounts(total: 12_969, backedUp: 12_345, pending: 624, waitingForWiFi: 40)
+    List {
+        Section { BackupStatusHeader(status: previewStatus(counts: BackupCounts(total: 10, backedUp: 10))) }
+        Section { BackupStatusHeader(status: previewStatus(
+            counts: partial, upload: UploadProgress(done: 3, total: 15, currentFilename: "IMG_1234.HEIC"))) }
+        Section { BackupStatusHeader(status: previewStatus(counts: partial)) }
+        Section { BackupStatusHeader(status: previewStatus(enabled: false, counts: partial)) }
+        Section { BackupStatusHeader(status: previewStatus(hasSelection: false, counts: BackupCounts())) }
+        Section { BackupStatusHeader(status: previewStatus(counts: partial, redirect: true)) }
     }
 }
 
@@ -394,23 +481,20 @@ private struct BackupFailedItemsSection: View {
         .task { await model.loadPreview(problems: 2) }
 }
 
-#Preview("Backup uploading") {
+#Preview("Backup notices") {
     List {
-        Section { BackupUploadRow(progress: UploadProgress(done: 3, total: 15, currentFilename: "IMG_1234.HEIC")) }
-        Section { BackupUploadRow(progress: UploadProgress(done: 4, total: 15, currentFilename: nil)) }
-    }
-}
-
-#Preview("Backup, background status") {
-    List {
-        BackupBackgroundRows(
-            inFlight: 3, lastBackup: .now.addingTimeInterval(-7200), isRedirectBlocked: false, isRefreshOff: true)
-    }
-}
-
-#Preview("Backup, redirect blocked") {
-    List {
-        BackupBackgroundRows(inFlight: 0, lastBackup: nil, isRedirectBlocked: true, isRefreshOff: false)
+        Section {
+            BackupNotice(
+                symbol: "exclamationmark.triangle.fill", tint: .orange, title: tr("Backup Stopped"),
+                message: tr("Backup stopped: the server redirected an upload to another address. Check your server setup, then tap Try Again."),
+                button: (tr("Try Again"), {}))
+        }
+        Section {
+            BackupNotice(
+                symbol: "arrow.clockwise.circle.fill", tint: .blue, title: tr("Background App Refresh"),
+                message: tr("Background App Refresh is off for Bloom. Turn it on in Settings to back up when Bloom is closed."),
+                button: BackupNotice.settingsButton)
+        }
     }
 }
 
