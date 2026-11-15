@@ -34,6 +34,34 @@ final class BackupModel {
         let isTrashed: Bool
     }
 
+    /// An item still to back up, with where it stands (see `BackupModel.remainingItems`).
+    struct RemainingItem: Identifiable, Equatable {
+        enum Status: Equatable {
+            /// In flight in the transport.
+            case uploading
+            /// Queued; the next run sends it.
+            case waiting
+            case waitingForWiFi
+            case notChecked
+            /// A try failed in a way trying again can fix; the next try is not before this.
+            case retrying(at: Date)
+        }
+
+        let id: String
+        /// When the photo was taken, if the photo library still has it.
+        let date: Date?
+        let status: Status
+    }
+
+    /// What `refreshLists()` read of a remaining item: its status is worked out from this when it is shown,
+    /// since in-flight uploads and retry times change between index passes.
+    private struct RemainingBase: Equatable {
+        let id: String
+        let date: Date?
+        let reason: PendingReason
+        let retryNotBefore: Date?
+    }
+
     enum AlbumState { case included, excluded, neither }
 
     /// How this account's uploads are sent: the request builder and the transport, made once from the
@@ -48,6 +76,8 @@ final class BackupModel {
     static let failedItemLimit = 50
     /// The most deleted-on-server items listed on screen.
     static let deletedItemLimit = 200
+    /// The most remaining items listed on screen.
+    static let remainingItemLimit = 200
     /// Pixel side of the thumbnails in the Deleted on Server list.
     static let thumbnailPixelSide = 160
 
@@ -61,6 +91,9 @@ final class BackupModel {
     private(set) var failedItems: [FailedItem] = []
     /// The first `deletedItemLimit` items deleted on the server, newest first. `counts.deletedOnServer` has the total.
     private(set) var deletedItems: [DeletedItem] = []
+    /// The first `remainingItemLimit` items still to back up, newest first, each with its state.
+    /// `counts.pending` has the total.
+    private(set) var remainingItems: [RemainingItem] = []
     private(set) var error: String?
     /// The last scan or upload stopped because the server couldn't be reached (offline, VPN off, server
     /// down). Shown as `connectionStatus` instead of `error`; cleared when a scan or upload run gets through.
@@ -145,6 +178,10 @@ final class BackupModel {
     /// Decoded thumbnails of the Deleted on Server rows, by asset ID, and the IDs that had none.
     @ObservationIgnored private var thumbnailCache: [String: CGImage] = [:]
     @ObservationIgnored private var thumbnailMisses: Set<String> = []
+    /// The remaining items as the last index pass read them, and the assets the transport has in flight
+    /// (`refreshBackgroundStatus()`); `remainingItems` is made from both.
+    @ObservationIgnored private var remainingBase: [RemainingBase] = []
+    @ObservationIgnored private var uploadingIDs: Set<String> = []
     @ObservationIgnored private var progressGate = BackupProgressGate()
     @ObservationIgnored private var isStopped = false
     @ObservationIgnored private var selectionRevision = 0
@@ -294,6 +331,8 @@ final class BackupModel {
             counts = BackupCounts()
             failedItems = []
             deletedItems = []
+            remainingBase = []
+            remainingItems = []
             return
         }
         albums = await source.albums()
@@ -623,10 +662,15 @@ final class BackupModel {
         guard let transport = await uploadConnection()?.transport else {
             inFlightCount = 0
             isRedirectBlocked = false
+            uploadingIDs = []
+            publishRemaining()
             return
         }
-        let count = await transport.inFlight().count
+        let jobs = await transport.inFlight()
+        let count = jobs.count
         let blocked = transport.isRedirectBlocked
+        uploadingIDs = Set(jobs.map(\.assetID))
+        publishRemaining()
         if count != inFlightCount { inFlightCount = count }
         if blocked != isRedirectBlocked { isRedirectBlocked = blocked }
     }
@@ -672,18 +716,21 @@ final class BackupModel {
         await refreshLists()
     }
 
-    /// Reads the failed and deleted-on-server items in one pass over the index. Only the newest call
+    /// Reads the failed, deleted-on-server and remaining items in one pass over the index. Only the newest call
     /// publishes: a slower, older one is discarded.
     private func refreshLists() async {
         listsRevision += 1
         let revision = listsRevision
         let wantsFailed = counts.failed > 0
         let wantsDeleted = counts.deletedOnServer > 0
+        let wantsRemaining = counts.pending > 0
         var failed: [FailedItem] = []
         var deleted: [(id: String, entry: BackupEntry)] = []
-        if wantsFailed || wantsDeleted {
+        var remaining: [(id: String, entry: BackupEntry)] = []
+        if wantsFailed || wantsDeleted || wantsRemaining {
             let entries = await currentEntries {
                 (wantsFailed && Self.isFailed($0)) || (wantsDeleted && Self.isDeletedOnServer($0))
+                    || (wantsRemaining && Self.isPending($0))
             }
             failed = entries.compactMap { id, entry in
                 guard case let .failed(reason) = entry.state else { return nil }
@@ -696,14 +743,24 @@ final class BackupModel {
                         ? $0.entry.modificationDate > $1.entry.modificationDate : $0.id < $1.id
                 }
             deleted = Array(deleted.prefix(Self.deletedItemLimit))
+            remaining = entries.filter { Self.isPending($0.entry) }
+                .sorted {
+                    $0.entry.modificationDate != $1.entry.modificationDate
+                        ? $0.entry.modificationDate > $1.entry.modificationDate : $0.id < $1.id
+                }
+            remaining = Array(remaining.prefix(Self.remainingItemLimit))
         }
         guard revision == listsRevision else { return }
         let shownFailed = Array(failed.prefix(Self.failedItemLimit))
         if failedItems != shownFailed { failedItems = shownFailed }
 
         let known = Dictionary(deletedItems.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let knownRemaining = Dictionary(remainingBase.map { ($0.id, $0.date) }, uniquingKeysWith: { first, _ in first })
         let created = Dictionary(
             await source.assets(deleted.map(\.id).filter { known[$0] == nil }).map { ($0.id, $0.creationDate) },
+            uniquingKeysWith: { first, _ in first })
+        let createdRemaining = Dictionary(
+            await source.assets(remaining.map(\.id).filter { knownRemaining[$0] == nil }).map { ($0.id, $0.creationDate) },
             uniquingKeysWith: { first, _ in first })
         guard revision == listsRevision else { return }
         let items: [DeletedItem] = deleted.compactMap { id, entry in
@@ -719,8 +776,22 @@ final class BackupModel {
             }
         }
         if deletedItems != items { deletedItems = items }
+        let bases: [RemainingBase] = remaining.compactMap { id, entry in
+            guard case let .pending(reason) = entry.state else { return nil }
+            return RemainingBase(
+                id: id, date: knownRemaining[id] ?? createdRemaining[id], reason: reason, retryNotBefore: entry.retry?.notBefore)
+        }.sorted {
+            switch ($0.date, $1.date) {
+            case let (a?, b?) where a != b: a > b
+            case (_?, nil): true
+            case (nil, _?): false
+            default: $0.id < $1.id
+            }
+        }
+        if remainingBase != bases { remainingBase = bases }
+        publishRemaining()
         // Thumbnails of rows that are gone aren't needed any more.
-        let shown = Set(items.map(\.id))
+        let shown = Set(items.map(\.id)).union(bases.map(\.id))
         thumbnailCache = thumbnailCache.filter { shown.contains($0.key) }
         thumbnailMisses.formIntersection(shown)
     }
@@ -738,6 +809,31 @@ final class BackupModel {
             for (id, entry) in chunk where dates[id] == entry.modificationDate { result.append((id, entry)) }
         }
         return result
+    }
+
+    /// Makes `remainingItems` from the last index pass and the uploads in flight, assigning only when it
+    /// changed. A retry time that has passed no longer counts.
+    private func publishRemaining(now: Date = Date()) {
+        let items = remainingBase.map { base in
+            let status: RemainingItem.Status
+            if uploadingIDs.contains(base.id) {
+                status = .uploading
+            } else if let at = base.retryNotBefore, at > now {
+                status = .retrying(at: at)
+            } else {
+                switch base.reason {
+                case .needsUpload: status = .waiting
+                case .waitingForWiFi: status = .waitingForWiFi
+                case .notChecked: status = .notChecked
+                }
+            }
+            return RemainingItem(id: base.id, date: base.date, status: status)
+        }
+        if remainingItems != items { remainingItems = items }
+    }
+
+    private static func isPending(_ entry: BackupEntry) -> Bool {
+        if case .pending = entry.state { true } else { false }
     }
 
     private static func isFailed(_ entry: BackupEntry) -> Bool {
@@ -821,7 +917,7 @@ extension BackupModel {
     /// For previews: records items as deleted on the server and as failed in the index, then loads, so the
     /// Deleted on Server and Problems rows and lists have something to show. The first deleted item is in
     /// the server's trash, the rest are gone for good.
-    func loadPreview(deletedOnServer: Int = 0, problems: Int = 0) async {
+    func loadPreview(deletedOnServer: Int = 0, problems: Int = 0, remaining: Int = 0) async {
         let index = await ensureIndex()
         let date = PreviewPhotoLibrary.date
         for number in 0..<deletedOnServer {
@@ -831,6 +927,19 @@ extension BackupModel {
             await index.set(
                 BackupEntry(modificationDate: date, checksums: [.photo: "preview-\(number)"], state: state),
                 for: "preview-\(number)")
+        }
+        let pendingReasons: [PendingReason] = [.needsUpload, .waitingForWiFi, .notChecked, .needsUpload]
+        for number in 0..<remaining {
+            let id = "preview-\(10 + number)"
+            // The last one is waiting to try again; the rest show the other states.
+            let retry = number == remaining - 1 && remaining > 3
+                ? BackupRetryState(failures: 1, notBefore: Date().addingTimeInterval(15 * 60), wasOffline: false, holdsRun: false)
+                : nil
+            await index.set(
+                BackupEntry(
+                    modificationDate: date, checksums: [.photo: "preview-\(id)"],
+                    state: .pending(reason: pendingReasons[number % pendingReasons.count]), retry: retry),
+                for: id)
         }
         let reasons = ["Couldn't read IMG_0012.HEIC: the file is in iCloud", "The server refused IMG_0031.MOV"]
         for number in 0..<problems {

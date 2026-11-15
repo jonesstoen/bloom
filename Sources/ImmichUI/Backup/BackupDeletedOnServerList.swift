@@ -85,7 +85,7 @@ private struct DeletedItemRow: View {
 
 /// A photo-library thumbnail, loaded when the row appears (the model decodes and caches it), or a
 /// placeholder while there is none (the photo is gone from the iPhone, or the library hasn't answered yet).
-private struct BackupThumbnail: View {
+struct BackupThumbnail: View {
     let id: String
     let model: BackupModel
     @State private var image: CGImage?

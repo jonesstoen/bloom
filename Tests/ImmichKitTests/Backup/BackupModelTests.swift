@@ -901,6 +901,94 @@ final class BackupModelTests: XCTestCase {
         UploadJob(assetID: asset, resource: .photo, attempt: UUID(), bodyFileName: "\(UUID().uuidString).multipart", checksum: "aa")
     }
 
+    // MARK: Remaining list
+
+    func testRemainingListShowsEachStateAndMarksInFlight() async throws {
+        let retryAt = Date().addingTimeInterval(600)
+        let directory = makeDirectory()
+        let index = BackupIndex(directory: directory)
+        let entries: [(String, BackupState, BackupRetryState?)] = [
+            ("a1", .pending(reason: .needsUpload), nil),
+            ("a2", .pending(reason: .waitingForWiFi), nil),
+            ("a3", .pending(reason: .notChecked), nil),
+            ("a4", .pending(reason: .needsUpload), BackupRetryState(failures: 1, notBefore: retryAt, wasOffline: false, holdsRun: false)),
+            ("a5", .pending(reason: .needsUpload), nil),
+            ("a6", .backedUp(serverAssetID: "s6"), nil),
+            ("a7", .pending(reason: .needsUpload), BackupRetryState(failures: 1, notBefore: Date().addingTimeInterval(-60), wasOffline: false, holdsRun: false)),
+        ]
+        for (id, state, retry) in entries {
+            await index.set(
+                BackupEntry(modificationDate: Self.date, checksums: [.photo: "sum-\(id)"], state: state, retry: retry), for: id)
+        }
+        await index.setSelection(BackupSelection(included: ["recents"]))
+        let job = makeJob("a5")
+        await index.addJob(job)
+        try await index.save()
+        let box = TransportBox()
+        let uploads = BackupModel.Uploads(requests: .test) { index, staging, recorder in
+            let made = FakeTransport(index: index, staging: staging, recorder: recorder, service: MockImmichService(), mode: .manual)
+            box.set(made)
+            return made
+        }
+        let model = BackupModel(
+            source: makeLibrary(count: 7), service: MockImmichService(), directory: directory,
+            network: FixedNetwork(isOnCellular: false), defaults: makeDefaults(), uploads: uploads)
+        await model.load()
+        XCTAssertEqual(model.remainingItems.count, 6, "Everything not on the server and not failed")
+        XCTAssertFalse(model.remainingItems.contains { $0.id == "a6" })
+        XCTAssertEqual(model.remainingItems.first { $0.id == "a5" }?.status, .waiting, "Not in flight until the status is read")
+
+        await model.refreshBackgroundStatus()
+
+        let byID = Dictionary(uniqueKeysWithValues: model.remainingItems.map { ($0.id, $0.status) })
+        XCTAssertEqual(byID["a1"], .waiting)
+        XCTAssertEqual(byID["a2"], .waitingForWiFi)
+        XCTAssertEqual(byID["a3"], .notChecked)
+        XCTAssertEqual(byID["a4"], .retrying(at: retryAt))
+        XCTAssertEqual(byID["a5"], .uploading)
+        XCTAssertEqual(byID["a7"], .waiting, "A retry time that has passed no longer counts")
+        await model.stop()
+    }
+
+    func testRemainingListIsNewestFirstAndLimited() async throws {
+        let count = BackupModel.remainingItemLimit + 3
+        let ids = (1...count).map { "a\($0)" }
+        let library = FakePhotoLibrary()
+        let directory = makeDirectory()
+        let index = BackupIndex(directory: directory)
+        for (offset, id) in ids.enumerated() {
+            let date = Self.date.addingTimeInterval(TimeInterval(offset))
+            let resource = DeviceResource(type: .photo, filename: "\(id).jpg")
+            library.addAsset(DeviceAsset(
+                id: id, isVideo: false, creationDate: date, modificationDate: date,
+                isFavorite: false, duration: 0, resources: [resource]))
+            await index.set(
+                BackupEntry(modificationDate: date, checksums: [.photo: "sum-\(id)"], state: .pending(reason: .needsUpload)),
+                for: id)
+        }
+        library.addAlbum(id: "recents", title: "Recents", assetIDs: Set(ids))
+        await index.setSelection(BackupSelection(included: ["recents"]))
+        try await index.save()
+        let model = makeModel(library, directory: directory)
+        await model.load()
+
+        XCTAssertEqual(model.counts.pending, count)
+        XCTAssertEqual(model.remainingItems.count, BackupModel.remainingItemLimit)
+        XCTAssertEqual(model.remainingItems.first?.id, "a\(count)", "Newest first")
+        XCTAssertEqual(model.remainingItems.map(\.date), model.remainingItems.map(\.date).sorted { ($0 ?? .distantPast) > ($1 ?? .distantPast) })
+        XCTAssertFalse(model.remainingItems.contains { ["a1", "a2", "a3"].contains($0.id) }, "The oldest are cut")
+        await model.stop()
+    }
+
+    func testRemainingListIsEmptyWhenEverythingIsBackedUp() async throws {
+        let library = makeLibrary(count: 2)
+        let directory = try await seededDirectory(["a1": .backedUp(serverAssetID: "s1"), "a2": .backedUp(serverAssetID: "s2")])
+        let model = makeModel(library, directory: directory)
+        await model.load()
+        XCTAssertTrue(model.remainingItems.isEmpty)
+        await model.stop()
+    }
+
     func testInFlightCountShowsUploadingInTheBackground() async throws {
         let setup = try await makeUploadModel(jobs: [makeJob("a1"), makeJob("a2")])
         XCTAssertEqual(setup.model.inFlightCount, 0, "Nothing is read before the status is refreshed")

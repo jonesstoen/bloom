@@ -328,5 +328,11 @@
 "Uploading %@ of %@" = "Laster opp %1$@ av %2$@";
 "These photos were on your server and are gone from it. Bloom doesn't upload them again unless you ask." = "Disse bildene lå på serveren, men er ikke der lenger. Bloom laster dem ikke opp igjen med mindre du ber om det.";
 "Nothing Deleted on Server" = "Ingenting slettet på serveren";
+"Nothing Remaining" = "Ingenting gjenstår";
+"Uploading" = "Lastes opp";
+"Waiting to Upload" = "I kø";
+"Waiting for Wi-Fi" = "Venter på Wi-Fi";
+"Not Checked Yet" = "Ikke sjekket ennå";
+"Trying again at %@" = "Prøver igjen kl. %@";
 "Turn on Allow Changes in the account menu to restore photos from the server's trash." = "Slå på Tillat endringer i kontomenyen for å hente bilder tilbake fra papirkurven på serveren.";
 "Couldn't back up your photos: %@" = "Kunne ikke sikkerhetskopiere bildene: %@";

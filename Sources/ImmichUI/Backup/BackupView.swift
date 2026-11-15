@@ -225,17 +225,12 @@ private struct BackupCountsSection: View {
         Section {
             LabeledContent(tr("Total")) { count(model.counts.total) }
             LabeledContent(tr("On Server")) { count(model.counts.backedUp) }
-            LabeledContent {
-                count(model.remaining)
-            } label: {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(tr("Remaining"))
-                    if model.counts.waitingForWiFi > 0 {
-                        Text(tr("%lld waiting for Wi-Fi", Int64(model.counts.waitingForWiFi)))
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+            if model.remaining > 0 {
+                NavigationLink {
+                    BackupRemainingList(model: model)
+                } label: { remainingRow }
+            } else {
+                remainingRow
             }
             if model.counts.deletedOnServer > 0 {
                 NavigationLink {
@@ -247,6 +242,21 @@ private struct BackupCountsSection: View {
             // So that Total always equals On Server + Remaining + Deleted on Server + Problems.
             if model.counts.failed > 0 {
                 LabeledContent(tr("Problems")) { count(model.counts.failed) }
+            }
+        }
+    }
+
+    private var remainingRow: some View {
+        LabeledContent {
+            count(model.remaining)
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(tr("Remaining"))
+                if model.counts.waitingForWiFi > 0 {
+                    Text(tr("%lld waiting for Wi-Fi", Int64(model.counts.waitingForWiFi)))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }
