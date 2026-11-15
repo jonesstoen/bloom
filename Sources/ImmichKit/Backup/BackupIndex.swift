@@ -326,7 +326,13 @@ public actor BackupIndex {
             return (Stored(), false, error)
         }
         do {
-            return (try JSONDecoder().decode(Stored.self, from: data), true, nil)
+            let stored = try JSONDecoder().decode(Stored.self, from: data)
+            #if os(iOS)
+            // A file saved before it got this class keeps `.complete` (unreadable while locked) until replaced.
+            try? FileManager.default.setAttributes(
+                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: fileURL.path)
+            #endif
+            return (stored, true, nil)
         } catch {
             let aside = fileURL.appendingPathExtension("corrupt")
             try? FileManager.default.removeItem(at: aside)

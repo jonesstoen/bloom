@@ -28,6 +28,8 @@ public final class BackupEngine: Sendable {
     let recorder: BackupResultRecorder
     let connection: BackupUploadConnection
     let uploader: BackupUploader
+    /// Whose turn it is to scan or upload: this engine's runs or the Backup screen's (see `BackupGate`).
+    let gate = BackupGate()
     private let lifecycle = OSAllocatedUnfairLock(initialState: Lifecycle())
     /// Called once `close()` has finished (the registry forgets the engine).
     private let onClose: @Sendable (BackupEngine) -> Void
@@ -90,32 +92,43 @@ public final class BackupEngine: Sendable {
     /// are already on the phone (`BackupRefreshPolicy`: no iCloud downloads, no videos). Then enqueues such
     /// items until `budget` has passed and returns without waiting for the uploads, and links Live Photos
     /// whose halves are both on the server. Does nothing while the Backup switch is off or without photo
-    /// access. Stops on cancellation. Returns whether it ran to the end.
+    /// access. Waits for its turn (the app may be scanning or uploading) only within `budget`; a scan that
+    /// runs past it stops and leaves the token as it was. Stops on cancellation. Returns whether it ran to
+    /// the end.
     @discardableResult
     public func runIncremental(budget: Duration) async -> Bool {
-        await perform { engine in try await engine.incremental(until: ContinuousClock.now + budget) }
+        let deadline = ContinuousClock.now + budget
+        return await perform(until: deadline) { engine in try await engine.incremental(until: deadline) }
     }
 
     /// The nightly processing task (on power): a full scan of the selection (hashing, iCloud downloads and
     /// videos allowed), then enqueues as much as the staging budget allows, returns without waiting for the
-    /// uploads, and links Live Photos. Does nothing while the switch is off or without photo access. Stops on
-    /// cancellation. Returns whether it ran to the end.
+    /// uploads, and links Live Photos. Does nothing while the switch is off or without photo access. Waits
+    /// for its turn while the app scans or uploads. Stops on cancellation. Returns whether it ran to the end.
     @discardableResult
     public func runProcessing() async -> Bool {
-        await perform { engine in try await engine.processing() }
+        await perform(until: nil) { engine in try await engine.processing() }
     }
 
-    private func perform(_ work: @escaping @Sendable (BackupEngine) async throws -> Void) async -> Bool {
+    /// Runs `work` on its turn (`gate`), waiting for it until `deadline` at most.
+    private func perform(
+        until deadline: ContinuousClock.Instant?, _ work: @escaping @Sendable (BackupEngine) async throws -> Void
+    ) async -> Bool {
         let id = UUID()
         let task = lifecycle.withLock { state -> Task<Bool, Never>? in
             guard !state.closed else { return nil }
             let task = Task { [self] in
+                // The app holding it does the work itself; a refresh doesn't wait past its own deadline.
+                guard await gate.acquire(until: deadline) else { return false }
+                let finished: Bool
                 do {
                     try await work(self)
-                    return !Task.isCancelled
+                    finished = !Task.isCancelled
                 } catch {
-                    return false
+                    finished = false
                 }
+                await gate.release()
+                return finished
             }
             state.runs[id] = task
             return task
@@ -132,7 +145,10 @@ public final class BackupEngine: Sendable {
         try Task.checkCancellation()
         if changed.map({ !$0.isEmpty }) ?? true {
             let scanner = BackupScanner(source: source, service: service, index: index, network: network, settings: settings())
-            try await scanner.scan(only: changed, smallLocalOnly: true) { _, _ in }
+            // Stops at the deadline (throwing), so the token stays and the next refresh checks the same changes.
+            try await Self.before(deadline) {
+                try await scanner.scan(only: changed, smallLocalOnly: true) { _, _ in }
+            }
         }
         // Only after the scan got through: a run that stopped checks the same changes next time.
         storeChangeToken(token)
@@ -165,6 +181,20 @@ public final class BackupEngine: Sendable {
         return true
     }
 
+    private struct DeadlineReached: Error {}
+
+    /// `work`'s result, or `DeadlineReached` once `deadline` passes (`work` is cancelled then).
+    private static func before(
+        _ deadline: ContinuousClock.Instant, _ work: @escaping @Sendable () async throws -> Void
+    ) async throws {
+        try await withThrowingTaskGroup(of: Bool.self) { group in
+            group.addTask { try await work(); return true }
+            group.addTask { try await Task.sleep(until: deadline, clock: .continuous); return false }
+            defer { group.cancelAll() }
+            guard try await group.next() == true else { throw DeadlineReached() }
+        }
+    }
+
     private func upload(_ options: BackupRunOptions, until deadline: ContinuousClock.Instant?) async throws {
         try await uploader.run(options: options, progress: { _ in }, shouldPause: {
             if Task.isCancelled { return true }
@@ -190,12 +220,18 @@ public final class BackupEngine: Sendable {
     private var changeTokenURL: URL { directory.appendingPathComponent(Self.changeTokenName, isDirectory: false) }
 
     func storedChangeToken() -> Data? {
-        try? Data(contentsOf: changeTokenURL)
+        guard let token = try? Data(contentsOf: changeTokenURL) else { return nil }
+        #if os(iOS)
+        // A file written before it got this class keeps `.complete` (unreadable while locked) until replaced.
+        try? FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: changeTokenURL.path)
+        #endif
+        return token
     }
 
     /// Kept in the account's directory, readable while the phone is locked after its first unlock. Never
-    /// written after sign-out (it would recreate the directory).
-    private func storeChangeToken(_ token: Data?) {
+    /// written after sign-out (it would recreate the directory). The Backup screen's full scans store theirs too.
+    func storeChangeToken(_ token: Data?) {
         guard let token, !lifecycle.withLock({ $0.closed }) else { return }
         var options: Data.WritingOptions = .atomic
         #if os(iOS)
@@ -209,8 +245,20 @@ public final class BackupEngine: Sendable {
 
     var isClosed: Bool { lifecycle.withLock { $0.closed } }
 
-    /// Sign-out, after the Backup screen's model has stopped (`BackupModel.stop()`, which ends the app's own
-    /// scans and runs). In this order:
+    /// The first step of `close()`, which sign-out takes before the Backup screen's model stops (so a background
+    /// run doesn't stage into the folder the model's runner then empties): no new background run starts, and
+    /// the running ones are cancelled and waited for. Calling it again does nothing more.
+    func cancelRuns() async {
+        let runs = lifecycle.withLock { state -> [Task<Bool, Never>] in
+            state.closed = true
+            return Array(state.runs.values)
+        }
+        for run in runs { run.cancel() }
+        for run in runs { _ = await run.value }
+    }
+
+    /// Sign-out, after `cancelRuns()` and the Backup screen's model has stopped (`BackupModel.stop()`, which
+    /// ends the app's own scans and runs). In this order:
     /// 1. no new background run starts, and the running ones are cancelled and waited for (scheduled
     ///    background tasks are cancelled here as well once they exist);
     /// 2. the transport is invalidated: iOS cancels the account's uploads, nothing more is enqueued, and a
@@ -222,12 +270,7 @@ public final class BackupEngine: Sendable {
     ///    the index, the redirect block and the change token is refused from steps 2–3 on.
     /// The registry then forgets the engine, so `forSessionIdentifier` won't return it.
     func close() async {
-        let runs = lifecycle.withLock { state -> [Task<Bool, Never>] in
-            state.closed = true
-            return Array(state.runs.values)
-        }
-        for run in runs { run.cancel() }
-        for run in runs { _ = await run.value }
+        await cancelRuns()
         transport.invalidate()
         await index.close()
         await staging.removeAll()
@@ -256,6 +299,8 @@ final class BackupEngineRegistry: @unchecked Sendable {
     private let root: URL
     private let make: Factory
     private let lock = NSLock()
+    /// Held while an engine is made (never together with a lookup's wait on `lock`).
+    private let building = NSLock()
     private var engines: [String: BackupEngine] = [:]
 
     init(store: CredentialStore, root: URL, editing: EditingPermission? = nil, make: Factory? = nil) {
@@ -281,13 +326,18 @@ final class BackupEngineRegistry: @unchecked Sendable {
     /// The account's engine, made on first use. `service` is used only when it is made here.
     func engine(for credentials: ServerCredentials, service: (any ImmichService)? = nil) -> BackupEngine {
         let identifier = Self.sessionIdentifier(for: credentials)
-        return lock.withLock {
-            if let engine = engines[identifier] { return engine }
-            let engine = make(credentials, directory(for: credentials), identifier, service) { [weak self] closed in
+        if let engine = lock.withLock({ engines[identifier] }) { return engine }
+        // Made outside `lock` (lookups and `forget` don't wait for it): it reads the account's index, which can be
+        // large. Builds take turns on `building` instead, so a second builder finds the first one's engine
+        // rather than making a second background session with the same identifier (made at once, see
+        // `BackgroundSessionTransport`).
+        return building.withLock {
+            if let engine = lock.withLock({ engines[identifier] }) { return engine }
+            let made = make(credentials, directory(for: credentials), identifier, service) { [weak self] closed in
                 self?.forget(closed)
             }
-            engines[identifier] = engine
-            return engine
+            lock.withLock { engines[identifier] = made }
+            return made
         }
     }
 
@@ -325,5 +375,60 @@ final class BackupEngineRegistry: @unchecked Sendable {
         #else
         PreviewPhotoLibrary()
         #endif
+    }
+}
+
+/// One account's turn to scan or upload: the engine's background runs and the Backup screen's scans and upload
+/// runs take it, so two never hash, check or write the same items at once. First come, first served; a waiter
+/// that is cancelled (or whose deadline passes) leaves the queue without getting it. No busy waiting.
+actor BackupGate {
+    private var held = false
+    private var waiters: [(id: UUID, continuation: CheckedContinuation<Bool, Never>)] = []
+    /// Waiters given up on before they queued (the cancellation handler can run first).
+    private var abandoned: Set<UUID> = []
+
+    /// Waits for the gate. Returns false, without it, when the task is cancelled or `deadline` passes first.
+    /// Each `true` must be paired with one `release()`.
+    func acquire(until deadline: ContinuousClock.Instant? = nil) async -> Bool {
+        if !held {
+            held = true
+            return true
+        }
+        let id = UUID()
+        let timer = deadline.map { deadline in
+            Task { [weak self] in
+                try? await Task.sleep(until: deadline, clock: .continuous)
+                await self?.abandon(id)
+            }
+        }
+        defer { timer?.cancel() }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if abandoned.remove(id) != nil || Task.isCancelled {
+                    continuation.resume(returning: false)
+                } else {
+                    waiters.append((id, continuation))
+                }
+            }
+        } onCancel: {
+            Task { await self.abandon(id) }
+        }
+    }
+
+    /// Hands the gate to the longest waiter, or frees it.
+    func release() {
+        if waiters.isEmpty {
+            held = false
+        } else {
+            waiters.removeFirst().continuation.resume(returning: true)
+        }
+    }
+
+    private func abandon(_ id: UUID) {
+        if let position = waiters.firstIndex(where: { $0.id == id }) {
+            waiters.remove(at: position).continuation.resume(returning: false)
+        } else {
+            abandoned.insert(id)
+        }
     }
 }

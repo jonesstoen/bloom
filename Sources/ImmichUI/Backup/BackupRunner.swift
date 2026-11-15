@@ -449,7 +449,11 @@ final class BackupRunner {
             }
         }
         var succeeded = true
+        // On an engine, one scan or upload run at a time (see `BackupGate`); cancelled while waiting: stopped.
+        let gate = model?.engine?.gate
+        let entered = await gate?.acquire() ?? true
         do {
+            guard entered else { throw CancellationError() }
             try await uploader.run(
                 progress: { progress in
                     items.note(progress)
@@ -463,6 +467,7 @@ final class BackupRunner {
             succeeded = false
             if !(error is CancellationError) { model?.reportUploadFailure(error) }
         }
+        if entered { await gate?.release() }
         continuation.finish()
         await delivery.value
         if current?.id == id {

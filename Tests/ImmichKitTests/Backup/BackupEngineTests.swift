@@ -392,6 +392,144 @@ final class BackupEngineTests: XCTestCase {
         XCTAssertTrue(sessions.session(for: identifier).isInvalidated)
         XCTAssertNil(registry.engine(forSessionIdentifier: identifier))
     }
+
+    // MARK: - Fix round 1
+
+    /// The Backup screen's model on `engine`, with its own defaults.
+    @MainActor private func makeModel(engine: BackupEngine) -> BackupModel {
+        let suite = "BackupEngineTests-\(UUID())"
+        let defaults = UserDefaults(suiteName: suite) ?? .standard
+        addTeardownBlock { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        return BackupModel(engine: engine, defaults: defaults)
+    }
+
+    func testLiveSessionSendsAtMostThreeUploadsPerHost() {
+        let configuration = BackgroundSessionTransport.backgroundConfiguration(identifier: "test-configuration")
+        XCTAssertEqual(configuration.httpMaximumConnectionsPerHost, 3)
+    }
+
+    func testForegroundScanAndBackgroundRunNeverOverlap() async throws {
+        let directory = temporaryDirectory()
+        let library = FakePhotoLibrary()
+        let service = MockImmichService()
+        for id in ["a", "b"] { _ = photo(id, in: library) }
+        library.addAlbum(id: "A", title: "Recents", assetIDs: ["a", "b"])
+        try await seedIndex(in: directory)
+        let probe = OverlapProbe()
+        library.setBeforeRead { _ in await probe.enter() }
+        let engine = makeEngine(directory: directory, library: library, service: service, session: EngineFakeSession())
+        let model = await makeModel(engine: engine)
+
+        let foreground = Task { await model.scan() }
+        await probe.waitUntilHeld()
+        let background = Task { await engine.runIncremental(budget: .seconds(60)) }
+        try await Task.sleep(for: .milliseconds(300))
+        await probe.release()
+        let scanned = await foreground.value
+        _ = await background.value
+
+        XCTAssertTrue(scanned)
+        let most = await probe.most
+        XCTAssertEqual(most, 1, "The background run's scan waits for the foreground scan")
+    }
+
+    func testBackgroundRunReturnsAtItsDeadlineWhileTheGateIsHeld() async throws {
+        let directory = temporaryDirectory()
+        let library = FakePhotoLibrary()
+        _ = photo("a", in: library)
+        library.addAlbum(id: "A", title: "Recents", assetIDs: ["a"])
+        try await seedIndex(in: directory)
+        library.setCurrentChangeToken(Data("token-1".utf8))
+        let engine = makeEngine(
+            directory: directory, library: library, service: MockImmichService(), session: EngineFakeSession())
+        let held = await engine.gate.acquire()
+        XCTAssertTrue(held)
+
+        let start = ContinuousClock.now
+        let finished = await engine.runIncremental(budget: .milliseconds(200))
+        let elapsed = start.duration(to: .now)
+        await engine.gate.release()
+
+        XCTAssertFalse(finished)
+        XCTAssertLessThan(elapsed, .seconds(5), "Waits only within its own deadline")
+        XCTAssertTrue(library.reads.isEmpty, "Nothing was scanned")
+        XCTAssertTrue(library.changeTokenRequests.isEmpty)
+        XCTAssertNil(engine.storedChangeToken())
+    }
+
+    func testRefreshScanStopsAtTheDeadlineAndKeepsNoToken() async throws {
+        let directory = temporaryDirectory()
+        let library = FakePhotoLibrary()
+        _ = photo("a", in: library)
+        library.addAlbum(id: "A", title: "Recents", assetIDs: ["a"])
+        try await seedIndex(in: directory)
+        library.setCurrentChangeToken(Data("token-1".utf8))
+        // Hashing takes far longer than the refresh may run.
+        library.setBeforeRead { _ in try? await Task.sleep(for: .seconds(30)) }
+        let engine = makeEngine(
+            directory: directory, library: library, service: MockImmichService(), session: EngineFakeSession())
+
+        let start = ContinuousClock.now
+        let finished = await engine.runIncremental(budget: .milliseconds(300))
+        let elapsed = start.duration(to: .now)
+
+        XCTAssertFalse(finished)
+        XCTAssertLessThan(elapsed, .seconds(10), "The scan stops at the deadline")
+        XCTAssertNil(engine.storedChangeToken(), "A scan that didn't get through keeps no token")
+    }
+
+    func testForegroundFullScanStoresTheTokenReadBeforeIt() async throws {
+        let directory = temporaryDirectory()
+        let library = FakePhotoLibrary()
+        _ = photo("a", in: library)
+        library.addAlbum(id: "A", title: "Recents", assetIDs: ["a"])
+        try await seedIndex(in: directory)
+        let before = Data("token-1".utf8)
+        library.setCurrentChangeToken(before)
+        // A change during the scan: the next refresh must still see it.
+        library.setBeforeRead { [library] _ in library.setCurrentChangeToken(Data("token-2".utf8)) }
+        let engine = makeEngine(
+            directory: directory, library: library, service: MockImmichService(), session: EngineFakeSession())
+        let model = await makeModel(engine: engine)
+
+        let scanned = await model.scan()
+
+        XCTAssertTrue(scanned)
+        XCTAssertEqual(engine.storedChangeToken(), before, "The token read before the scan")
+    }
+}
+
+/// Counts reads in progress; the first one is held until `release()`.
+private actor OverlapProbe {
+    private(set) var most = 0
+    private var active = 0
+    private var held = false
+    private var released = false
+    private var holders: [CheckedContinuation<Void, Never>] = []
+    private var watchers: [CheckedContinuation<Void, Never>] = []
+
+    func enter() async {
+        active += 1
+        most = max(most, active)
+        if !held {
+            held = true
+            for watcher in watchers { watcher.resume() }
+            watchers = []
+            if !released { await withCheckedContinuation { holders.append($0) } }
+        }
+        active -= 1
+    }
+
+    func waitUntilHeld() async {
+        if held { return }
+        await withCheckedContinuation { watchers.append($0) }
+    }
+
+    func release() {
+        released = true
+        for holder in holders { holder.resume() }
+        holders = []
+    }
 }
 
 /// Reports `.wifi` at once and never changes.

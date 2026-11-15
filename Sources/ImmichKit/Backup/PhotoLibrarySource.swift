@@ -99,8 +99,10 @@ public protocol PhotoLibrarySource: Sendable {
     /// The assets inserted or changed since `token` (an archived change token returned by an earlier call),
     /// and the token to pass next time. `ids == nil` means the changes can't be told (no token yet, an
     /// expired or unreadable one, or a library without persistent changes): scan everything. The returned
-    /// token is taken before the changes are read, so nothing that happens meanwhile is missed; it is nil
-    /// when the library has none. Deleted assets are not listed (the scanner drops them on a full scan).
+    /// token is that of the last change read (pass it next time to get the changes after it); when the
+    /// changes can't be told, it is the library's current token, read before the caller's full scan, so
+    /// whatever changes during that scan is found next time. It is nil when the library has none. Deleted
+    /// assets are not listed (the scanner drops them on a full scan).
     func changedAssetIDs(since token: Data?) async -> (ids: Set<String>?, token: Data?)
 }
 

@@ -638,11 +638,9 @@ final class BackgroundSessionDelegate: NSObject, URLSessionDataDelegate, Sendabl
     }
 }
 
-/// A background `URLSession` for uploads. Not exercised by unit tests (they use a fake session).
-private final class LiveUploadSession: UploadSessionDriving {
-    private let session: URLSession
-
-    init(identifier: String, events: BackgroundSessionEvents) {
+extension BackgroundSessionTransport {
+    /// The account's background session configuration (internal so a test can check it).
+    static func backgroundConfiguration(identifier: String) -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.background(withIdentifier: identifier)
         configuration.sessionSendsLaunchEvents = true
         configuration.isDiscretionary = false
@@ -653,6 +651,18 @@ private final class LiveUploadSession: UploadSessionDriving {
         configuration.httpShouldSetCookies = false
         // Cellular is decided per request (`applyingNetworkPolicy`); the session allows what a request allows.
         configuration.allowsCellularAccess = true
+        // A few uploads at a time per server (the default is 6 on iOS): the rest waits in the system's queue.
+        configuration.httpMaximumConnectionsPerHost = 3
+        return configuration
+    }
+}
+
+/// A background `URLSession` for uploads. Not exercised by unit tests (they use a fake session).
+private final class LiveUploadSession: UploadSessionDriving {
+    private let session: URLSession
+
+    init(identifier: String, events: BackgroundSessionEvents) {
+        let configuration = BackgroundSessionTransport.backgroundConfiguration(identifier: identifier)
         session = URLSession(
             configuration: configuration, delegate: BackgroundSessionDelegate(events: events), delegateQueue: nil)
     }

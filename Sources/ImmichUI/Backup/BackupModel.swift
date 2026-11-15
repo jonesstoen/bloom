@@ -337,9 +337,17 @@ final class BackupModel {
         progressGate = BackupProgressGate()
         generation += 1
         let current = generation
+        let engine = engine
         scanTask = Task { [weak self] in
             var result: BackupCounts?
             var failure: Error?
+            // On an engine, one scan or upload run at a time: a background run waits (or gives up) meanwhile.
+            guard await engine?.gate.acquire() ?? true else {
+                await self?.finishScan(result: nil, failure: CancellationError())
+                return false
+            }
+            // Read before the scan: whatever changes during it is found by the next background refresh.
+            let token = await engine?.source.changedAssetIDs(since: nil).token
             // A single consumer with one pending snapshot avoids a task backlog for large libraries.
             let (updates, continuation) = AsyncStream<(BackupCounts, Int)>.makeStream(bufferingPolicy: .bufferingNewest(1))
             let delivery = Task { [weak self] in
@@ -354,6 +362,9 @@ final class BackupModel {
             } catch {
                 failure = error
             }
+            // A full scan got through: the next refresh only checks what changed after the token.
+            if result != nil { engine?.storeChangeToken(token) }
+            await engine?.gate.release()
             continuation.finish()
             await delivery.value
             await self?.finishScan(result: result, failure: failure)

@@ -29,6 +29,7 @@ final class FakePhotoLibrary: PhotoLibrarySource, @unchecked Sendable {
     private var _currentToken: Data?
     private var _changesSince: [Data: (ids: Set<String>, token: Data)] = [:]
     private var _tokenRequests: [Data?] = []
+    private var _beforeRead: (@Sendable (String) async -> Void)?
 
     /// `accessAfterRequest` is what the user answers when asked (used when `access` is `.notDetermined`).
     init(access: PhotoAccess = .full, accessAfterRequest: PhotoAccess = .full) {
@@ -86,6 +87,8 @@ final class FakePhotoLibrary: PhotoLibrarySource, @unchecked Sendable {
 
     /// The library's current change token: what `changedAssetIDs(since:)` hands out for a full scan.
     func setCurrentChangeToken(_ token: Data?) { lock.withLock { _currentToken = token } }
+    /// Awaited at the start of every `read` with the asset ID (to hold a scan mid-way).
+    func setBeforeRead(_ hook: (@Sendable (String) async -> Void)?) { lock.withLock { _beforeRead = hook } }
 
     /// Since `token`, the assets `ids` changed and the next token is `next`. Any other token counts as expired.
     func setChanges(since token: Data, ids: Set<String>, next: Data) {
@@ -128,10 +131,11 @@ final class FakePhotoLibrary: PhotoLibrarySource, @unchecked Sendable {
         allowNetwork: Bool,
         onData: @escaping @Sendable (Data) -> Void
     ) async throws {
-        let (failure, iCloudOnly, chunks): (Error?, Bool, [Data]) = lock.withLock {
+        let (failure, iCloudOnly, chunks, hook): (Error?, Bool, [Data], (@Sendable (String) async -> Void)?) = lock.withLock {
             _reads.append(ReadCall(resource: resource, assetID: assetID, allowNetwork: allowNetwork))
-            return (_failures[resource], _iCloudOnly.contains(resource), _data[resource] ?? [])
+            return (_failures[resource], _iCloudOnly.contains(resource), _data[resource] ?? [], _beforeRead)
         }
+        if let hook { await hook(assetID) }
         if let failure { throw failure }
         if iCloudOnly && !allowNetwork { throw PhotoLibraryReadError.needsNetwork }
         // Like PhotoKit after `cancelDataRequest`: no more data once the read is cancelled.

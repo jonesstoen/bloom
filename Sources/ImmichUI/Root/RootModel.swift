@@ -152,10 +152,12 @@ public final class RootModel {
                 return previous
             }.value
             session?.library.stopPrefetching()
+            // The engine's background runs first, so none stages into the folder the runner then empties.
+            await session?.backup.engine?.cancelRuns()
             // A running scan or upload saves the index and stages files: wait for both (this also
             // stops the runner and empties its staging folder) before the directory is removed.
             await session?.backup.stop()
-            // Then the account's engine: background runs, its session, its index and its directory.
+            // Then the rest of the account's engine: its session, its index and its directory.
             await session?.backup.engine?.close()
             await session?.snapshotStore?.invalidate()
             await session?.loader.invalidate()
