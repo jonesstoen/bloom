@@ -154,7 +154,8 @@ private struct BackupBackgroundSection: View {
             BackupBackgroundRows(
                 inFlight: model.inFlightCount, lastBackup: model.lastBackup,
                 isRedirectBlocked: model.isRedirectBlocked,
-                isRefreshOff: model.isBackgroundRefreshOff && model.settings.isEnabled)
+                isRefreshOff: model.isBackgroundRefreshOff && model.settings.isEnabled,
+                retryAfterRedirect: { Task { await model.retryAfterRedirect() } })
         } footer: {
             Text(tr("Bloom backs up when it is open and at night while charging. iOS decides the exact time."))
         }
@@ -166,15 +167,21 @@ private struct BackupBackgroundRows: View {
     let lastBackup: Date?
     let isRedirectBlocked: Bool
     let isRefreshOff: Bool
+    var retryAfterRedirect: () -> Void = {}
     @Environment(\.openURL) private var openURL
 
     var body: some View {
         if isRedirectBlocked {
-            Label(
-                tr("Backup stopped: the server redirected an upload to another address. Check your server setup, then open Backup again."),
-                systemImage: "exclamationmark.triangle.fill")
-                .font(.subheadline)
-                .foregroundStyle(.red)
+            VStack(alignment: .leading, spacing: 8) {
+                Label(
+                    tr("Backup stopped: the server redirected an upload to another address. Check your server setup, then tap Try Again."),
+                    systemImage: "exclamationmark.triangle.fill")
+                    .font(.subheadline)
+                    .foregroundStyle(.red)
+                Button(tr("Try Again"), action: retryAfterRedirect)
+                    .buttonStyle(.bordered)
+            }
+            .padding(.vertical, 4)
         }
         if inFlight > 0 {
             Label(tr("Uploading in the background: %lld", Int64(inFlight)), systemImage: "arrow.up.circle")

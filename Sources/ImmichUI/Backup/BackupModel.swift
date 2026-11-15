@@ -116,6 +116,10 @@ final class BackupModel {
             if settings.isEnabled != oldValue.isEnabled { madeRunner?.enabledDidChange() }
             // The scanner works with the settings it was made with: check again with the new ones,
             // so items waiting for Wi-Fi are tried once cellular is allowed.
+            if (oldValue.photosOnCellular && !settings.photosOnCellular)
+                || (oldValue.videosOnCellular && !settings.videosOnCellular) {
+                cancelUploadsNotAllowedOnCellular(by: new)
+            }
             if settings.photosOnCellular != oldValue.photosOnCellular
                 || settings.videosOnCellular != oldValue.videosOnCellular, !selection.included.isEmpty {
                 scheduleRescan()
@@ -625,6 +629,37 @@ final class BackupModel {
         let blocked = transport.isRedirectBlocked
         if count != inFlightCount { inFlightCount = count }
         if blocked != isRedirectBlocked { isRedirectBlocked = blocked }
+    }
+
+    /// The latest `cancelUploadsNotAllowedOnCellular`, kept so tests can wait for it.
+    @ObservationIgnored private(set) var cellularCancel: Task<Void, Never>?
+
+    /// A cellular switch was turned off: the uploads in flight that were sent with cellular access and that
+    /// `settings` no longer allow on cellular are cancelled (their items go back to the queue through the
+    /// recorder's cancelled path, and the next run sends them without cellular access).
+    private func cancelUploadsNotAllowedOnCellular(by settings: BackupSettings) {
+        let previous = cellularCancel
+        let source = source
+        cellularCancel = Task { [weak self] in
+            await previous?.value
+            guard let transport = await self?.uploadConnection()?.transport else { return }
+            var attempts: Set<UUID> = []
+            for job in await transport.inFlight() where job.allowsCellular {
+                if let asset = await source.asset(job.assetID), !settings.allowsNetwork(for: asset, onCellular: true) {
+                    attempts.insert(job.attempt)
+                }
+            }
+            if !attempts.isEmpty { await transport.cancel(attempts: attempts) }
+        }
+    }
+
+    /// The user's Try Again under the redirect message: lifts the block (only ever done by the user, as a
+    /// proxy may redirect just the uploads) and starts a run, which checks the server again before it sends.
+    func retryAfterRedirect() async {
+        guard !isStopped, let transport = await uploadConnection()?.transport else { return }
+        transport.clearRedirectBlock()
+        isRedirectBlocked = false
+        runner.checkNow()
     }
 
     private func refreshCounts() async {

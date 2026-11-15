@@ -15,13 +15,34 @@ public struct UploadJob: Sendable, Codable, Equatable {
     /// The SHA-1 (base64) of the resource's bytes, as the scanner recorded it. A result is applied only
     /// while the index entry still has this checksum for `resource`.
     public let checksum: String
+    /// Whether the request was made with cellular access (the item's cellular switch was on when it was
+    /// enqueued). Jobs stored before this existed decode as `true`.
+    public let allowsCellular: Bool
 
-    public init(assetID: String, resource: DeviceResourceType, attempt: UUID, bodyFileName: String, checksum: String) {
+    public init(
+        assetID: String, resource: DeviceResourceType, attempt: UUID, bodyFileName: String, checksum: String,
+        allowsCellular: Bool = true
+    ) {
         self.assetID = assetID
         self.resource = resource
         self.attempt = attempt
         self.bodyFileName = bodyFileName
         self.checksum = checksum
+        self.allowsCellular = allowsCellular
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case assetID, resource, attempt, bodyFileName, checksum, allowsCellular
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        assetID = try container.decode(String.self, forKey: .assetID)
+        resource = try container.decode(DeviceResourceType.self, forKey: .resource)
+        attempt = try container.decode(UUID.self, forKey: .attempt)
+        bodyFileName = try container.decode(String.self, forKey: .bodyFileName)
+        checksum = try container.decode(String.self, forKey: .checksum)
+        allowsCellular = try container.decodeIfPresent(Bool.self, forKey: .allowsCellular) ?? true
     }
 }
 
@@ -96,11 +117,14 @@ public protocol BackupTransport: Sendable {
     func inFlight() async -> [UploadJob]
     /// Cancels everything in flight.
     func cancelAll() async
+    /// Cancels the jobs in flight with these attempts; their items go back to the queue through the
+    /// recorder's cancelled path. Others are left alone.
+    func cancel(attempts: Set<UUID>) async
     /// An upload was seen redirected to another server: `enqueue` refuses with
     /// `BackupTransportError.redirectBlocked` until `clearRedirectBlock()`.
     var isRedirectBlocked: Bool { get }
-    /// Lifts the redirect block. Only after a check that can't follow redirects found the server answering
-    /// at its own address (`BackupUploader` does it before it enqueues).
+    /// Lifts the redirect block. Only on the user's explicit Try Again (`BackupModel.retryAfterRedirect`):
+    /// a passing check doesn't prove the uploads themselves aren't redirected.
     func clearRedirectBlock()
 }
 
@@ -108,7 +132,7 @@ extension BackupTransportError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .redirectBlocked:
-            tr("An upload was redirected to another address. Uploads are paused until the server answers at its own address again.")
+            tr("An upload was redirected to another address. Uploads are paused until you tap Try Again on the Backup screen.")
         }
     }
 }

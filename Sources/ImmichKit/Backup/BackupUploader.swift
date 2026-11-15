@@ -411,16 +411,12 @@ public actor BackupUploader {
         return (candidates.sorted { ($0.creationDate, $0.id) > ($1.creationDate, $1.id) }, waits)
     }
 
-    /// The assets whose uploads in `jobs` the system holds for now: on cellular, those of a media type whose
-    /// cellular switch is off (the request was made without cellular access).
+    /// The assets whose uploads in `jobs` the system holds for now: on cellular, those whose request was made
+    /// without cellular access (the job's own flag, not today's switches: a switch turned on later doesn't
+    /// change a request already handed to the system).
     private func parkedAssets(_ jobs: [UploadJob]) async -> Set<String> {
         guard !jobs.isEmpty, await network.isOnCellular else { return [] }
-        let settings = settings()
-        var parked: Set<String> = []
-        for id in Set(jobs.map(\.assetID)) {
-            if let asset = await source.asset(id), !settings.allowsNetwork(for: asset, onCellular: true) { parked.insert(id) }
-        }
-        return parked
+        return Set(jobs.filter { !$0.allowsCellular }.map(\.assetID))
     }
 
     /// Cuts retry times further ahead than `longestPause` (a clock moved back since they were written) to it,
@@ -579,7 +575,7 @@ public actor BackupUploader {
                     checksum: expected, boundary: body.boundary, allowsCellular: allowsCellular)
                 let job = UploadJob(
                     assetID: id, resource: resource.type, attempt: UUID(), bodyFileName: body.bodyFile.lastPathComponent,
-                    checksum: expected)
+                    checksum: expected, allowsCellular: request.allowsCellularAccess)
                 try await transport.enqueue(job, request: request)
                 sent = true
             } catch {
@@ -678,13 +674,16 @@ public actor BackupUploader {
 
     /// Checks, before anything is enqueued, that the server answers at its own address: a request with the key
     /// that can't follow a redirect to another server (`SameOriginRedirects`, and `protectsAPIKey`). A
-    /// background upload follows redirects on its own, so this is where they are caught first. Passing lifts
-    /// a redirect block the transport set; failing because of a redirect cancels what is in flight. Done
-    /// again after `preflightInterval`, and whenever the transport is blocked.
+    /// background upload follows redirects on its own, so this is where they are caught first. Failing because
+    /// of a redirect cancels what is in flight. Done again after `preflightInterval`.
+    ///
+    /// A redirect block the transport set is never lifted here, even when the check passes: a proxy that
+    /// redirects only the uploads would otherwise get the key once per run. While blocked nothing is enqueued
+    /// (`BackupTransportError.redirectBlocked`); only the user lifts it (`BackupModel.retryAfterRedirect`).
     private func preflight(_ transport: any BackupTransport) async throws {
+        if transport.isRedirectBlocked { throw BackupTransportError.redirectBlocked }
         let now = clock.date()
-        if !transport.isRedirectBlocked, let lastPreflight,
-           now.timeIntervalSince(lastPreflight) < Self.preflightInterval { return }
+        if let lastPreflight, now.timeIntervalSince(lastPreflight) < Self.preflightInterval { return }
         do {
             try await service.ping()
         } catch {
@@ -692,7 +691,6 @@ public actor BackupUploader {
             throw error
         }
         lastPreflight = now
-        if transport.isRedirectBlocked { transport.clearRedirectBlock() }
     }
 
     /// A refused redirect arrives as its 3xx status; plain http to a host outside the user's network is refused

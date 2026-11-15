@@ -146,6 +146,14 @@ public final class BackgroundSessionTransport: BackupTransport, Sendable {
         for task in await access.allTasks() { task.cancel() }
     }
 
+    /// Cancels the tasks of these attempts only (a cellular switch turned off, say).
+    public func cancel(attempts: Set<UUID>) async {
+        guard !attempts.isEmpty else { return }
+        for task in await access.allTasks() {
+            if let job = Self.job(in: task.taskDescription), attempts.contains(job.attempt) { task.cancel() }
+        }
+    }
+
     /// Cancels everything and invalidates the session (sign-out). Every later `enqueue` throws
     /// `CancellationError`, and a redirect seen afterwards is no longer written to disk (the account's
     /// directory is about to be removed and must not be recreated).

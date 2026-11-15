@@ -1591,17 +1591,30 @@ final class BackupUploaderTests: XCTestCase {
         XCTAssertEqual(s, .pending(reason: .needsUpload))
     }
 
-    func testPassedPreflightLiftsTheRedirectBlock() async throws {
+    /// A passing check doesn't lift a redirect block: a proxy that redirects only the uploads would get the
+    /// key once per run. Only the user lifts it; then the run sends.
+    func testRedirectBlockStaysUntilTheUserLiftsIt() async throws {
         let setup = await makeSetup(album: ["a"])
         let sums = addAsset("a", to: setup.library)
         await queue("a", sums, in: setup.index)
         let stack = makeStack(setup)
         stack.transport.setRedirectBlocked(true)
 
+        do {
+            try await run(stack.uploader)
+            XCTFail("Expected redirectBlocked")
+        } catch let error as BackupTransportError {
+            XCTAssertEqual(error, .redirectBlocked)
+        }
+        XCTAssertEqual(stack.transport.clearCount, 0)
+        XCTAssertTrue(stack.transport.isRedirectBlocked)
+        XCTAssertTrue(stack.transport.sent.isEmpty, "Nothing enqueued while blocked")
+        let blocked = await state("a", setup.index)
+        XCTAssertEqual(blocked, .pending(reason: .needsUpload))
+
+        stack.transport.clearRedirectBlock() // the user's Try Again
         try await run(stack.uploader)
 
-        XCTAssertEqual(stack.transport.clearCount, 1)
-        XCTAssertFalse(stack.transport.isRedirectBlocked)
         let requests = await setup.service.requests
         let ping = requests.firstIndex(of: .ping)
         let upload = requests.firstIndex(of: .upload(sums[.photo]!))
@@ -1679,7 +1692,8 @@ final class BackupUploaderTests: XCTestCase {
             let body = "\(id).multipart"
             try Data("body".utf8).write(to: setup.stagingDirectory.appendingPathComponent(body))
             await setup.index.addJob(UploadJob(
-                assetID: id, resource: .video, attempt: UUID(), bodyFileName: body, checksum: sums[.video]!))
+                assetID: id, resource: .video, attempt: UUID(), bodyFileName: body, checksum: sums[.video]!,
+                allowsCellular: false))
         }
         let p = addAsset("p", to: setup.library, created: Self.date)
         await queue("p", p, in: setup.index)
@@ -1698,6 +1712,48 @@ final class BackupUploaderTests: XCTestCase {
         guard case .backedUp = pState else { return XCTFail("Expected backedUp, got \(String(describing: pState))") }
         let jobs = await setup.index.jobs.map(\.assetID)
         XCTAssertEqual(Set(jobs), Set(videoIDs), "The held uploads are left to the system")
+    }
+
+    /// Whether an upload is held for Wi-Fi comes from its own request (`UploadJob.allowsCellular`), not from
+    /// today's switches: uploads sent with cellular access still take their slots after a switch went off.
+    func testParkedDetectionUsesTheJobsOwnCellularFlag() async throws {
+        let videoIDs = ["v1", "v2", "v3"]
+        let setup = await makeSetup(
+            album: Set(videoIDs + ["p"]), cellular: true, settings: BackupSettings(photosOnCellular: true))
+        try FileManager.default.createDirectory(at: setup.stagingDirectory, withIntermediateDirectories: true)
+        for (offset, id) in videoIDs.enumerated() {
+            let sums = addAsset(id, to: setup.library, types: [.video], isVideo: true,
+                                created: Self.date.addingTimeInterval(Double(60 + offset)))
+            await queue(id, sums, in: setup.index)
+            let body = "\(id).multipart"
+            try Data("body".utf8).write(to: setup.stagingDirectory.appendingPathComponent(body))
+            await setup.index.addJob(UploadJob(
+                assetID: id, resource: .video, attempt: UUID(), bodyFileName: body, checksum: sums[.video]!,
+                allowsCellular: true))
+        }
+        let p = addAsset("p", to: setup.library, created: Self.date)
+        await queue("p", p, in: setup.index)
+        try await setup.index.save()
+        let stack = makeStack(setup, mode: .manual)
+
+        try await stack.uploader.run(
+            options: BackupRunOptions(waitsForResults: false, maxInFlight: 3, smallLocalOnly: false),
+            progress: { _ in }, shouldPause: { false })
+
+        XCTAssertTrue(stack.transport.sent.isEmpty, "Three uploads sent with cellular access fill the slots")
+    }
+
+    /// Jobs stored before `allowsCellular` existed decode as allowed on cellular.
+    func testOldUploadJobsDecodeAsAllowedOnCellular() throws {
+        let attempt = UUID()
+        let json = #"{"assetID":"a","resource":"photo","attempt":"\#(attempt.uuidString)","bodyFileName":"b","checksum":"c"}"#
+        let job = try JSONDecoder().decode(UploadJob.self, from: Data(json.utf8))
+        XCTAssertTrue(job.allowsCellular)
+        XCTAssertEqual(job.attempt, attempt)
+        let wifiOnly = UploadJob(assetID: "a", resource: .photo, attempt: attempt, bodyFileName: "b", checksum: "c",
+                                 allowsCellular: false)
+        let roundTrip = try JSONDecoder().decode(UploadJob.self, from: JSONEncoder().encode(wifiOnly))
+        XCTAssertEqual(roundTrip, wifiOnly)
     }
 
     /// Held uploads' bodies still take staging budget. When that is what stops an item, the run leaves the

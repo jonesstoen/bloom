@@ -53,8 +53,8 @@ final class LocalizationTests: XCTestCase {
             ImmichUI.tr("Background App Refresh is off for Bloom. Turn it on in Settings to back up when Bloom is closed."),
             "Bakgrunnsoppdatering er av for Bloom. Slå den på i Innstillinger for å ta sikkerhetskopi når Bloom er lukket.")
         XCTAssertEqual(
-            ImmichUI.tr("Backup stopped: the server redirected an upload to another address. Check your server setup, then open Backup again."),
-            "Sikkerhetskopiering stoppet: serveren sendte en opplasting videre til en annen adresse. Sjekk serveroppsettet og åpne Sikkerhetskopi igjen.")
+            ImmichUI.tr("Backup stopped: the server redirected an upload to another address. Check your server setup, then tap Try Again."),
+            "Sikkerhetskopiering stoppet: serveren sendte en opplasting videre til en annen adresse. Sjekk serveroppsettet og trykk Prøv igjen.")
         Localization.languageOverride = "en"
         XCTAssertEqual(ImmichUI.tr("Last backup: %@", "2 hours ago"), "Last backup: 2 hours ago")
     }

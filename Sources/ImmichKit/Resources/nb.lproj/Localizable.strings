@@ -40,4 +40,4 @@
 "Couldn't read %@: %@" = "Kunne ikke lese %@: %@";
 "Not enough free space on the iPhone." = "Ikke nok ledig plass på iPhone.";
 "Couldn't join the photo and video of this Live Photo on the server: %@" = "Kunne ikke koble sammen bildet og videoen i dette Live Photo-bildet på serveren: %@";
-"An upload was redirected to another address. Uploads are paused until the server answers at its own address again." = "En opplasting ble videresendt til en annen adresse. Opplastingene står på pause til serveren svarer på sin egen adresse igjen.";
+"An upload was redirected to another address. Uploads are paused until you tap Try Again on the Backup screen." = "En opplasting ble videresendt til en annen adresse. Opplastingene står på pause til du trykker Prøv igjen på Sikkerhetskopi-skjermen.";

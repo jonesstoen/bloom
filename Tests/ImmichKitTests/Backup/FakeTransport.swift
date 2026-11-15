@@ -121,6 +121,22 @@ final class FakeTransport: BackupTransport, @unchecked Sendable {
         }
     }
 
+    /// The attempts passed to `cancel(attempts:)`, in order.
+    private var _cancelledAttempts: [Set<UUID>] = []
+    var cancelledAttempts: [Set<UUID>] { lock.withLock { _cancelledAttempts } }
+
+    func cancel(attempts: Set<UUID>) async {
+        let tasks = lock.withLock { () -> [Task<Void, Never>] in
+            _cancelledAttempts.append(attempts)
+            return running.filter { attempts.contains($0.key) }.map(\.value)
+        }
+        for task in tasks { task.cancel() }
+        let started = Set(lock.withLock { running.keys })
+        for job in await index.jobs where attempts.contains(job.attempt) && !started.contains(job.attempt) {
+            await recorder.record(job, .failed(.cancelled))
+        }
+    }
+
     var isRedirectBlocked: Bool { lock.withLock { _blocked } }
 
     func clearRedirectBlock() {

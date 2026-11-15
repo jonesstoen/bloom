@@ -926,6 +926,46 @@ final class BackupModelTests: XCTestCase {
         await setup.model.stop()
     }
 
+    /// Turning a cellular switch off cancels exactly the uploads in flight that were sent with cellular access
+    /// and are no longer allowed on it; uploads already held for Wi-Fi are left alone.
+    func testCellularSwitchOffCancelsThoseUploads() async throws {
+        let onCellular = UploadJob(
+            assetID: "a1", resource: .photo, attempt: UUID(), bodyFileName: "\(UUID().uuidString).multipart",
+            checksum: "aa", allowsCellular: true)
+        let wifiOnly = UploadJob(
+            assetID: "a2", resource: .photo, attempt: UUID(), bodyFileName: "\(UUID().uuidString).multipart",
+            checksum: "aa", allowsCellular: false)
+        let setup = try await makeUploadModel(jobs: [onCellular, wifiOnly])
+        setup.model.settings.photosOnCellular = true
+        await setup.model.cellularCancel?.value
+        XCTAssertEqual(setup.transport.cancelledAttempts, [], "Turning a switch on cancels nothing")
+
+        setup.model.settings.photosOnCellular = false
+        await setup.model.cellularCancel?.value
+
+        XCTAssertEqual(setup.transport.cancelledAttempts, [[onCellular.attempt]])
+        let left = await setup.transport.inFlight().map(\.attempt)
+        XCTAssertEqual(left, [wifiOnly.attempt], "The cancelled job went back through the recorder")
+        await setup.model.stop()
+    }
+
+    /// Only the user lifts a redirect block: refreshing the status leaves it, Try Again clears it.
+    func testRetryAfterRedirectLiftsTheBlock() async throws {
+        let setup = try await makeUploadModel()
+        setup.transport.setRedirectBlocked(true)
+        await setup.model.refreshBackgroundStatus()
+        XCTAssertTrue(setup.model.isRedirectBlocked)
+        await setup.model.refreshBackgroundStatus()
+        XCTAssertTrue(setup.transport.isRedirectBlocked, "Not lifted without the user")
+
+        await setup.model.retryAfterRedirect()
+
+        XCTAssertFalse(setup.transport.isRedirectBlocked)
+        XCTAssertFalse(setup.model.isRedirectBlocked)
+        XCTAssertEqual(setup.transport.clearCount, 1)
+        await setup.model.stop()
+    }
+
     func testLastBackupComesFromTheLastRecordedSuccess() async throws {
         let first = makeJob("a1")
         let second = makeJob("a2")
