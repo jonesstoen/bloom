@@ -123,7 +123,8 @@ private struct BackupStatusSection: View {
             isEnabled: model.settings.isEnabled, hasSelection: !model.selection.included.isEmpty,
             counts: model.counts, checking: model.progress, isScanning: model.isScanning,
             upload: model.runner.uploadProgress, inFlight: model.inFlightCount, lastBackup: model.lastBackup,
-            isRedirectBlocked: model.isRedirectBlocked, connection: model.connectionStatus)
+            isRedirectBlocked: model.isRedirectBlocked, connection: model.connectionStatus,
+            waitingForBackground: model.isWaitingForBackgroundRun || model.runner.isWaitingForBackgroundRun)
         Section {
             BackupStatusHeader(status: status) { action in
                 switch action {
@@ -142,7 +143,7 @@ private struct BackupStatusHeader: View {
     var body: some View {
         VStack(spacing: 14) {
             BackupRing(fraction: status.fraction, symbol: status.symbol, tint: tint,
-                       isActive: status.kind == .uploading || status.kind == .checking)
+                       isActive: [.uploading, .checking, .waitingForBackground].contains(status.kind))
             VStack(spacing: 4) {
                 Text(status.title)
                     .font(.title3.weight(.semibold))
@@ -179,7 +180,7 @@ private struct BackupStatusHeader: View {
         case .upToDate: .green
         case .stopped, .problems: .orange
         case .off, .noAlbums, .notChecked: .secondary
-        case .checking, .uploading, .remaining: .accentColor
+        case .checking, .uploading, .remaining, .waitingForBackground: .accentColor
         }
     }
 }

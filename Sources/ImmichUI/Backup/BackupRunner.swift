@@ -25,6 +25,8 @@ import Observation
 final class BackupRunner {
     /// While the uploader works through the queue.
     private(set) var isUploading = false
+    /// The upload run waits for a background run to finish before it starts (see `BackupGate`).
+    private(set) var isWaitingForBackgroundRun = false
     /// The upload run's latest progress; nil when nothing uploads.
     private(set) var uploadProgress: UploadProgress?
     /// The network watcher's latest path has no connection. False while the network isn't watched.
@@ -462,7 +464,9 @@ final class BackupRunner {
         var succeeded = true
         // On an engine, one scan or upload run at a time (see `BackupGate`); cancelled while waiting: stopped.
         let gate = model?.engine?.gate
+        if await gate?.isHeldByBackgroundRun == true, current?.id == id { isWaitingForBackgroundRun = true }
         let entered = await gate?.acquire() ?? true
+        isWaitingForBackgroundRun = false
         do {
             guard entered else { throw CancellationError() }
             try await uploader.run(

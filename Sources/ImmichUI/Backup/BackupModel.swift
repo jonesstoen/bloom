@@ -107,6 +107,8 @@ final class BackupModel {
     private(set) var counts = BackupCounts()
     /// Non-nil while a scan runs.
     private(set) var progress: Progress?
+    /// The scan waits for a background run to finish before it starts (see `BackupGate`).
+    private(set) var isWaitingForBackgroundRun = false
     /// The photo the running scan reads now, at most four changes a second; nil when no scan has read
     /// anything for about a second (it may still be asking the server about photos it read before).
     private(set) var checkingItem: CheckingItem?
@@ -449,7 +451,10 @@ final class BackupModel {
             var result: BackupCounts?
             var failure: Error?
             // On an engine, one scan or upload run at a time: a background run waits (or gives up) meanwhile.
-            guard await engine?.gate.acquire() ?? true else {
+            if await engine?.gate.isHeldByBackgroundRun == true { self?.isWaitingForBackgroundRun = true }
+            let entered = await engine?.gate.acquire() ?? true
+            self?.isWaitingForBackgroundRun = false
+            guard entered else {
                 await self?.finishScan(result: nil, failure: CancellationError())
                 return false
             }

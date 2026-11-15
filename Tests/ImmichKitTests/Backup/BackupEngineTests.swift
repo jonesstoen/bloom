@@ -298,6 +298,47 @@ final class BackupEngineTests: XCTestCase {
         XCTAssertEqual(enqueuedAssets(session), ["a"])
     }
 
+    /// The gate tells whether a background run holds it, also when it hands over to a waiter.
+    func testGateKnowsWhenABackgroundRunHoldsIt() async {
+        let gate = BackupGate()
+        var held = await gate.isHeldByBackgroundRun
+        XCTAssertFalse(held)
+        _ = await gate.acquire(background: true)
+        held = await gate.isHeldByBackgroundRun
+        XCTAssertTrue(held)
+        let screen = Task { await gate.acquire() }
+        try? await Task.sleep(for: .milliseconds(50))
+        await gate.release()
+        let entered = await screen.value
+        XCTAssertTrue(entered)
+        held = await gate.isHeldByBackgroundRun
+        XCTAssertFalse(held, "The screen's turn now")
+        await gate.release()
+        held = await gate.isHeldByBackgroundRun
+        XCTAssertFalse(held)
+    }
+
+    /// While a background run holds the turn, the screen's scan says it waits, and stops saying so once it runs.
+    @MainActor func testScanWaitingBehindABackgroundRunSaysSo() async throws {
+        let directory = temporaryDirectory()
+        let library = FakePhotoLibrary()
+        _ = photo("a", in: library)
+        library.addAlbum(id: "A", title: "Recents", assetIDs: ["a"])
+        try await seedIndex(in: directory, entries: [:])
+        let engine = makeEngine(
+            directory: directory, library: library, service: MockImmichService(), session: EngineFakeSession())
+        let model = await makeModel(engine: engine)
+        _ = await engine.gate.acquire(background: true)
+
+        let scan = Task { await model.scan() }
+        for _ in 0..<200 where !model.isWaitingForBackgroundRun { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(model.isWaitingForBackgroundRun)
+
+        await engine.gate.release()
+        _ = await scan.value
+        XCTAssertFalse(model.isWaitingForBackgroundRun)
+    }
+
     /// Try Again takes the engine's turn like a scan or a run: it waits while a background run holds it.
     func testTryAgainWaitsForTheEnginesTurn() async throws {
         let directory = temporaryDirectory()

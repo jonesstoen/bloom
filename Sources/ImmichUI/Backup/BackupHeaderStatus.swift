@@ -4,7 +4,9 @@ import ImmichKit
 /// What the top of the Backup screen says: one state, a title, a detail line, how full the ring is and
 /// the one button it offers. Pure so the priority order is tested without a view.
 struct BackupHeaderStatus: Equatable {
-    enum Kind: Equatable { case noAlbums, stopped, checking, off, uploading, upToDate, notChecked, remaining, problems }
+    enum Kind: Equatable {
+        case noAlbums, stopped, waitingForBackground, checking, off, uploading, upToDate, notChecked, remaining, problems
+    }
     enum Action: Equatable { case chooseAlbums, turnOn }
 
     var kind: Kind
@@ -17,7 +19,8 @@ struct BackupHeaderStatus: Equatable {
     init(
         isEnabled: Bool, hasSelection: Bool, counts: BackupCounts, checking: BackupModel.Progress?,
         isScanning: Bool, upload: UploadProgress?, inFlight: Int, lastBackup: Date?,
-        isRedirectBlocked: Bool, connection: BackupModel.ConnectionStatus?, now: Date = .now
+        isRedirectBlocked: Bool, connection: BackupModel.ConnectionStatus?, waitingForBackground: Bool = false,
+        now: Date = .now
     ) {
         // Deleted on Server is a choice, not something still to do: leave it out of "x of y".
         let base = counts.backedUp + counts.pending + counts.failed
@@ -36,6 +39,11 @@ struct BackupHeaderStatus: Equatable {
             kind = .stopped
             title = tr("Backup Stopped")
             detail = backedUpLine
+        } else if waitingForBackground {
+            // The screen's scan or upload run waits its turn: say so instead of "checking" without progress.
+            kind = .waitingForBackground
+            title = tr("Backing Up in the Background")
+            detail = tr("Bloom continues here when that is done.")
         } else if checking != nil || isScanning {
             kind = .checking
             if let checking {
@@ -92,6 +100,7 @@ struct BackupHeaderStatus: Equatable {
         switch kind {
         case .noAlbums: "photo.stack"
         case .stopped, .problems: "exclamationmark"
+        case .waitingForBackground: "hourglass"
         case .checking: "magnifyingglass"
         case .off: "pause.fill"
         case .uploading, .remaining: "arrow.up"

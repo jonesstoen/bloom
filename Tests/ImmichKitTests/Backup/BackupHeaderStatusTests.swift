@@ -11,12 +11,13 @@ final class BackupHeaderStatusTests: XCTestCase {
         enabled: Bool = true, hasSelection: Bool = true, counts: BackupCounts = BackupCounts(),
         checking: BackupModel.Progress? = nil, isScanning: Bool = false, upload: UploadProgress? = nil,
         inFlight: Int = 0, lastBackup: Date? = nil, redirect: Bool = false,
-        connection: BackupModel.ConnectionStatus? = nil
+        connection: BackupModel.ConnectionStatus? = nil, waiting: Bool = false
     ) -> BackupHeaderStatus {
         BackupHeaderStatus(
             isEnabled: enabled, hasSelection: hasSelection, counts: counts, checking: checking,
             isScanning: isScanning, upload: upload, inFlight: inFlight, lastBackup: lastBackup,
-            isRedirectBlocked: redirect, connection: connection, now: Date(timeIntervalSince1970: 1_000_000))
+            isRedirectBlocked: redirect, connection: connection, waitingForBackground: waiting,
+            now: Date(timeIntervalSince1970: 1_000_000))
     }
 
     private let partial = BackupCounts(total: 10, backedUp: 6, pending: 4)
@@ -32,6 +33,13 @@ final class BackupHeaderStatusTests: XCTestCase {
         let s = status(counts: partial, upload: UploadProgress(done: 1, total: 4, currentFilename: nil), redirect: true)
         XCTAssertEqual(s.kind, .stopped)
         XCTAssertEqual(s.title, "Backup Stopped")
+    }
+
+    func testWaitingBehindABackgroundRunSaysSoInsteadOfChecking() {
+        let s = status(counts: partial, isScanning: true, waiting: true)
+        XCTAssertEqual(s.kind, .waitingForBackground)
+        XCTAssertEqual(s.title, "Backing Up in the Background")
+        XCTAssertEqual(status(counts: partial, isScanning: true, redirect: true, waiting: true).kind, .stopped)
     }
 
     func testCheckingShowsCheckProgress() {

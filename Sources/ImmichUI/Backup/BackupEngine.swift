@@ -143,7 +143,7 @@ public final class BackupEngine: Sendable {
             guard !state.closed else { return nil }
             let task = Task { [self] in
                 // The app holding it does the work itself; a refresh doesn't wait past its own deadline.
-                guard await gate.acquire(until: deadline) else { return false }
+                guard await gate.acquire(until: deadline, background: true) else { return false }
                 let finished: Bool
                 do {
                     try await work(self)
@@ -452,15 +452,21 @@ final class BackupEngineRegistry: @unchecked Sendable {
 /// that is cancelled (or whose deadline passes) leaves the queue without getting it. No busy waiting.
 actor BackupGate {
     private var held = false
-    private var waiters: [(id: UUID, continuation: CheckedContinuation<Bool, Never>)] = []
+    /// Whether the holder is a background run (`runProcessing`/`runRefresh`), not the Backup screen.
+    private var heldByBackground = false
+    private var waiters: [(id: UUID, background: Bool, continuation: CheckedContinuation<Bool, Never>)] = []
+
+    /// A background run has the turn: the screen's scan or upload run waits for it (and can say so).
+    var isHeldByBackgroundRun: Bool { held && heldByBackground }
     /// Waiters given up on before they queued (the cancellation handler can run first).
     private var abandoned: Set<UUID> = []
 
     /// Waits for the gate. Returns false, without it, when the task is cancelled or `deadline` passes first.
-    /// Each `true` must be paired with one `release()`.
-    func acquire(until deadline: ContinuousClock.Instant? = nil) async -> Bool {
+    /// Each `true` must be paired with one `release()`. `background` marks a background run's turn.
+    func acquire(until deadline: ContinuousClock.Instant? = nil, background: Bool = false) async -> Bool {
         if !held {
             held = true
+            heldByBackground = background
             return true
         }
         let id = UUID()
@@ -476,7 +482,7 @@ actor BackupGate {
                 if abandoned.remove(id) != nil || Task.isCancelled {
                     continuation.resume(returning: false)
                 } else {
-                    waiters.append((id, continuation))
+                    waiters.append((id, background, continuation))
                 }
             }
         } onCancel: {
@@ -488,8 +494,11 @@ actor BackupGate {
     func release() {
         if waiters.isEmpty {
             held = false
+            heldByBackground = false
         } else {
-            waiters.removeFirst().continuation.resume(returning: true)
+            let next = waiters.removeFirst()
+            heldByBackground = next.background
+            next.continuation.resume(returning: true)
         }
     }
 
