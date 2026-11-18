@@ -13,13 +13,22 @@ public struct CollectionsView: View {
     private let accessory: AnyView?
     private let onRestore: (@MainActor ([Asset]) async throws -> RestoreResult)?
     private let refreshRevision: Int
+    private let hiddenLock: HiddenAlbumLock
+    private let onUnhide: @MainActor () -> Void
+    @AppStorage(HiddenAlbumLock.requiresAuthenticationKey) private var hiddenRequiresAuthentication = true
 
+    /// - Parameters:
+    ///   - hiddenLock: the session's lock for Hidden; pass the same one while the session lasts.
+    ///   - onUnhide: called after photos were unhidden, so the main Library can reload.
     public init(service: any ImmichService, loader: ImageLoader? = nil, accessory: AnyView? = nil,
-                onRestore: (@MainActor ([Asset]) async throws -> RestoreResult)? = nil, refreshRevision: Int = 0) {
+                onRestore: (@MainActor ([Asset]) async throws -> RestoreResult)? = nil, refreshRevision: Int = 0,
+                hiddenLock: HiddenAlbumLock? = nil, onUnhide: @escaping @MainActor () -> Void = {}) {
         _model = State(initialValue: CollectionsModel(service: service, loader: loader))
         self.accessory = accessory
         self.onRestore = onRestore
         self.refreshRevision = refreshRevision
+        self.hiddenLock = hiddenLock ?? HiddenAlbumLock()
+        self.onUnhide = onUnhide
     }
 
     public var body: some View {
@@ -235,7 +244,7 @@ public struct CollectionsView: View {
         }
     }
 
-    /// Other collections backed by the timeline: recently added, archive and trash.
+    /// Other collections backed by the timeline: recently added, hidden (Immich's archive) and trash.
     private var otherSection: some View {
         CollectionListSection(title: tr("Other"), fold: fold(.other)) {
             NavigationLink {
@@ -244,9 +253,18 @@ public struct CollectionsView: View {
                                        service: model.service, loader: model.loader)
             } label: { CollectionListRow(title: tr("Recently Added"), systemImage: "clock.arrow.circlepath") }
             NavigationLink {
-                TimelineCollectionView(title: tr("Archive"), options: TimelineOptions(visibility: .archive, newestFirst: false),
-                                       service: model.service, loader: model.loader)
-            } label: { CollectionListRow(title: tr("Archive"), systemImage: "archivebox") }
+                HiddenCollectionView(lock: hiddenLock, service: model.service, loader: model.loader, onUnhide: onUnhide)
+            } label: {
+                CollectionListRow(title: tr("Hidden"), systemImage: "eye.slash")
+                    .overlay(alignment: .trailing) {
+                        if hiddenLock.showsLock(requiresAuthentication: hiddenRequiresAuthentication) {
+                            Image(systemName: "lock.fill")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .padding(.trailing, 14)
+                        }
+                    }
+            }
             NavigationLink {
                 TimelineCollectionView(title: tr("Recently Deleted"),
                                        options: TimelineOptions(isTrashed: true, visibility: nil, newestFirst: false),

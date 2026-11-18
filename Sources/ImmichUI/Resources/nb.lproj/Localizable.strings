@@ -38,7 +38,6 @@
 "%lld photos" = "%lld bilder";
 "Albums" = "Album";
 "Albums you create in Immich appear here." = "Album du lager i Immich, vises her.";
-"Archive" = "Arkiv";
 "Can't Load" = "Kan ikke laste inn";
 "Can't Load Albums" = "Kan ikke laste inn album";
 "Can't Load Map" = "Kan ikke laste inn kartet";
@@ -375,3 +374,9 @@
 "Couldn't unhide this item. Please try again." = "Kunne ikke vise dette objektet igjen. Prøv igjen.";
 "Couldn't hide %@ items. Please try again." = "Kunne ikke skjule %@ objekter. Prøv igjen.";
 "Couldn't unhide %@ items. Please try again." = "Kunne ikke vise %@ objekter igjen. Prøv igjen.";
+"Hidden" = "Skjult";
+"Use Face ID for Hidden" = "Bruk Face ID for Skjult";
+"In Immich on the web, these photos are in Archive." = "I Immich på nettet ligger disse bildene i Arkiv.";
+"Unlock Hidden" = "Lås opp Skjult";
+"Unlock your hidden photos." = "Lås opp de skjulte bildene dine.";
+"Photos you hide appear here." = "Bilder du skjuler, vises her.";

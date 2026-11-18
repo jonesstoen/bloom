@@ -65,6 +65,9 @@ private struct ImmichTabs: View {
     let isSigningOut: Bool
     let signOut: () -> Void
     @AppStorage(LibraryChanges.storageKey) private var allowsChanges = false
+    @AppStorage(HiddenAlbumLock.requiresAuthenticationKey) private var hiddenRequiresAuthentication = true
+    /// Locked until opened; lives as long as this session (the tabs are rebuilt per session).
+    @State private var hiddenLock = HiddenAlbumLock()
     @Environment(\.scenePhase) private var scenePhase
     @State private var selection: AppTab = Self.initialTab
     /// Bumped when the Library tab is tapped while it is already open.
@@ -113,7 +116,9 @@ private struct ImmichTabs: View {
                 NavigationStack {
                     CollectionsView(service: session.service, loader: session.loader, accessory: AnyView(accountMenu),
                                     onRestore: { assets in try await session.library.restoreToLibrary(assets) },
-                                    refreshRevision: session.library.restoreRevision)
+                                    refreshRevision: session.library.restoreRevision,
+                                    hiddenLock: hiddenLock,
+                                    onUnhide: { Task { await session.library.load() } })
                 }
                 // These hidden stacks own cached searches/collections. Recreate them after a
                 // library mutation so old snapshots cannot offer an item moved to trash.
@@ -160,9 +165,13 @@ private struct ImmichTabs: View {
         Menu {
             Toggle(tr("Allow Changes"), systemImage: "pencil", isOn: $allowsChanges)
                 .disabled(session.library.isMutating)
+            Toggle(tr("Use Face ID for Hidden"), systemImage: "faceid", isOn: $hiddenRequiresAuthentication)
             Button(tr("Backup"), systemImage: "arrow.up.circle") { showsBackup = true }
             Button(tr("About Bloom"), systemImage: "info.circle") { showsAbout = true }
-            Button(tr("Sign Out"), systemImage: "rectangle.portrait.and.arrow.right", role: .destructive, action: signOut)
+            Button(tr("Sign Out"), systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
+                hiddenLock.lock()
+                signOut()
+            }
                 .disabled(isSigningOut || session.library.isMutating)
         } label: {
             Label(tr("Account"), systemImage: "person.crop.circle")

@@ -39,6 +39,8 @@ public struct LibraryGridView: View {
     private let allowsSelection: Bool
     private let onRestore: (@MainActor ([Asset]) async throws -> RestoreResult)?
     private let onSelect: (Asset) -> Void
+    /// What an empty grid says; nil uses the Library's text.
+    private let emptyMessage: String?
 
     public enum HeaderStyle: Sendable {
         /// Photos' library tab: a large title floating over the photos, with glass buttons.
@@ -55,10 +57,13 @@ public struct LibraryGridView: View {
     ///   - scrollToNewestTrigger: changing it scrolls to the newest photos (the tab was tapped again).
     ///   - chrome: state shared with the tab bar, so the Years / Months / All switcher can sit in it.
     ///   - allowsSelection: enables selection actions in a pushed grid, such as an album.
+    ///   - emptyMessage: what an empty grid says, instead of the Library's text.
     public init(model: LibraryGridModel, title: String = tr("Library"), headerStyle: HeaderStyle = .navigationBar,
                 accessory: AnyView? = nil, chrome: LibraryChrome? = nil, scrollToNewestTrigger: Int = 0,
                 allowsTrash: Bool = false, allowsRestore: Bool = false, allowsSelection: Bool = false,
-                onRestore: (@MainActor ([Asset]) async throws -> RestoreResult)? = nil, onSelect: @escaping (Asset) -> Void = { _ in }) {
+                onRestore: (@MainActor ([Asset]) async throws -> RestoreResult)? = nil, emptyMessage: String? = nil,
+                onSelect: @escaping (Asset) -> Void = { _ in }) {
+        self.emptyMessage = emptyMessage
         _model = State(initialValue: model)
         _selection = State(initialValue: LibrarySelectionModel(library: model, onRestore: onRestore))
         self.allowsTrash = allowsTrash
@@ -316,7 +321,7 @@ public struct LibraryGridView: View {
             ContentUnavailableView(
                 tr("No Photos or Videos"),
                 systemImage: "photo.on.rectangle",
-                description: Text(tr("Photos and videos you upload to Immich appear here."))
+                description: Text(emptyMessage ?? tr("Photos and videos you upload to Immich appear here."))
             )
         case .loaded:
             if usesLargeTitle {
