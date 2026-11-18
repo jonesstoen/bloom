@@ -27,6 +27,13 @@ final class BackupModel {
         var date: Date?
     }
 
+    /// An item the owner told Bloom to stop trying (see `BackupIndex.skip`).
+    struct SkippedItem: Identifiable, Equatable {
+        let id: String
+        /// When the photo was taken, if the photo library still has it.
+        var date: Date?
+    }
+
     /// An item the server had once and no longer has (see `BackupState.deletedOnServer`).
     struct DeletedItem: Identifiable, Equatable {
         let id: String
@@ -117,6 +124,9 @@ final class BackupModel {
     private(set) var albums: [DeviceAlbum] = []
     private(set) var selection = BackupSelection()
     private(set) var failedItems: [FailedItem] = []
+    /// The first `failedItemLimit` skipped items that are still in the photo library, newest first.
+    /// `counts.skipped` has the total.
+    private(set) var skippedItems: [SkippedItem] = []
     /// The first `deletedItemLimit` items deleted on the server, newest first. `counts.deletedOnServer` has the total.
     private(set) var deletedItems: [DeletedItem] = []
     /// The `remainingItemLimit` items still to back up that were edited last, shown newest first (by the date
@@ -376,6 +386,7 @@ final class BackupModel {
             albums = []
             counts = BackupCounts()
             failedItems = []
+            skippedItems = []
             deletedItems = []
             remainingBase = []
             remainingItems = []
@@ -607,7 +618,7 @@ final class BackupModel {
 
     private func forgetThumbnailIfUnlisted(_ id: String) {
         guard !remainingBase.contains(where: { $0.id == id }), !deletedItems.contains(where: { $0.id == id }),
-              !failedItems.contains(where: { $0.id == id }) else { return }
+              !failedItems.contains(where: { $0.id == id }), !skippedItems.contains(where: { $0.id == id }) else { return }
         thumbnailCache[id] = nil
         thumbnailMisses.remove(id)
     }
@@ -629,7 +640,7 @@ final class BackupModel {
             completedScans += 1
             cannotReachServer = false
             // Nothing left to list: no pass needed.
-            if result.pending + result.failed + result.deletedOnServer == 0 { clearLists() } else { await refreshLists() }
+            if result.pending + result.failed + result.deletedOnServer + result.skipped == 0 { clearLists() } else { await refreshLists() }
         } else { await refreshCounts() }
         scanTask = nil
         isScanning = false
@@ -834,6 +845,7 @@ final class BackupModel {
         listsRevision += 1
         countsWanted = false
         if !failedItems.isEmpty { failedItems = [] }
+        if !skippedItems.isEmpty { skippedItems = [] }
         if !deletedItems.isEmpty { deletedItems = [] }
         if !remainingBase.isEmpty { remainingBase = [] }
         if remainingTotal != 0 { remainingTotal = 0 }
@@ -878,6 +890,19 @@ final class BackupModel {
         }
         if failedItems != shownFailed { failedItems = shownFailed }
 
+        // The newest edits first, so the limit keeps those; the order shown is by the date taken.
+        let skipped = Array(survey.skipped
+            .sorted { Self.isNewerEdit(($0.id, $0.modified), ($1.id, $1.modified)) }
+            .prefix(Self.failedItemLimit))
+        let knownSkipped = Dictionary(skippedItems.map { ($0.id, $0.date) }, uniquingKeysWith: { first, _ in first })
+        let createdSkipped = Dictionary(
+            await source.assets(skipped.map(\.id).filter { knownSkipped[$0] == nil }).map { ($0.id, $0.creationDate) },
+            uniquingKeysWith: { first, _ in first })
+        guard revision == listsRevision else { return }
+        let skippedRows = skipped.map { SkippedItem(id: $0.id, date: knownSkipped[$0.id] ?? createdSkipped[$0.id]) }
+            .sorted { Self.isNewer(($0.id, $0.date), ($1.id, $1.date)) }
+        if skippedItems != skippedRows { skippedItems = skippedRows }
+
         let known = Dictionary(deletedItems.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let knownRemaining = Dictionary(remainingBase.map { ($0.id, $0.date) }, uniquingKeysWith: { first, _ in first })
         let created = Dictionary(
@@ -904,6 +929,7 @@ final class BackupModel {
         publishRemaining()
         // Thumbnails of rows that are gone aren't needed any more.
         let shown = Set(items.map(\.id)).union(bases.map(\.id)).union(shownFailed.map(\.id))
+            .union(skippedRows.map(\.id))
         thumbnailCache = thumbnailCache.filter { shown.contains($0.key) }
         thumbnailMisses.formIntersection(shown)
     }
@@ -912,7 +938,7 @@ final class BackupModel {
     /// changed since the entry was recorded or is gone (`counts()` treats those as not checked yet).
     private func currentEntries(where isIncluded: (BackupEntry) -> Bool) async -> [(id: String, entry: BackupEntry)] {
         let index = await ensureIndex()
-        let ids = await index.selection().assetIDs(in: source)
+        let ids = await index.selectedAssetIDs(in: source).ids
         let candidates = await index.entries(where: isIncluded, in: ids, limit: .max).sorted { $0.0 < $1.0 }
         var result: [(id: String, entry: BackupEntry)] = []
         for start in stride(from: 0, to: candidates.count, by: 500) {
@@ -939,17 +965,29 @@ final class BackupModel {
         var failed: [(id: String, entry: BackupEntry)] = []
         /// Current deleted-on-server entries, in ID order.
         var deleted: [(id: String, entry: BackupEntry)] = []
+        /// Skipped items still in the library, with their modification dates, in ID order.
+        var skipped: [(id: String, modified: Date)] = []
     }
 
     /// One pass over the selected photos: their modification dates and index entries, read in chunks of 500.
     /// Counts exactly as `BackupScanner.counts()` does: an entry recorded for the photo as it is now counts in
     /// its state; no entry or a stale one (changed since it was recorded) counts as not checked yet; a photo
-    /// gone from the library isn't counted. The remaining items are the newest edits first, cut at
+    /// gone from the library isn't counted; skipped items are counted apart (`BackupCounts.skipped`) and
+    /// never looked up in the index, again only the ones still in the library. The remaining items are the newest edits first, cut at
     /// `remainingItemLimit` (the items in `keeping`, those in flight, are never cut: the others make room).
     private func survey(keeping: Set<String>) async -> Survey {
         let index = await ensureIndex()
-        let ids = await index.selection().assetIDs(in: source).sorted()
+        let (selected, skippedIDs) = await index.selectedAssetIDs(in: source)
+        let ids = selected.sorted()
         var survey = Survey()
+        let skippedSorted = skippedIDs.sorted()
+        for start in stride(from: 0, to: skippedSorted.count, by: 500) {
+            let dates = await source.modificationDates(Array(skippedSorted[start..<min(start + 500, skippedSorted.count)]))
+            for id in skippedSorted[start..<min(start + 500, skippedSorted.count)] {
+                if let modified = dates[id] { survey.skipped.append((id, modified)) }
+            }
+        }
+        survey.counts.addSkipped(survey.skipped.count)
         var found: [(id: String, modified: Date, item: PendingItem)] = []
         for start in stride(from: 0, to: ids.count, by: 500) {
             let chunk = Array(ids[start..<min(start + 500, ids.count)])
@@ -1150,6 +1188,29 @@ final class BackupModel {
         await runner.retryFailed(ids)
     }
 
+    // MARK: - Skip
+
+    /// Stops Bloom from reading and uploading `ids` until `includeAgain`. The entries stay as they are.
+    func skip(_ ids: [String]) async {
+        await changeSkipped(ids) { index, ids in await index.skip(ids) }
+    }
+
+    /// Takes `ids` off the skipped list: the next check treats them as any selected item (one with a
+    /// failed entry shows under Problems again).
+    func includeAgain(_ ids: [String]) async {
+        await changeSkipped(ids) { index, ids in await index.includeAgain(ids) }
+    }
+
+    private func changeSkipped(_ ids: [String], _ change: (BackupIndex, [String]) async -> Void) async {
+        guard !ids.isEmpty else { return }
+        workingCount += 1
+        defer { workingCount -= 1 }
+        let index = await ensureIndex()
+        await change(index, ids)
+        do { try await index.save() } catch is CancellationError {} catch { report(error) }
+        await refreshCounts()
+    }
+
     /// Try Again for every failed item, not just the ones on screen.
     func retryAll() async {
         let ids = await currentEntries(where: Self.isFailed).map(\.id)
@@ -1190,9 +1251,11 @@ extension BackupModel {
     /// For previews: records items as deleted on the server and as failed in the index, then loads, so the
     /// Deleted on Server and Problems rows and lists have something to show. The first deleted item is in
     /// the server's trash, the rest are gone for good.
+    /// The first `skipped` items that failed before are skipped.
     /// The first `uploading` remaining items are shown in flight, one with progress and the rest without yet.
     func loadPreview(
-        deletedOnServer: Int = 0, problems: Int = 0, remaining: Int = 0, uploading: Int = 0, checking: Bool = false
+        deletedOnServer: Int = 0, problems: Int = 0, skipped: Int = 0, remaining: Int = 0, uploading: Int = 0,
+        checking: Bool = false
     ) async {
         let index = await ensureIndex()
         let date = PreviewPhotoLibrary.date
@@ -1224,6 +1287,13 @@ extension BackupModel {
                 BackupEntry(modificationDate: date, checksums: [:], state: .failed(reason: reasons[number % reasons.count])),
                 for: id)
         }
+        for number in 0..<skipped {
+            let id = "preview-\(20 + number)"
+            await index.set(
+                BackupEntry(modificationDate: date, checksums: [:], state: .failed(reason: reasons[number % reasons.count])),
+                for: id)
+        }
+        await index.skip((0..<skipped).map { "preview-\(20 + $0)" })
         if uploading > 0 {
             let jobs = (0..<min(uploading, remaining)).map { number in
                 UploadJob(

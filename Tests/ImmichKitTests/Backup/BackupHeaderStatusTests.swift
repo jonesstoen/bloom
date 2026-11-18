@@ -82,6 +82,18 @@ final class BackupHeaderStatusTests: XCTestCase {
         XCTAssertEqual(s.fraction, 1)
     }
 
+    func testSkippedItemsDoNotKeepTheHeaderFromSayingEverythingIsBackedUp() {
+        let counts = BackupCounts(total: 10, backedUp: 9, skipped: 1)
+        let s = status(counts: counts)
+        XCTAssertEqual(s.kind, .upToDate)
+        XCTAssertEqual(s.title, "Everything Is Backed Up")
+        XCTAssertEqual(s.fraction, 1)
+        let onlySkipped = status(counts: BackupCounts(total: 2, skipped: 2))
+        XCTAssertEqual(onlySkipped.kind, .upToDate)
+        let partial = status(counts: BackupCounts(total: 11, backedUp: 6, pending: 4, skipped: 1))
+        XCTAssertEqual(partial.title, "6 of 10 backed up", "Skipped items stay out of x of y")
+    }
+
     func testNeverChecked() {
         XCTAssertEqual(status().kind, .notChecked)
     }

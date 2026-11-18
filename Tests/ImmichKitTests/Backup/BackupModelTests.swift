@@ -862,6 +862,100 @@ final class BackupModelTests: XCTestCase {
         await model.stop()
     }
 
+    // MARK: Skip
+
+    func testSkipMovesFailedItemToSkipped() async throws {
+        let library = makeLibrary(count: 2)
+        let directory = try await seededDirectory(["a1": .failed(reason: "x"), "a2": .backedUp(serverAssetID: "srv-a2")])
+        let model = makeModel(library, directory: directory)
+        await model.load()
+        XCTAssertEqual(model.failedItems.map(\.id), ["a1"])
+
+        await model.skip(["a1"])
+
+        XCTAssertTrue(model.failedItems.isEmpty)
+        XCTAssertEqual(model.skippedItems.map(\.id), ["a1"])
+        XCTAssertEqual(model.skippedItems.first?.date, Self.date)
+        XCTAssertEqual(model.counts.failed, 0)
+        XCTAssertEqual(model.counts.skipped, 1)
+        XCTAssertEqual(model.counts.total, 2)
+        let saved = BackupIndex(directory: directory)
+        let skipped = await saved.skippedIDs()
+        XCTAssertEqual(skipped, ["a1"])
+        let entry = await saved.entry(for: "a1")
+        XCTAssertEqual(entry?.state, .failed(reason: "x"), "Skipping leaves the entry as it was")
+        await model.stop()
+    }
+
+    func testIncludeAgainRestoresProblem() async throws {
+        let library = makeLibrary(count: 2)
+        let directory = try await seededDirectory(["a1": .failed(reason: "x"), "a2": .backedUp(serverAssetID: "srv-a2")])
+        let model = makeModel(library, directory: directory)
+        await model.load()
+        await model.skip(["a1"])
+
+        await model.includeAgain(["a1"])
+
+        XCTAssertEqual(model.failedItems.map(\.id), ["a1"])
+        XCTAssertTrue(model.skippedItems.isEmpty)
+        XCTAssertEqual(model.counts.skipped, 0)
+        XCTAssertEqual(model.counts.failed, 1)
+        let skipped = await BackupIndex(directory: directory).skippedIDs()
+        XCTAssertTrue(skipped.isEmpty)
+        await model.stop()
+    }
+
+    func testSkippedOnlyMeansEverythingBackedUp() async throws {
+        let library = makeLibrary(count: 2)
+        let directory = try await seededDirectory(["a1": .failed(reason: "x"), "a2": .backedUp(serverAssetID: "srv-a2")])
+        let model = makeModel(library, directory: directory)
+        await model.load()
+        await model.skip(["a1"])
+
+        let status = BackupHeaderStatus(
+            isEnabled: true, hasSelection: true, counts: model.counts, checking: nil, isScanning: false,
+            upload: nil, inFlight: 0, lastBackup: nil, isRedirectBlocked: false, connection: nil)
+        XCTAssertEqual(status.kind, .upToDate)
+        XCTAssertEqual(status.title, "Everything Is Backed Up")
+        await model.stop()
+    }
+
+    func testSkippedItemsAreListedAfterAScanWithNothingElseLeft() async throws {
+        let library = makeLibrary(count: 1)
+        let directory = try await seededDirectory(["a1": .failed(reason: "x")])
+        let index = BackupIndex(directory: directory)
+        await index.skip(["a1"])
+        try await index.save()
+        let model = makeModel(library, directory: directory)
+        await model.load()
+        XCTAssertEqual(model.skippedItems.map(\.id), ["a1"])
+
+        let completed = await model.scan()
+        await model.settle()
+
+        XCTAssertTrue(completed)
+        XCTAssertEqual(model.counts.skipped, 1)
+        XCTAssertEqual(model.skippedItems.map(\.id), ["a1"], "A clean scan must not hide the skipped list")
+        await model.stop()
+    }
+
+    func testSkippedItemGoneFromThePhotoLibraryIsNotCounted() async throws {
+        let library = makeLibrary(count: 2)
+        let directory = try await seededDirectory(["a1": .failed(reason: "x"), "a2": .backedUp(serverAssetID: "srv-a2")])
+        let index = BackupIndex(directory: directory)
+        // "removed" is in an album but no longer in the library, like a photo deleted from Photos.
+        library.addAlbum(id: "gone", title: "Gone", assetIDs: ["removed"])
+        await index.setSelection(BackupSelection(included: ["recents", "gone"]))
+        await index.skip(["a1", "removed"])
+        try await index.save()
+        let model = makeModel(library, directory: directory)
+        await model.load()
+
+        XCTAssertEqual(model.counts.skipped, 1)
+        XCTAssertEqual(model.skippedItems.map(\.id), ["a1"])
+        await model.stop()
+    }
+
     func testTurningOnWithoutAlbumsAsksForAlbums() async {
         let model = makeModel(makeLibrary())
         await model.load()

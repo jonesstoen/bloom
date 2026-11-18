@@ -319,7 +319,15 @@ private struct BackupCountsSection: View {
                                        value: model.counts.deletedOnServer)
                     }
                 }
-                // So that Total always equals On Server + Remaining + Deleted on Server + Problems.
+                if model.counts.skipped > 0 {
+                    NavigationLink {
+                        BackupSkippedList(model: model)
+                    } label: {
+                        BackupCountRow(title: tr("Skipped"), symbol: "minus.circle.fill", tint: .gray,
+                                       value: model.counts.skipped)
+                    }
+                }
+                // So that Total always equals On Server + Remaining + Deleted on Server + Skipped + Problems.
                 if model.counts.failed > 0 {
                     BackupCountRow(title: tr("Problems"), symbol: "exclamationmark.circle.fill", tint: .orange,
                                    value: model.counts.failed)
@@ -442,6 +450,12 @@ private struct BackupFailedItemsSection: View {
                             .controlSize(.small)
                             .disabled(model.isWorking)
                     }
+                    .contextMenu {
+                        problemActions(for: item)
+                    }
+                    .swipeActions(edge: .trailing) {
+                        problemActions(for: item)
+                    }
                 }
                 Button(tr("Try All Again")) { Task { await model.retryAll() } }
                     .disabled(model.isWorking)
@@ -453,6 +467,23 @@ private struct BackupFailedItemsSection: View {
                 }
             }
         }
+    }
+}
+
+extension BackupFailedItemsSection {
+    /// Try Again and Skip for one problem row, as swipe actions and as a context menu.
+    @ViewBuilder
+    fileprivate func problemActions(for item: BackupModel.FailedItem) -> some View {
+        Button { Task { await model.retry([item.id]) } } label: {
+            Label(tr("Try Again"), systemImage: "arrow.clockwise")
+        }
+        .tint(.blue)
+        .disabled(model.isWorking)
+        Button { Task { await model.skip([item.id]) } } label: {
+            Label(tr("Skip"), systemImage: "arrow.uturn.forward")
+        }
+        .tint(.gray)
+        .disabled(model.isWorking)
     }
 }
 
@@ -497,6 +528,12 @@ private func previewStatus(
     let model = BackupModel.preview(selected: ["recents"])
     List { BackupFailedItemsSection(model: model) }
         .task { await model.loadPreview(problems: 2) }
+}
+
+#Preview("Backup skipped") {
+    let model = BackupModel.preview(selected: ["recents"])
+    List { BackupCountsSection(model: model) }
+        .task { await model.loadPreview(problems: 1, skipped: 2) }
 }
 
 #Preview("Backup notices") {

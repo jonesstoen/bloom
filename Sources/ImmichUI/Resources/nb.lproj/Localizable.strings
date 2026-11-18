@@ -360,3 +360,8 @@
 "Failed %lld times · %@" = "Mislyktes %1$lld ganger · %2$@";
 "Trying again %@ at %@" = "Prøver igjen %1$@ kl. %2$@";
 "No connection to the server." = "Ingen forbindelse med serveren.";
+"Skip" = "Hopp over";
+"Skipped" = "Hoppet over";
+"Include Again" = "Ta med igjen";
+"Nothing Skipped" = "Ingenting hoppet over";
+"Bloom doesn't read or upload these photos. Include one again to back it up." = "Bloom leser ikke og laster ikke opp disse bildene. Ta med et bilde igjen for å sikkerhetskopiere det.";
