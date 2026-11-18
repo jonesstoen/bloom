@@ -1,5 +1,6 @@
 import Foundation
 import HTTPTypes
+import OpenAPIRuntime
 import XCTest
 @testable import ImmichKit
 
@@ -38,6 +39,28 @@ final class MockDetailTests: XCTestCase {
         let reverted = try await service.asset(id: asset.id)
         XCTAssertFalse(reverted.isFavorite)
         await assertThrows(.unexpectedStatus(400)) { _ = try await service.setFavorite(assetID: "nope", isFavorite: true) }
+    }
+
+    func testSetHiddenMovesTheAssetBetweenTimelineAndArchive() async throws {
+        let service = MockImmichService(library: library)
+        let asset = try XCTUnwrap(library.assets.first { !$0.isArchived && !$0.isTrashed })
+        let hidden = try await service.setHidden(assetID: asset.id, hidden: true)
+        XCTAssertTrue(hidden.isArchived)
+        let timelineAfterHide = try await service.allAssets(options: TimelineOptions(visibility: .timeline))
+        XCTAssertFalse(timelineAfterHide.contains { $0.id == asset.id })
+        let archiveAfterHide = try await service.allAssets(options: TimelineOptions(visibility: .archive))
+        XCTAssertTrue(archiveAfterHide.contains { $0.id == asset.id })
+        let fetched = try await service.asset(id: asset.id)
+        XCTAssertTrue(fetched.isArchived)
+        let unhidden = try await service.setHidden(assetID: asset.id, hidden: false)
+        XCTAssertFalse(unhidden.isArchived)
+        let timelineAfterUnhide = try await service.allAssets(options: TimelineOptions(visibility: .timeline))
+        XCTAssertTrue(timelineAfterUnhide.contains { $0.id == asset.id })
+        let archiveAfterUnhide = try await service.allAssets(options: TimelineOptions(visibility: .archive))
+        XCTAssertFalse(archiveAfterUnhide.contains { $0.id == asset.id })
+        let writes = await service.requests.filter { if case .setHidden = $0 { true } else { false } }
+        XCTAssertEqual(writes, [.setHidden(asset.id, true), .setHidden(asset.id, false)])
+        await assertThrows(.unexpectedStatus(400)) { _ = try await service.setHidden(assetID: "nope", hidden: true) }
     }
 
     func testUnknownAssetIsBadRequest() async throws {
@@ -251,6 +274,28 @@ final class LiveDetailTests: XCTestCase {
         let (service, _) = try service { _ in (403, "application/json", "{}") }
         do {
             _ = try await service.setFavorite(assetID: "a1", isFavorite: true)
+            XCTFail("Expected an error")
+        } catch let error as ImmichServiceError {
+            XCTAssertEqual(error, .unauthorized)
+        }
+    }
+
+    func testSetHiddenSendsOnlyTheVisibilityThenReadsTheAsset() async throws {
+        let transport = BodyRecordingTransport { _ in (200, "application/json", Self.assetJSON("a1")) }
+        let credentials = try ServerCredentials(server: "https://photos.example.com", apiKey: "k")
+        let service = LiveImmichService(credentials: credentials, transport: transport)
+        _ = try await service.setHidden(assetID: "a1", hidden: true)
+        _ = try await service.setHidden(assetID: "a1", hidden: false)
+        let writes = transport.sent.filter { $0.request.method == .put }
+        XCTAssertEqual(writes.map(\.request.path), ["/assets/a1", "/assets/a1"])
+        XCTAssertEqual(writes.map(\.body), [#"{"visibility":"archive"}"#, #"{"visibility":"timeline"}"#])
+        XCTAssertEqual(transport.sent.map(\.request.method), [.put, .get, .put, .get])
+    }
+
+    func testSetHiddenMapsUnauthorized() async throws {
+        let (service, _) = try service { _ in (403, "application/json", "{}") }
+        do {
+            _ = try await service.setHidden(assetID: "a1", hidden: true)
             XCTFail("Expected an error")
         } catch let error as ImmichServiceError {
             XCTAssertEqual(error, .unauthorized)
@@ -504,5 +549,30 @@ private func assertThrows(
         XCTFail("expected \(expected)", file: file, line: line)
     } catch {
         XCTAssertEqual(error as? ImmichServiceError, expected, file: file, line: line)
+    }
+}
+
+/// Records method, path and the JSON body of every request. No network.
+private final class BodyRecordingTransport: ClientTransport, @unchecked Sendable {
+    typealias Handler = @Sendable (HTTPRequest) throws -> (Int, String, String)
+    struct Sent { let request: HTTPRequest; let body: String }
+
+    private let lock = NSLock()
+    private var _sent: [Sent] = []
+    private let handler: Handler
+    var sent: [Sent] { lock.withLock { _sent } }
+
+    init(handler: @escaping Handler) { self.handler = handler }
+
+    func send(
+        _ request: HTTPRequest, body: HTTPBody?, baseURL: URL, operationID: String
+    ) async throws -> (HTTPResponse, HTTPBody?) {
+        var text = ""
+        if let body { text = String(decoding: try await Data(collecting: body, upTo: 1_000_000), as: UTF8.self) }
+        lock.withLock { _sent.append(Sent(request: request, body: text)) }
+        let (status, contentType, reply) = try handler(request)
+        var response = HTTPResponse(status: .init(code: status))
+        response.headerFields[.contentType] = contentType
+        return (response, HTTPBody(reply))
     }
 }

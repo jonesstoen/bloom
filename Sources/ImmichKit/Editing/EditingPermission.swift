@@ -39,6 +39,11 @@ public struct EditGuardedService: ImmichService {
         return try await base.setFavorite(assetID: assetID, isFavorite: isFavorite)
     }
 
+    public func setHidden(assetID: String, hidden: Bool) async throws -> Asset {
+        try checkEditing()
+        return try await base.setHidden(assetID: assetID, hidden: hidden)
+    }
+
     public func moveToTrash(assetIDs: [String]) async throws -> TrashResult {
         try checkEditing()
         return try await base.moveToTrash(assetIDs: assetIDs)

@@ -230,6 +230,7 @@ private struct GatedUploadService: ImmichService {
     func mapMarkers(_ options: MapMarkerOptions) async throws -> [MapMarker] { try await mock.mapMarkers(options) }
     func memories(_ query: MemoryQuery) async throws -> [Memory] { try await mock.memories(query) }
     func setFavorite(assetID: String, isFavorite: Bool) async throws -> Asset { try await mock.setFavorite(assetID: assetID, isFavorite: isFavorite) }
+    func setHidden(assetID: String, hidden: Bool) async throws -> Asset { try await mock.setHidden(assetID: assetID, hidden: hidden) }
     func createAlbum(name: String, assetIDs: [String]) async throws -> String { try await mock.createAlbum(name: name, assetIDs: assetIDs) }
     func addAssets(toAlbum albumID: String, assetIDs: [String]) async throws -> AlbumAddResult { try await mock.addAssets(toAlbum: albumID, assetIDs: assetIDs) }
 }

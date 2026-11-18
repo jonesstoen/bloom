@@ -15,6 +15,7 @@ final class EditingPermissionTests: XCTestCase {
     func testEveryWriteIsRefusedWhileEditingIsOff() async throws {
         let (service, mock, _) = make(allowed: false)
         await assertRefused { _ = try await service.setFavorite(assetID: self.asset.id, isFavorite: true) }
+        await assertRefused { _ = try await service.setHidden(assetID: self.asset.id, hidden: true) }
         await assertRefused { _ = try await service.moveToTrash(assetIDs: [self.asset.id]) }
         await assertRefused { _ = try await service.restoreAssets(assetIDs: [self.asset.id]) }
         await assertRefused { _ = try await service.createAlbum(name: "Trip", assetIDs: []) }
@@ -23,6 +24,9 @@ final class EditingPermissionTests: XCTestCase {
         let after = try await mock.asset(id: asset.id)
         XCTAssertEqual(after.isFavorite, asset.isFavorite)
         XCTAssertFalse(after.isTrashed)
+        XCTAssertEqual(after.isArchived, asset.isArchived)
+        let hiddenWrites = await mock.requests.filter { if case .setHidden = $0 { true } else { false } }
+        XCTAssertTrue(hiddenWrites.isEmpty)
         let albums = try await mock.albums(shared: nil)
         XCTAssertFalse(albums.contains { $0.name == "Trip" })
     }
@@ -41,6 +45,8 @@ final class EditingPermissionTests: XCTestCase {
         permission.isAllowed = true
         let updated = try await service.setFavorite(assetID: asset.id, isFavorite: !asset.isFavorite)
         XCTAssertEqual(updated.isFavorite, !asset.isFavorite)
+        let hidden = try await service.setHidden(assetID: asset.id, hidden: !asset.isArchived)
+        XCTAssertEqual(hidden.isArchived, !asset.isArchived)
         let albumID = try await service.createAlbum(name: "Trip", assetIDs: [asset.id])
         XCTAssertFalse(albumID.isEmpty)
         permission.isAllowed = false

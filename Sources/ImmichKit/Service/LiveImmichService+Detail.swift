@@ -13,6 +13,14 @@ extension LiveImmichService {
         return try await asset(id: assetID)
     }
 
+    /// `PUT /assets/{id}` with only `visibility`: `archive` hides the asset from the timeline,
+    /// `timeline` returns it. Raw for the same reason as `setFavorite`.
+    public func setHidden(assetID: String, hidden: Bool) async throws -> Asset {
+        let body = try JSONSerialization.data(withJSONObject: ["visibility": hidden ? "archive" : "timeline"])
+        _ = try await rawPUT(path: "/assets/\(Self.pathComponent(assetID))", json: body, operationID: "updateAsset")
+        return try await asset(id: assetID)
+    }
+
     public func asset(id: String) async throws -> Asset {
         do {
             let output = try await Self.mapErrors { try await client.getAssetInfo(path: .init(id: id)) }

@@ -99,6 +99,10 @@ public protocol ImmichService: Sendable {
     /// Marks or unmarks an asset as a favorite (`PUT /assets/{id}`). Returns the updated asset.
     func setFavorite(assetID: String, isFavorite: Bool) async throws -> Asset
 
+    /// Hides an asset from the main timeline (`visibility: archive`) or returns it (`timeline`)
+    /// with `PUT /assets/{id}`. Returns the updated asset.
+    func setHidden(assetID: String, hidden: Bool) async throws -> Asset
+
     /// Moves only these assets to Immich trash. Never performs permanent deletion.
     /// Call only after an explicit user confirmation; partial/uncertain failures are returned.
     func moveToTrash(assetIDs: [String]) async throws -> TrashResult

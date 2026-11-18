@@ -26,6 +26,7 @@ public actor MockImmichService: ImmichService {
         case mapMarkers
         case memories
         case setFavorite(String, Bool)
+        case setHidden(String, Bool)
         case moveToTrash(String)
         case restoreAssets(String)
         case createAlbum(String)
@@ -500,6 +501,14 @@ public actor MockImmichService: ImmichService {
         try await begin(.setFavorite(assetID, isFavorite))
         guard let index = assets.firstIndex(where: { $0.id == assetID }) else { throw ImmichServiceError.unexpectedStatus(400) }
         assets[index].isFavorite = isFavorite
+        return assets[index]
+    }
+
+    /// Moves the asset between the timeline and the archive in the fake library; HTTP 400 for an unknown id.
+    public func setHidden(assetID: String, hidden: Bool) async throws -> Asset {
+        try await begin(.setHidden(assetID, hidden))
+        guard let index = assets.firstIndex(where: { $0.id == assetID }) else { throw ImmichServiceError.unexpectedStatus(400) }
+        assets[index].isArchived = hidden
         return assets[index]
     }
 
