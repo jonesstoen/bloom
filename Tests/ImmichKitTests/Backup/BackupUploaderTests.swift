@@ -359,6 +359,22 @@ final class BackupUploaderTests: XCTestCase {
 
     // MARK: Uploading
 
+    func testSkippedItemIsNotUploaded() async throws {
+        let setup = await makeSetup(album: ["a", "b"])
+        let a = addAsset("a", to: setup.library)
+        let b = addAsset("b", to: setup.library)
+        await queue("a", a, in: setup.index)
+        await queue("b", b, in: setup.index)
+        await setup.index.skip(["a"])
+
+        try await run(makeUploader(setup))
+
+        let uploaded = await uploadedChecksums(setup.service)
+        XCTAssertEqual(uploaded, [b[.photo]!], "the skipped item is never sent")
+        let skippedState = await state("a", setup.index)
+        XCTAssertEqual(skippedState, .pending(reason: .needsUpload), "and its entry is left as it was")
+    }
+
     func testUploadsNewestFirstAndMarksBackedUp() async throws {
         let setup = await makeSetup(album: ["old", "new", "mid"])
         let old = addAsset("old", to: setup.library, created: Self.date.addingTimeInterval(-3600))

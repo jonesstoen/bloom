@@ -411,4 +411,91 @@ final class BackupIndexTests: XCTestCase {
         let reloaded = await BackupIndex(directory: directory).entry(for: "1")
         XCTAssertEqual(reloaded, current)
     }
+
+    // MARK: - Skipped items
+
+    func testSkipRoundTripsThroughSave() async throws {
+        let directory = makeDirectory()
+        let index = BackupIndex(directory: directory)
+        await index.skip(["a"])
+        try await index.save()
+        let skipped = await BackupIndex(directory: directory).skippedIDs()
+        XCTAssertEqual(skipped, ["a"])
+
+        await index.includeAgain(["a"])
+        try await index.save()
+        let afterwards = await BackupIndex(directory: directory).skippedIDs()
+        XCTAssertEqual(afterwards, [])
+    }
+
+    func testSkipAndIncludeAgainOnlyMarkChangesWhenTheSetChanges() async throws {
+        let index = BackupIndex(directory: makeDirectory())
+        await index.includeAgain(["a"])
+        try await index.saveIfChanged()
+        var saves = await index.saveCount
+        XCTAssertEqual(saves, 0, "nothing to include again: nothing to write")
+
+        await index.skip(["a"])
+        try await index.saveIfChanged()
+        await index.skip(["a"])
+        try await index.saveIfChanged()
+        saves = await index.saveCount
+        XCTAssertEqual(saves, 1, "skipping an already skipped item changes nothing")
+
+        await index.includeAgain(["a"])
+        try await index.saveIfChanged()
+        saves = await index.saveCount
+        XCTAssertEqual(saves, 2)
+    }
+
+    func testIndexWithoutSkippedDecodes() async throws {
+        let directory = makeDirectory()
+        let writer = BackupIndex(directory: directory)
+        await writer.set(sampleEntry(), for: "1")
+        await writer.setSelection(BackupSelection(included: ["A"]))
+        try await writer.save()
+        // An index written before skipping existed has no `skipped` key.
+        let file = directory.appendingPathComponent("index.json")
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        json["skipped"] = nil
+        XCTAssertNil(json["skipped"])
+        try JSONSerialization.data(withJSONObject: json).write(to: file)
+
+        let loaded = BackupIndex(directory: directory)
+        let entry = await loaded.entry(for: "1")
+        let skipped = await loaded.skippedIDs()
+        XCTAssertEqual(entry, sampleEntry())
+        XCTAssertEqual(skipped, [])
+    }
+
+    func testUnreadableSkippedDoesNotCostTheEntries() async throws {
+        let directory = makeDirectory()
+        let writer = BackupIndex(directory: directory)
+        await writer.set(sampleEntry(), for: "1")
+        try await writer.save()
+        let file = directory.appendingPathComponent("index.json")
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        json["skipped"] = "not a list"
+        try JSONSerialization.data(withJSONObject: json).write(to: file)
+
+        let loaded = BackupIndex(directory: directory)
+        let entry = await loaded.entry(for: "1")
+        let skipped = await loaded.skippedIDs()
+        XCTAssertEqual(entry, sampleEntry())
+        XCTAssertEqual(skipped, [])
+    }
+
+    func testSelectedAssetIDsLeavesOutSkipped() async {
+        let library = FakePhotoLibrary()
+        library.addAlbum(id: "A", title: "Recents", assetIDs: ["1", "2", "3"])
+        let index = BackupIndex(directory: makeDirectory())
+        await index.setSelection(BackupSelection(included: ["A"]))
+        // "9" is skipped but not selected (any more): it belongs to neither set.
+        await index.skip(["2", "9"])
+
+        let result = await index.selectedAssetIDs(in: library)
+
+        XCTAssertEqual(result.ids, ["1", "3"])
+        XCTAssertEqual(result.skipped, ["2"])
+    }
 }

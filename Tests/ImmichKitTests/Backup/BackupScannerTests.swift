@@ -1072,6 +1072,63 @@ final class BackupScannerTests: XCTestCase {
         let entry = await index.entry(for: "live")
         XCTAssertEqual(entry?.state, .deletedOnServer(trashed: [], gone: [.photo]), "a seen half is never re-uploaded on its own")
     }
+
+    // MARK: Skipped items
+
+    func testScanDoesNotReadSkippedItems() async throws {
+        let library = makeLibrary(album: ["1", "2"])
+        addAsset("1", to: library)
+        addAsset("2", to: library)
+        let index = await makeIndex()
+        let failed = BackupEntry(
+            modificationDate: Self.date, checksums: [:], state: .failed(reason: "Photos can't load it"))
+        await index.set(failed, for: "2")
+        await index.skip(["2"])
+        let seen = Box<[BackupCounts]>([])
+
+        let counts = try await makeScanner(library, MockImmichService(), index).scan { counts, _ in
+            seen.mutate { $0.append(counts) }
+        }
+
+        XCTAssertEqual(library.reads.map(\.assetID), ["1"], "the skipped item is never read")
+        let entry = await index.entry(for: "2")
+        XCTAssertEqual(entry, failed, "its entry is left as it was")
+        XCTAssertEqual(counts.skipped, 1)
+        XCTAssertEqual(counts.total, 2)
+        XCTAssertEqual(counts.failed, 0)
+        XCTAssertEqual(counts.pending, 1)
+        XCTAssertEqual(seen.value.map(\.skipped), [1], "progress keeps the skipped count")
+        XCTAssertEqual(seen.value.map(\.total), [2])
+    }
+
+    func testCountsCountSkippedApart() async throws {
+        let library = makeLibrary(album: ["1", "2"])
+        let one = addAsset("1", to: library)
+        addAsset("2", to: library)
+        let index = await makeIndex()
+        await index.set(BackupEntry(modificationDate: Self.date, checksums: one, state: .failed(reason: "boom")), for: "1")
+        await index.skip(["1"])
+        await index.skip(["gone"]) // not in the selection: counted nowhere
+
+        let counts = await makeScanner(library, MockImmichService(), index).counts()
+
+        XCTAssertEqual(counts.skipped, 1)
+        XCTAssertEqual(counts.failed, 0)
+        XCTAssertEqual(counts.pending, 1)
+        XCTAssertEqual(counts.total, 2)
+    }
+
+    func testSkippedItemGoneFromTheLibraryIsNotCounted() async throws {
+        let library = makeLibrary(album: ["1", "vanished"])
+        addAsset("1", to: library)
+        let index = await makeIndex()
+        await index.skip(["vanished"])
+
+        let counts = await makeScanner(library, MockImmichService(), index).counts()
+
+        XCTAssertEqual(counts.skipped, 0)
+        XCTAssertEqual(counts.total, 1)
+    }
 }
 
 /// A tiny locked box for collecting values from `@Sendable` closures.

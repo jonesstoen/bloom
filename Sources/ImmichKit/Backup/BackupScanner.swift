@@ -1,19 +1,31 @@
 import Foundation
 
-/// How the selected items stand. `total == backedUp + pending + deletedOnServer + failed`;
+/// How the selected items stand. `total == backedUp + pending + deletedOnServer + failed + skipped`;
+/// `skipped` are the items the owner told Bloom to stop trying: they are counted apart, not as failed or pending;
 /// `waitingForWiFi` is the part of `pending` that needs an iCloud download the cellular switches don't allow right now.
 public struct BackupCounts: Sendable, Equatable {
     public var total, backedUp, pending, failed: Int
     public var deletedOnServer: Int
     public var waitingForWiFi: Int
+    public var skipped: Int
 
-    public init(total: Int = 0, backedUp: Int = 0, pending: Int = 0, failed: Int = 0, deletedOnServer: Int = 0, waitingForWiFi: Int = 0) {
+    public init(
+        total: Int = 0, backedUp: Int = 0, pending: Int = 0, failed: Int = 0, deletedOnServer: Int = 0,
+        waitingForWiFi: Int = 0, skipped: Int = 0
+    ) {
         self.total = total
         self.backedUp = backedUp
         self.pending = pending
         self.failed = failed
         self.deletedOnServer = deletedOnServer
         self.waitingForWiFi = waitingForWiFi
+        self.skipped = skipped
+    }
+
+    /// Counts `n` more skipped items (they have no state to `add`).
+    public mutating func addSkipped(_ n: Int) {
+        skipped += n
+        total += n
     }
 
     public mutating func add(_ state: BackupState) { change(state, by: 1) }
@@ -126,13 +138,18 @@ public actor BackupScanner {
     ) async throws -> BackupCounts {
         // Fails fast on an unavailable index, so no work is done that couldn't be kept.
         try await index.save()
-        var selected = await index.selection().assetIDs(in: source)
-        if let only { selected.formIntersection(only) }
+        var (selected, skipped) = await index.selectedAssetIDs(in: source)
+        if let only {
+            selected.formIntersection(only)
+            skipped.formIntersection(only)
+        }
         let ids = selected.sorted()
 
-        // A first estimate from the index; corrected per item once its asset is fetched.
+        // A first estimate from the index; corrected per item once its asset is fetched. Skipped items are
+        // not in `ids`: never read, never shown, only counted (their state is not looked at).
         var states: [String: BackupState] = [:]
         var counts = BackupCounts()
+        counts.addSkipped(await presentCount(of: skipped))
         for id in ids {
             let state = await index.entry(for: id)?.state ?? .pending(reason: .notChecked)
             states[id] = state
@@ -277,8 +294,10 @@ public actor BackupScanner {
     /// The counts for the current selection, from the index and the assets' modification dates
     /// (fetched in batches, no resources read). Items changed since they were recorded count as pending.
     public func counts() async -> BackupCounts {
-        let ids = await index.selection().assetIDs(in: source).sorted()
+        let (selected, skipped) = await index.selectedAssetIDs(in: source)
+        let ids = selected.sorted()
         var counts = BackupCounts()
+        counts.addSkipped(await presentCount(of: skipped))
         for start in stride(from: 0, to: ids.count, by: Self.fetchSize) {
             let chunk = Array(ids[start..<min(start + Self.fetchSize, ids.count)])
             let dates = await source.modificationDates(chunk)
@@ -292,6 +311,18 @@ public actor BackupScanner {
     }
 
     // MARK: - Helpers
+
+    /// How many of `ids` are still in the library: a skipped item deleted from Photos is not counted, like
+    /// any other selected item that is gone.
+    private func presentCount(of ids: Set<String>) async -> Int {
+        let sorted = ids.sorted()
+        var present = 0
+        for start in stride(from: 0, to: sorted.count, by: Self.fetchSize) {
+            let chunk = Array(sorted[start..<min(start + Self.fetchSize, sorted.count)])
+            present += await source.modificationDates(chunk).count
+        }
+        return present
+    }
 
     private static var noResourcesReason: String {
         tr("This item has no photo or video file that Bloom can back up.")

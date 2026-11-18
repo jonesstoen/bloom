@@ -367,7 +367,7 @@ public actor BackupUploader {
     private func queuedItems(
         smallLocalOnly: Bool = false
     ) async throws -> ([Candidate], [String: (until: Date, holdsRun: Bool)]) {
-        let ids = await index.selection().assetIDs(in: source)
+        let ids = await index.selectedAssetIDs(in: source).ids
         let now = clock.date()
         let queued = await index.entries(where: { Self.isQueued($0.state) && !Self.isGivenUp($0.retry, at: now) },
                                          in: ids, limit: Int.max)

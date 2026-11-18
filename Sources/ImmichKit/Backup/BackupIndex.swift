@@ -102,10 +102,12 @@ public actor BackupIndex {
         var jobs: [UploadJob] = []
         /// When an upload last succeeded (see `BackupIndex.lastSuccess`).
         var lastSuccess: Date?
+        /// Assets the owner told Bloom to stop trying (see `BackupIndex.skippedIDs`).
+        var skipped: Set<String> = []
 
         init() {}
 
-        private enum CodingKeys: String, CodingKey { case entries, selection, jobs, lastSuccess }
+        private enum CodingKeys: String, CodingKey { case entries, selection, jobs, lastSuccess, skipped }
 
         /// `jobs` is absent in indexes written before background uploads.
         init(from decoder: Decoder) throws {
@@ -117,6 +119,8 @@ public actor BackupIndex {
             jobs = ((try? container.decodeIfPresent([Lossy<UploadJob>].self, forKey: .jobs)) ?? nil)?
                 .compactMap(\.value) ?? []
             lastSuccess = (try? container.decodeIfPresent(Date.self, forKey: .lastSuccess)) ?? nil
+            // Leniently: absent in older indexes; if unreadable, nothing stays skipped and the items show up again.
+            skipped = (try? container.decodeIfPresent(Set<String>.self, forKey: .skipped)) ?? []
         }
 
         private struct Lossy<Value: Decodable>: Decodable {
@@ -271,6 +275,40 @@ public actor BackupIndex {
         guard stored.selection != s else { return }
         stored.selection = s
         hasChanges = true
+    }
+
+    // MARK: - Skipped items
+
+    /// The assets the owner gave up on (an item that keeps failing). Kept apart from the entries, which the
+    /// scanner and uploader rewrite on every change, so a skip survives rescans and edits of the photo, and
+    /// including an item again only removes its ID: its entry and checksums were never touched.
+    public func skippedIDs() -> Set<String> { stored.skipped }
+
+    /// Stops Bloom from reading, checking and uploading `ids` until `includeAgain`. Doesn't save.
+    public func skip(_ ids: some Sequence<String>) {
+        let before = stored.skipped.count
+        stored.skipped.formUnion(ids)
+        if stored.skipped.count != before { hasChanges = true }
+    }
+
+    /// Takes `ids` off the skipped set, so the next scan treats them as any selected item. Doesn't save.
+    public func includeAgain(_ ids: some Sequence<String>) {
+        let before = stored.skipped.count
+        stored.skipped.subtract(ids)
+        if stored.skipped.count != before { hasChanges = true }
+    }
+
+    /// The selection split in one step: `ids` are the selected assets Bloom works on (the selection minus
+    /// the skipped ones), `skipped` the selected assets that are skipped. A skipped asset that is no longer
+    /// selected is in neither. Scanner, uploader and counts all start from this, so none of them can touch
+    /// a skipped item by using the selection directly.
+    public func selectedAssetIDs(
+        in source: some PhotoLibrarySource
+    ) async -> (ids: Set<String>, skipped: Set<String>) {
+        let selected = await stored.selection.assetIDs(in: source)
+        // Read after the await: the set may have changed while the library was asked.
+        let skipped = stored.skipped.intersection(selected)
+        return (selected.subtracting(skipped), skipped)
     }
 
     /// Retries loading after the file couldn't be read. Replaces the in-memory state.
