@@ -115,6 +115,16 @@ struct LibrarySelectionToolbar: View {
                         Button(tr("Remove from Favorites"), systemImage: "heart.slash") {
                             Task { await selection.setFavorites(false) }
                         }
+                        // The archive grid is "Hidden": there the only direction is back.
+                        if selection.isArchive {
+                            Button(tr("Unhide"), systemImage: "eye") {
+                                Task { await selection.setHidden(false) }
+                            }
+                        } else if selection.supportsHiding {
+                            Button(tr("Hide"), systemImage: "eye.slash") {
+                                Task { await selection.setHidden(true) }
+                            }
+                        }
                     } label: {
                         Image(systemName: "ellipsis")
                             .font(.system(size: 20, weight: .medium))

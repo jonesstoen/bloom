@@ -115,6 +115,78 @@ final class LibrarySelectionTests: XCTestCase {
         XCTAssertEqual(falseWrites, 1)
     }
 
+    func testHideRemovesConfirmedAssetsFromGridAndClearsSelection() async throws {
+        let (library, mock, assets) = await selectionFixture()
+        let selection = LibrarySelectionModel(library: library)
+        selection.start()
+        selection.toggle(assets[0])
+        selection.toggle(assets[1])
+
+        await selection.setHidden(true)
+
+        XCTAssertTrue(selection.selectedIDs.isEmpty)
+        XCTAssertNil(selection.error)
+        XCTAssertFalse(selection.isBusy)
+        XCTAssertEqual(library.months.flatMap(\.assets).map(\.id), [assets[2].id])
+        let hidden = try await mock.asset(id: assets[0].id)
+        XCTAssertTrue(hidden.isArchived)
+    }
+
+    func testHideFailureKeepsFailedAssetSelectedWithError() async throws {
+        let (library, mock, assets) = await selectionFixture()
+        let selection = LibrarySelectionModel(library: library)
+        selection.start()
+        selection.toggle(assets[0])
+        selection.toggle(assets[2])
+        await mock.setAssets(Array(assets.prefix(2))) // assets[2] is gone on the server
+
+        await selection.setHidden(true)
+
+        XCTAssertEqual(selection.selectedIDs, [assets[2].id])
+        XCTAssertEqual(selection.error, tr("Couldn't hide %@ items. Please try again.", "1"))
+        XCTAssertNotNil(library.gridIndex(ofAsset: assets[2].id))
+        XCTAssertNil(library.gridIndex(ofAsset: assets[0].id))
+        // The retry is idempotent: it sends the same write again.
+        await mock.setAssets(assets)
+        await selection.setHidden(true)
+        XCTAssertTrue(selection.selectedIDs.isEmpty)
+        XCTAssertNil(selection.error)
+    }
+
+    func testUnhideFromArchiveGridUsesUnhideError() async throws {
+        var archived = Asset(id: "archived", kind: .image,
+                             takenAt: ISO8601DateFormatter().date(from: "2026-08-01T12:00:00Z")!)
+        archived.isArchived = true
+        let mock = MockImmichService(assets: [archived])
+        let library = LibraryGridModel(service: mock, options: TimelineOptions(visibility: .archive, newestFirst: false),
+                                       loader: ImageLoader(service: mock, disk: nil))
+        await library.load()
+        await library.loadAllMonths()
+        let selection = LibrarySelectionModel(library: library)
+        XCTAssertTrue(selection.isArchive)
+        selection.start()
+        selection.toggle(archived)
+        await mock.setFailure(.unauthorized)
+
+        await selection.setHidden(false)
+
+        XCTAssertEqual(selection.selectedIDs, ["archived"])
+        XCTAssertEqual(selection.error, tr("Couldn't unhide %@ items. Please try again.", "1"))
+        await mock.setFailure(nil)
+        await selection.setHidden(false)
+        XCTAssertTrue(selection.selectedIDs.isEmpty)
+        XCTAssertTrue(library.months.flatMap(\.assets).isEmpty)
+    }
+
+    func testHideWithoutSelectionDoesNotWrite() async {
+        let (library, mock, _) = await selectionFixture()
+        let selection = LibrarySelectionModel(library: library)
+        selection.start()
+        await selection.setHidden(true)
+        let requests = await mock.requests
+        XCTAssertEqual(requests.filter { if case .setHidden = $0 { true } else { false } }.count, 0)
+    }
+
     func testEmptyFavoriteBatchDoesNotWrite() async {
         let (library, mock, _) = await selectionFixture()
         let selection = LibrarySelectionModel(library: library)

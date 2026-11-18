@@ -198,6 +198,35 @@ public final class LibrarySelectionModel {
         isBusy = false
     }
 
+    /// Whether the grid is the archive (shown as "Hidden"): the selection can then only be unhidden.
+    public var isArchive: Bool { library.isArchiveGrid }
+    /// Whether the grid offers Hide (or Unhide in the archive grid) at all.
+    public var supportsHiding: Bool { library.supportsHiding }
+
+    /// Hides the selection, or unhides it in the archive grid. Confirmed photos leave the grid;
+    /// failed ones stay selected so the same action can be repeated.
+    public func setHidden(_ hidden: Bool) async {
+        guard isSelecting, !isBusy, !hasPendingConfirmation, !library.isMutating, !selectedAssets.isEmpty,
+              library.supportsHiding, hidden != isArchive else { return }
+        isBusy = true
+        error = nil
+        completedCount = 0
+        let assets = selectedAssets
+        totalCount = assets.count
+        defer { isBusy = false }
+        let result = await library.setHidden(assets, hidden: hidden) { [weak self] count in
+            self?.completedCount = count
+        }
+        let confirmed = Set(result.confirmed)
+        selectedAssets = assets.filter { !confirmed.contains($0.id) }
+        selectedIDs = Set(selectedAssets.map(\.id))
+        if !selectedAssets.isEmpty {
+            let count = selectedAssets.count.formatted(.number.locale(Localization.locale))
+            error = hidden ? tr("Couldn't hide %@ items. Please try again.", count)
+                           : tr("Couldn't unhide %@ items. Please try again.", count)
+        }
+    }
+
     public func prepareShare() async {
         guard isSelecting, !isBusy, !hasPendingConfirmation, !selectedAssets.isEmpty else { return }
         isBusy = true

@@ -164,7 +164,8 @@ public final class LibraryGridModel {
         snapshotSave?.cancel()
         loadingMonths = []
         let hasEdits = !edits.favoriteOverrides.isEmpty
-            || (reconcilingTrash && (!edits.trashedIDs.isEmpty || !edits.restoredIDs.isEmpty || needsFreshTrashLoad))
+            || (reconcilingTrash && (!edits.trashedIDs.isEmpty || !edits.restoredIDs.isEmpty
+                                     || !edits.hiddenIDs.isEmpty || !edits.unhiddenIDs.isEmpty || needsFreshTrashLoad))
         if hasEdits {
             // An explicit refresh reconciles local writes with later external changes. A fresh
             // timeline cannot return a pre-write in-memory snapshot.
@@ -173,6 +174,8 @@ public final class LibraryGridModel {
             if reconcilingTrash {
                 edits.trashedIDs = []
                 edits.restoredIDs = []
+                edits.hiddenIDs = []
+                edits.unhiddenIDs = []
             }
             // Nor may it bring back the disk copy of those old flags.
             didAttemptRestore = true

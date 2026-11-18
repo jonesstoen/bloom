@@ -112,6 +112,12 @@ public struct LibraryGridView: View {
     }
 
     private var canMoveToTrash: Bool { allowsTrash && allowsChanges && model.options.isTrashed != true }
+    /// Hide in the main Library, Unhide in the archive ("Hidden") grid; never in albums, people
+    /// or other collections (`LibraryGridModel.supportsHiding`).
+    private var canHide: Bool {
+        allowsChanges && model.supportsHiding
+            && (allowsTrash || allowsSelection || model.isArchiveGrid)
+    }
     private var canRestore: Bool { allowsRestore && allowsChanges && model.options.isTrashed == true }
     private var mutationBlocked: Bool { selection.isBusy || selection.pendingTrashAssets != nil || selection.pendingRestoreAssets != nil || model.isMutating }
 
@@ -238,6 +244,9 @@ public struct LibraryGridView: View {
         let restoreAction: (@MainActor (Asset) async throws -> Void)?
         if canRestore { restoreAction = { asset in try await restore(asset) } }
         else { restoreAction = nil }
+        let hideAction: (@MainActor (Asset, Bool) async throws -> Void)?
+        if canHide { hideAction = { asset, hidden in try await setHidden(asset, hidden: hidden) } }
+        else { hideAction = nil }
         return AssetViewer(assets: item.assets, selectedID: item.selectedID,
                     service: model.service, loader: model.loader, thumbnails: model.images, onMoveToTrash: trashAction, onRestore: restoreAction, onSelection: { id in
             guard transitionSourceID != id else { return }
@@ -252,7 +261,15 @@ public struct LibraryGridView: View {
             // Hidden once the viewer has closed. Don't touch `transitionSourceID` here: the cover's
             // content depends on it, and changing it would rebuild the open viewer.
             model.assetMissingOnServer(id)
-        })
+        }, onSetHidden: hideAction, unhides: model.isArchiveGrid)
+    }
+
+    private func setHidden(_ asset: Asset, hidden: Bool) async throws {
+        viewerScrollTarget = nil
+        let result = await model.setHidden([asset], hidden: hidden)
+        guard result.confirmed.contains(asset.id) else { throw ImmichServiceError.invalidResponse }
+        // The removed transition source must not trigger another scroll after dismissal.
+        if transitionSourceID == asset.id { transitionSourceID = nil }
     }
 
     private func restore(_ asset: Asset) async throws {

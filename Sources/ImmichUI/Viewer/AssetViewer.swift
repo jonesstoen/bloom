@@ -32,6 +32,11 @@ public struct AssetViewer: View {
     @State private var trash: ViewerTrashModel
     private let allowsTrash: Bool
     private let allowsRestore: Bool
+    /// Hide or unhide (`true` hides) the shown asset; `nil` when the grid can't (see `canHide`).
+    private let onSetHidden: (@MainActor (Asset, Bool) async throws -> Void)?
+    /// The grid is the archive: the action is Unhide, whatever each asset's own flag says.
+    private let unhides: Bool
+    @State private var hiding = ViewerHideState()
     @State private var store: ViewerStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.allowsLibraryChanges) private var allowsChanges
@@ -42,7 +47,8 @@ public struct AssetViewer: View {
                 loader: ImageLoader? = nil, thumbnails: ThumbnailImageCache? = nil,
                 onMoveToTrash: (@MainActor (Asset) async throws -> Void)? = nil,
                 onRestore: (@MainActor (Asset) async throws -> Void)? = nil, onSelection: @escaping (String) -> Void = { _ in }, onSettle: @escaping (String) -> Void = { _ in },
-                onMissing: (@MainActor (String) -> Void)? = nil) {
+                onMissing: (@MainActor (String) -> Void)? = nil,
+                onSetHidden: (@MainActor (Asset, Bool) async throws -> Void)? = nil, unhides: Bool = false) {
         let loader = loader ?? ImageLoader(service: service)
         self.assets = assets
         self.service = service
@@ -51,6 +57,8 @@ public struct AssetViewer: View {
         self.onSettle = onSettle
         self.allowsTrash = onMoveToTrash != nil
         self.allowsRestore = onRestore != nil
+        self.onSetHidden = onSetHidden
+        self.unhides = unhides
         _trash = State(initialValue: ViewerTrashModel(mode: onRestore != nil ? .restore : .trash, action: onRestore ?? onMoveToTrash))
         self.initialID = selectedID
         self.indexByID = Dictionary(assets.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -61,10 +69,10 @@ public struct AssetViewer: View {
         _store = State(initialValue: store)
     }
 
-    private var trashInteractionBlocked: Bool { trash.pendingAsset != nil || trash.isBusy }
+    private var trashInteractionBlocked: Bool { trash.pendingAsset != nil || trash.isBusy || hiding.isBusy }
 
     private var dismissInteractionBlocked: Bool {
-        trashInteractionBlocked || trash.error != nil
+        trashInteractionBlocked || trash.error != nil || hiding.error != nil
             || showsAccessibleMenu || currentIndex == nil
     }
 
@@ -97,8 +105,9 @@ public struct AssetViewer: View {
             }
         }
         .overlay {
-            if trash.isBusy {
-                ProgressView(allowsRestore ? tr("Restoring…") : tr("Moving to Trash…"))
+            if trash.isBusy || hiding.isBusy {
+                ProgressView(hiding.isBusy ? (hiding.hidesAsset ? tr("Hiding…") : tr("Unhiding…"))
+                                           : allowsRestore ? tr("Restoring…") : tr("Moving to Trash…"))
                     .padding(24)
                     .photosGlass(in: RoundedRectangle(cornerRadius: 20), interactive: false)
             }
@@ -143,6 +152,8 @@ public struct AssetViewer: View {
         }
         .errorAlert(allowsRestore ? tr("Couldn't Restore") : tr("Couldn't Move to Trash"),
                     message: trash.error, onDismiss: { trash.dismissError() })
+        .errorAlert(hiding.hidesAsset ? tr("Couldn't Hide") : tr("Couldn't Unhide"),
+                    message: hiding.error, onDismiss: { hiding.dismissError() })
         .confirmationDialog(tr("More"), isPresented: $showsAccessibleMenu, titleVisibility: .hidden) {
             if let model = currentModel { menuActions(model) }
         }
@@ -351,6 +362,15 @@ public struct AssetViewer: View {
                 Task { await model.toggleFavorite() }
             }
         }
+        if allowsChanges, let onSetHidden, !allowsRestore, !model.asset.isTrashed {
+            // The direction comes from the grid: Unhide only in the archive (Hidden) grid.
+            let hides = !unhides
+            Button(hides ? tr("Hide") : tr("Unhide"), systemImage: hides ? "eye.slash" : "eye") {
+                model.stopLivePhotoPlayback()
+                // Like a trash: once the server confirms, the viewer closes and the grid drops it.
+                Task { if await hiding.run(model.asset, hide: hides, action: onSetHidden) { dismiss() } }
+            }
+        }
         #if os(iOS)
         if model.asset.isLivePhoto && !model.asset.isVideo {
             Button(model.isLivePhotoPlaying ? tr("Stop Live Photo") : tr("Play Live Photo"),
@@ -488,9 +508,43 @@ public struct AssetViewer: View {
     AssetViewer(assets: MockLibrary.standard.assets, selectedID: MockLibrary.standard.assets[0].id, service: MockImmichService.preview)
 }
 
+/// One hide or unhide request from the viewer's More menu, with its busy state and error.
+@MainActor @Observable
+final class ViewerHideState {
+    private(set) var isBusy = false
+    private(set) var error: String?
+    /// The direction of the last request, for the alert title.
+    private(set) var hidesAsset = true
+
+    func dismissError() { error = nil }
+
+    /// `true` once the server confirmed it.
+    func run(_ asset: Asset, hide: Bool, action: @MainActor (Asset, Bool) async throws -> Void) async -> Bool {
+        guard !isBusy else { return false }
+        isBusy = true
+        hidesAsset = hide
+        error = nil
+        defer { isBusy = false }
+        do {
+            try await action(asset, hide)
+            return true
+        } catch {
+            self.error = hide ? tr("Couldn't hide this item. Please try again.")
+                              : tr("Couldn't unhide this item. Please try again.")
+            return false
+        }
+    }
+}
+
 #Preview("Viewer with Trash") {
     AssetViewer(assets: MockLibrary.standard.assets, selectedID: MockLibrary.standard.assets[0].id,
                 service: MockImmichService.preview, onMoveToTrash: { _ in })
+}
+
+#Preview("Viewer with Hide") {
+    let mock = MockImmichService.preview
+    AssetViewer(assets: MockLibrary.standard.assets, selectedID: MockLibrary.standard.assets[0].id,
+                service: mock, onSetHidden: { asset, hidden in _ = try await mock.setHidden(assetID: asset.id, hidden: hidden) })
 }
 
 #Preview("Viewer with Restore") {

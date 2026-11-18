@@ -70,7 +70,17 @@ extension LibraryGridModel {
     }
 
     private func applyTrashOutcome(confirmedIDs: Set<String>, uncertain: Bool) async {
-        edits.trashedIDs.formUnion(confirmedIDs)
+        await applyWriteOutcome(uncertain: uncertain) { $0.trashedIDs.formUnion(confirmedIDs) }
+    }
+
+    /// Records a write's confirmed removals, shows them, and seeds a replacement timeline with
+    /// what is shown, unless the outcome was uncertain (then only a fresh load may settle it).
+    /// `bumpsTrashRevision: false` (unhide) bumps no revision: the other tabs only observe
+    /// `session.library`, and recreating the Collections stack would pop the archive grid that
+    /// unhid. The caller has to tell the main Library itself (it reloads to drop its edits).
+    private func applyWriteOutcome(uncertain: Bool, bumpsTrashRevision: Bool = true,
+                                   recording record: (inout LocalLibraryEdits) -> Void) async {
+        record(&edits)
         needsFreshTrashLoad = needsFreshTrashLoad || uncertain
         apply(months)
         let replacement = Timeline(service: service, options: options)
@@ -78,7 +88,7 @@ extension LibraryGridModel {
         didAttemptRestore = true
         let generation = loadGeneration
         let snapshot = months
-        trashRevision += 1
+        if bumpsTrashRevision { trashRevision += 1 }
         if !needsFreshTrashLoad {
             // The current, already filtered sort/filter can seed the new timeline. Every other
             // one was discarded because it may contain the same IDs.
@@ -86,6 +96,63 @@ extension LibraryGridModel {
             guard isCurrent(replacement, generation) else { return }
             scheduleSnapshotSave()
         }
+    }
+
+    /// The archive ("Hidden") grid: its photos can only be unhidden.
+    public var isArchiveGrid: Bool { options.visibility == .archive }
+
+    /// Hide applies to the main Library timeline (and its sort or filter variants), unhide to the
+    /// archive grid. Album, person and Recently Deleted grids offer neither: an album lists
+    /// archived photos too, and only the main Library's model keeps the snapshot a hide must clear.
+    public var supportsHiding: Bool {
+        options.isTrashed != true && options.albumId == nil && options.personId == nil
+            && (options.visibility == .timeline || options.visibility == .archive)
+    }
+
+    /// Hides assets from the library (`visibility: archive`) or, in the archive grid, unhides them.
+    /// Writes one asset at a time; an asset counts as confirmed only when the server's answer says
+    /// `isArchived == hidden`. A write whose follow-up read failed is reported as failed (it may
+    /// have succeeded, and repeating it is harmless). Confirmed assets leave this grid at once
+    /// and never come back from a snapshot: like a trash, the saved snapshots are cleared before
+    /// the first request, and the next save has the confirmed assets filtered out
+    /// (`LocalLibraryEdits.hiddenIDs`). Refused (all failed, nothing written) while another write
+    /// runs and when the direction doesn't fit the grid (`supportsHiding`, `isArchiveGrid`).
+    public func setHidden(
+        _ assets: [Asset], hidden: Bool, progress: (@MainActor (Int) -> Void)? = nil
+    ) async -> (confirmed: [String], failed: [String]) {
+        let ids = Self.uniqueIDs(assets)
+        guard !ids.isEmpty else { return ([], []) }
+        guard !isMutating, supportsHiding, hidden != isArchiveGrid,
+              !assets.contains(where: \.isTrashed) else { return ([], ids) }
+        isTrashing = true
+        defer { isTrashing = false }
+        cancelInFlightLoads()
+        // New saves are blocked by isTrashing; queued ones keep the previous revision.
+        await clearSavedSnapshots()
+        var confirmed: [String] = []
+        var failed: [String] = []
+        for id in ids {
+            do {
+                let updated = try await service.setHidden(assetID: id, hidden: hidden)
+                guard updated.id == id, updated.isArchived == hidden else { throw ImmichServiceError.invalidResponse }
+                confirmed.append(id)
+            } catch {
+                failed.append(id)
+            }
+            progress?(confirmed.count + failed.count)
+        }
+        // No Task.isCancelled check: a confirmed write must reach the grid and the cache.
+        let confirmedIDs = Set(confirmed)
+        await applyWriteOutcome(uncertain: !failed.isEmpty, bumpsTrashRevision: hidden) { edits in
+            if hidden {
+                edits.hiddenIDs.formUnion(confirmedIDs)
+                edits.unhiddenIDs.subtract(confirmedIDs)
+            } else {
+                edits.unhiddenIDs.formUnion(confirmedIDs)
+                edits.hiddenIDs.subtract(confirmedIDs)
+            }
+        }
+        return (confirmed, failed)
     }
 
     /// Restores the confirmed selection from Recently Deleted. The root passes its main-library

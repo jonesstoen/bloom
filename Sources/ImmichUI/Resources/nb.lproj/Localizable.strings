@@ -365,3 +365,13 @@
 "Include Again" = "Ta med igjen";
 "Nothing Skipped" = "Ingenting hoppet over";
 "Bloom doesn't read or upload these photos. Include one again to back it up." = "Bloom leser ikke og laster ikke opp disse bildene. Ta med et bilde igjen for å sikkerhetskopiere det.";
+"Hide" = "Skjul";
+"Unhide" = "Vis";
+"Hiding…" = "Skjuler …";
+"Unhiding…" = "Viser …";
+"Couldn't Hide" = "Kunne ikke skjule";
+"Couldn't Unhide" = "Kunne ikke vise igjen";
+"Couldn't hide this item. Please try again." = "Kunne ikke skjule dette objektet. Prøv igjen.";
+"Couldn't unhide this item. Please try again." = "Kunne ikke vise dette objektet igjen. Prøv igjen.";
+"Couldn't hide %@ items. Please try again." = "Kunne ikke skjule %@ objekter. Prøv igjen.";
+"Couldn't unhide %@ items. Please try again." = "Kunne ikke vise %@ objekter igjen. Prøv igjen.";

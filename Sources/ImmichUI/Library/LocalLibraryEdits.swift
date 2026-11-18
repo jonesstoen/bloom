@@ -13,12 +13,17 @@ struct LocalLibraryEdits {
     var trashedIDs: Set<String> = []
     /// Restored from trash: hidden from the Recently Deleted view.
     var restoredIDs: Set<String> = []
+    /// Hidden (moved to the archive): removed from the timeline grid (`visibility == .timeline`).
+    var hiddenIDs: Set<String> = []
+    /// Unhidden (back in the timeline): removed from the grid that shows the archive.
+    var unhiddenIDs: Set<String> = []
     /// The viewer found these gone from the server, by asset id, with the month (bucket id) they
     /// were in. Hidden from every view until a fresh copy of that month replaces the guess
     /// (`confirmMissing(inMonths:)`). Not a write: a load never has to start over for them.
     var missingIDs: [String: String] = [:]
 
-    var isEmpty: Bool { favoriteOverrides.isEmpty && trashedIDs.isEmpty && restoredIDs.isEmpty && missingIDs.isEmpty }
+    var isEmpty: Bool { favoriteOverrides.isEmpty && trashedIDs.isEmpty && restoredIDs.isEmpty
+        && hiddenIDs.isEmpty && unhiddenIDs.isEmpty && missingIDs.isEmpty }
 
     /// The server sent fresh copies of these months: whatever it says about their assets wins.
     mutating func confirmMissing(inMonths monthIDs: some Sequence<String>) {
@@ -27,10 +32,18 @@ struct LocalLibraryEdits {
         missingIDs = missingIDs.filter { !months.contains($0.value) }
     }
 
-    /// `source` with favorites updated and trashed or restored assets removed, as `options`
+    /// `source` with favorites updated and trashed, restored, hidden or unhidden assets removed, as `options`
     /// shows them (Favorites drops unfavorited photos, Recently Deleted drops restored ones).
     func applied(to source: [TimelineMonth], options: TimelineOptions) -> [TimelineMonth] {
-        let removedIDs = (options.isTrashed == true ? restoredIDs : trashedIDs).union(missingIDs.keys)
+        // Hide and unhide only move assets between the timeline and the archive: the timeline grid
+        // drops hidden photos, the archive grid unhidden ones. Grids that show both (albums,
+        // `visibility == nil`) and Recently Deleted are unaffected.
+        var removedIDs = (options.isTrashed == true ? restoredIDs : trashedIDs).union(missingIDs.keys)
+        switch options.visibility {
+        case .timeline?: removedIDs.formUnion(hiddenIDs)
+        case .archive?: removedIDs.formUnion(unhiddenIDs)
+        case nil: break
+        }
         // Without overrides the server's Favorites response is taken as it is.
         let onlyFavorites = options.isFavorite == true && !favoriteOverrides.isEmpty
         guard !favoriteOverrides.isEmpty || !removedIDs.isEmpty else { return source }
